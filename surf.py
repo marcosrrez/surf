@@ -106,6 +106,19 @@ Format rules (use exactly):
 
 Be direct. No filler phrases like "Great question" or "Certainly". No markdown syntax."""
 
+FULL_ARTICLE_SYSTEM = """You are a precise article formatter. Given a webpage's text, present the COMPLETE content — do not summarize, condense, or omit anything.
+
+Format rules:
+- Preserve every section, statistic, and fact from the original
+- Format tables as clean ASCII tables with aligned columns using │ and ─ characters
+- Use section headers in ALL CAPS followed by a blank line
+- Preserve all bullet points and lists
+- Clean up HTML artifacts (duplicate words, navigation text, cookie banners)
+- Do NOT add commentary, analysis, or your own words
+- Do NOT add "Related:" or topic suggestions at the end
+
+Output the complete article content, formatted for clean terminal reading."""
+
 READ_SYSTEM = """You are a precise content extractor summarizing a webpage.
 
 Format rules (use exactly):
@@ -251,7 +264,7 @@ def print_results(results: list[dict]) -> None:
         print(f" \033[33m{i}\033[0m  {r['title']}")  # yellow number
         print(f"     \033[90m{domain_display}\033[0m")
     print()
-    print(f"\033[90m[ 1-{len(results)} ] read raw   [ s1-s{len(results)} ] AI summary   [ o1-o{len(results)} ] browser   [ n ] new search   [ q ] quit\033[0m")
+    print(f"\033[90m[ 1-{len(results)} ] full article   [ s1-s{len(results)} ] summary   [ o1-o{len(results)} ] browser   [ n ] new search   [ q ] quit\033[0m")
 
 def print_related(related_lines: list[str]) -> None:
     """Print related topics extracted from Groq's 'Related:' section."""
@@ -397,17 +410,21 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True) -> st
     print_header(title or url, domain)
 
     if not ai_summary:
-        # Raw mode — show extracted text directly, no Groq
-        print(text[:8000])  # cap at 8000 chars for readability
-        response = text
+        # Full article mode — Groq formats everything, no summarizing
+        print_status("↳ formatting full article...")
+        prompt = build_read_prompt(title, text)
+        stream = stream_groq(prompt, FULL_ARTICLE_SYSTEM)
+        clear_status()
+        response = stream_to_terminal(stream)
     else:
-        print_status("↳ asking Groq...")
+        # Summary mode — concise AI digest
+        print_status("↳ summarizing...")
         prompt = build_read_prompt(title, text)
         stream = stream_groq(prompt, READ_SYSTEM)
         clear_status()
         response = stream_to_terminal(stream)
 
-    related = parse_related_topics(response)
+    related = parse_related_topics(response) if ai_summary else []
     if related:
         print()
         print_divider()
