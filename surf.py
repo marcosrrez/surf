@@ -6,8 +6,15 @@ import json
 import shutil
 import subprocess
 import requests
+import atexit
 from bs4 import BeautifulSoup
 from groq import Groq
+
+try:
+    import readline as _readline
+    _HAS_READLINE = True
+except ImportError:
+    _HAS_READLINE = False
 
 try:
     from rich.console import Console
@@ -369,13 +376,46 @@ def clear_status() -> None:
     sys.stdout.flush()
 
 def stream_to_terminal(stream) -> str:
-    """Stream Groq output chunk-by-chunk to terminal. Returns full text."""
+    """Stream Groq output to terminal with word-aware line wrapping. Returns full text."""
+    width = _term_width()
     accumulated = ""
+    col = 0
+    word_buf = ""
+
+    def flush_word():
+        nonlocal col, word_buf
+        if not word_buf:
+            return
+        if col > 0 and col + len(word_buf) > width:
+            sys.stdout.write("\n")
+            col = 0
+        sys.stdout.write(word_buf)
+        col += len(word_buf)
+        word_buf = ""
+
     for chunk in stream:
-        sys.stdout.write(chunk)
-        sys.stdout.flush()
         accumulated += chunk
-    print()  # newline after stream ends
+        for char in chunk:
+            if char == "\n":
+                flush_word()
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                col = 0
+            elif char == " ":
+                flush_word()
+                if col > 0 and col < width:
+                    sys.stdout.write(" ")
+                    col += 1
+            elif char == "\t":
+                flush_word()
+                sys.stdout.write("  ")
+                col += 2
+            else:
+                word_buf += char
+
+    flush_word()
+    sys.stdout.write("\n")
+    sys.stdout.flush()
     return accumulated
 
 def print_divider() -> None:
@@ -450,6 +490,7 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
         except (KeyboardInterrupt, EOFError):
             break
 
+        _add_to_history(choice)
         cl = choice.lower()
 
         if cl == "q":
@@ -590,6 +631,7 @@ def _handle_article_input(url: str, related: list[str], context: str) -> None:
         except (KeyboardInterrupt, EOFError):
             break
 
+        _add_to_history(choice)
         cl = choice.lower()
 
         if cl == "q":
@@ -697,7 +739,26 @@ def _build_booking_sites(query: str, intent: dict) -> list[dict]:
         sites.append({"name": "Google", "domain": "google.com", "url": f"https://www.google.com/search?q={query.replace(' ', '+')}"})
         return sites
 
+HISTORY_FILE = os.path.expanduser("~/.config/surf/history")
+
+def _setup_readline() -> None:
+    """Enable up-arrow history and Ctrl+R search for all input() calls."""
+    if not _HAS_READLINE:
+        return
+    try:
+        _readline.read_history_file(HISTORY_FILE)
+    except FileNotFoundError:
+        pass
+    _readline.set_history_length(500)
+    atexit.register(_readline.write_history_file, HISTORY_FILE)
+
+def _add_to_history(text: str) -> None:
+    """Add a string to readline history."""
+    if _HAS_READLINE and text.strip():
+        _readline.add_history(text.strip())
+
 def main():
+    _setup_readline()
     import argparse
     parser = argparse.ArgumentParser(
         prog="surf",
@@ -707,6 +768,7 @@ def main():
     args = parser.parse_args()
 
     query = " ".join(args.input)
+    _add_to_history(query)
 
     try:
         if detect_input_type(query) == "url":
