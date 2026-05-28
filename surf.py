@@ -23,10 +23,11 @@ def load_config() -> dict:
                     config[key.strip()] = value.strip()
     return config
 
-# Matches: nasa.gov, nasa.gov/path, www.nasa.gov, http://nasa.gov
+# Matches: nasa.gov, nasa.gov/path, www.nasa.gov, http://nasa.gov,
+# en.wikipedia.org, en.wikipedia.org/wiki/Black_hole
 _URL_PATTERN = re.compile(
     r'^(https?://|www\.)'         # explicit scheme or www
-    r'|^[a-zA-Z0-9-]+\.[a-zA-Z]{2,13}(/\S*)?$'  # bare domain like nasa.gov
+    r'|^([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,13}(/\S*)?$'  # bare/subdomain like nasa.gov or en.wikipedia.org
 )
 
 def detect_input_type(text: str) -> str:
@@ -409,3 +410,48 @@ def classify_intent(query: str) -> dict:
 def open_in_browser(url: str) -> None:
     """Open a URL in the system default browser (macOS)."""
     subprocess.run(["open", url])
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="surf",
+        description="Search or read any URL — Kagi-style, in your terminal."
+    )
+    parser.add_argument("input", nargs="+", help="A search query or URL")
+    args = parser.parse_args()
+
+    query = " ".join(args.input)
+
+    try:
+        if detect_input_type(query) == "url":
+            read_flow(query)
+            return
+
+        print_status("↳ understanding your intent...")
+        intent = classify_intent(query)
+        clear_status()
+
+        if intent["intent"] == "instant":
+            print_header(query)
+            stream = stream_groq(f"Answer this directly and concisely: {query}", SEARCH_SYSTEM)
+            stream_to_terminal(stream)
+
+        elif intent["intent"] == "transactional" and intent.get("open_url"):
+            print_header(query)
+            if intent.get("tip"):
+                print(f"\033[33m▸ Tip\033[0m  {intent['tip']}\n")
+            url_domain = intent["open_url"].split("/")[2] if len(intent["open_url"].split("/")) > 2 else intent["open_url"]
+            print(f"\033[32mOpening {url_domain} in your browser...\033[0m")
+            open_in_browser(intent["open_url"])
+
+        elif intent["intent"] == "navigation" and intent.get("open_url"):
+            open_in_browser(intent["open_url"])
+
+        else:
+            search_flow(query)
+
+    except KeyboardInterrupt:
+        print("\n\033[90mbye\033[0m")
+
+if __name__ == "__main__":
+    main()
