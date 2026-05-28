@@ -133,6 +133,18 @@ Format rules (use exactly):
 
 No filler phrases. No markdown syntax."""
 
+FOLLOWUP_SYSTEM = """You are a precise research assistant answering follow-up questions.
+
+Rules:
+- Answer ONLY from the provided context — do not add information from outside it
+- If the context contains statistics or data relevant to the question, CITE THEM SPECIFICALLY with numbers
+- For contested questions, acknowledge the debate and present evidence from multiple perspectives in the context
+- Do NOT invent, cite, or reference any external sources or URLs — you have not fetched them
+- If the context does not contain enough information to answer well, say so clearly
+- Start with "▸ " followed by a direct one-sentence answer
+- Keep the response focused and under 200 words
+- Do NOT add a "Sources:" line"""
+
 def build_search_prompt(query: str, snippets: list[dict]) -> str:
     """Build Groq prompt for a search query with DDG snippets."""
     snippet_text = ""
@@ -195,7 +207,7 @@ def ddg_search(query: str, num_results: int = 5) -> list[dict]:
 GROQ_MODEL = "llama-3.3-70b-versatile"
 CLASSIFIER_MODEL = "llama-3.1-8b-instant"
 
-def stream_groq(prompt: str, system: str, model: str = GROQ_MODEL):
+def stream_groq(prompt: str, system: str, model: str = GROQ_MODEL, max_tokens: int = 2048):
     """
     Stream a Groq completion. Yields text chunks as they arrive.
     Loads API key from ~/.config/surf/config.
@@ -213,7 +225,7 @@ def stream_groq(prompt: str, system: str, model: str = GROQ_MODEL):
             {"role": "user", "content": prompt},
         ],
         stream=True,
-        max_tokens=2048,
+        max_tokens=max_tokens,
     )
     for chunk in stream:
         content = chunk.choices[0].delta.content
@@ -361,13 +373,15 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
         # empty input: loop again
 
 def _handle_followup(question: str, context: str = "") -> None:
-    """Answer a follow-up question using Groq, with optional prior context."""
+    """Answer a follow-up question grounded in the current context."""
     print_status("↳ thinking...")
     if context:
-        prompt = f"Prior context:\n{context[:3000]}\n\nFollow-up question: {question}"
+        prompt = f"Context from the current article/search:\n{context[:4000]}\n\nQuestion: {question}"
+        system = FOLLOWUP_SYSTEM
     else:
         prompt = question
-    stream = stream_groq(prompt, SEARCH_SYSTEM)
+        system = SEARCH_SYSTEM
+    stream = stream_groq(prompt, system)
     clear_status()
     print_header(question.capitalize())
     stream_to_terminal(stream)
@@ -413,7 +427,7 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True) -> st
         # Full article mode — Groq formats everything, no summarizing
         print_status("↳ formatting full article...")
         prompt = build_read_prompt(title, text)
-        stream = stream_groq(prompt, FULL_ARTICLE_SYSTEM)
+        stream = stream_groq(prompt, FULL_ARTICLE_SYSTEM, max_tokens=6000)
         clear_status()
         response = stream_to_terminal(stream)
     else:
