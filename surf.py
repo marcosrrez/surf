@@ -207,7 +207,7 @@ def print_status(message: str) -> None:
 
 def clear_status() -> None:
     """Clear the status line."""
-    sys.stdout.write("\r" + " " * 60 + "\r")
+    sys.stdout.write("\r" + " " * _term_width() + "\r")
     sys.stdout.flush()
 
 def stream_to_terminal(stream) -> str:
@@ -249,7 +249,12 @@ def search_flow(query: str, interactive: bool = True) -> tuple[list[dict], str]:
     Returns (results, groq_response_text).
     """
     print_status("↳ searching DuckDuckGo...")
-    results = ddg_search(query)
+    try:
+        results = ddg_search(query)
+    except Exception as e:
+        clear_status()
+        print(f"\033[31mSearch failed: {e}\033[0m")
+        return [], ""
     clear_status()
 
     if not results:
