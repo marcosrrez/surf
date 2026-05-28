@@ -154,14 +154,18 @@ def ddg_search(query: str, num_results: int = 5) -> list[dict]:
 
     for link, snippet_el in zip(links, snippets_els):
         href = link.get("href", "")
-        if "uddg=" in href:
+        actual_url = href
+        if href:
             from urllib.parse import unquote, urlparse, parse_qs
-            actual_url = parse_qs(urlparse(href).query).get("uddg", [href])[0]
-            actual_url = unquote(actual_url)
-        else:
-            actual_url = href
+            parsed = urlparse(href)
+            uddg = parse_qs(parsed.query).get("uddg", [])
+            if uddg:
+                actual_url = unquote(uddg[0])
+            elif parsed.scheme in ("http", "https"):
+                actual_url = href
 
-        domain = actual_url.replace("https://", "").replace("http://", "").split("/")[0]
+        parsed_actual = urlparse(actual_url)
+        domain = parsed_actual.netloc.removeprefix("www.") if parsed_actual.netloc else actual_url.split("/")[0]
 
         results.append({
             "title": link.get_text(strip=True),
@@ -247,7 +251,7 @@ def print_results(results: list[dict]) -> None:
         print(f" \033[33m{i}\033[0m  {r['title']}")  # yellow number
         print(f"     \033[90m{domain_display}\033[0m")
     print()
-    print(f"\033[90m[ 1-{len(results)} ] read   [ o1-o{len(results)} ] open in browser   [ n ] new search   [ q ] quit\033[0m")
+    print(f"\033[90m[ 1-{len(results)} ] read raw   [ s1-s{len(results)} ] AI summary   [ o1-o{len(results)} ] browser   [ n ] new search   [ q ] quit\033[0m")
 
 def print_related(related_lines: list[str]) -> None:
     """Print related topics extracted from Groq's 'Related:' section."""
@@ -295,38 +299,65 @@ def search_flow(query: str, interactive: bool = True) -> tuple[list[dict], str]:
     print_results(results)
 
     if interactive:
-        _handle_results_input(results)
+        _handle_results_input(results, context=response)
 
     return results, response
 
-def _handle_results_input(results: list[dict]) -> None:
-    """Wait for user to pick a result number or quit."""
+def _handle_results_input(results: list[dict], context: str = "") -> None:
+    """Wait for user to pick a result or ask a follow-up question."""
     while True:
         try:
-            choice = input("\n› ").strip().lower()
+            choice = input("\n› ").strip()
         except (KeyboardInterrupt, EOFError):
             break
-        if choice == "q":
+
+        cl = choice.lower()
+
+        if cl == "q":
             break
-        elif choice == "n":
+        elif cl == "n":
             query = input("New search: ").strip()
             if query:
                 search_flow(query)
             break
-        elif choice.startswith("o") and choice[1:].isdigit():
-            # o1, o2, etc. — open in browser directly
-            idx = int(choice[1:]) - 1
+        elif cl.startswith("o") and cl[1:].isdigit():
+            idx = int(cl[1:]) - 1
             if 0 <= idx < len(results):
                 open_in_browser(results[idx]["url"])
             else:
-                print(f"\033[90mPick a number between 1 and {len(results)}\033[0m")
-        elif choice.isdigit():
-            idx = int(choice) - 1
+                print(f"\033[90mPick o1-o{len(results)}\033[0m")
+        elif cl.startswith("s") and cl[1:].isdigit():
+            # AI summary
+            idx = int(cl[1:]) - 1
             if 0 <= idx < len(results):
-                read_flow(results[idx]["url"])
+                read_flow(results[idx]["url"], interactive=True, ai_summary=True)
                 break
             else:
-                print(f"\033[90mPick a number between 1 and {len(results)}\033[0m")
+                print(f"\033[90mPick s1-s{len(results)}\033[0m")
+        elif cl.isdigit():
+            # Raw read
+            idx = int(cl) - 1
+            if 0 <= idx < len(results):
+                read_flow(results[idx]["url"], interactive=True, ai_summary=False)
+                break
+            else:
+                print(f"\033[90mPick 1-{len(results)}\033[0m")
+        elif choice.strip():
+            # Follow-up question
+            _handle_followup(choice, context=context)
+        # empty input: loop again
+
+def _handle_followup(question: str, context: str = "") -> None:
+    """Answer a follow-up question using Groq, with optional prior context."""
+    print_status("↳ thinking...")
+    if context:
+        prompt = f"Prior context:\n{context[:3000]}\n\nFollow-up question: {question}"
+    else:
+        prompt = question
+    stream = stream_groq(prompt, SEARCH_SYSTEM)
+    clear_status()
+    print_header(question.capitalize())
+    stream_to_terminal(stream)
 
 def parse_related_topics(text: str) -> list[str]:
     """Extract numbered lines from the 'Related:' section of Groq's response."""
@@ -340,10 +371,10 @@ def parse_related_topics(text: str) -> list[str]:
             topics.append(line)  # keeps "1. Topic name" format for display
     return topics[:3]
 
-def read_flow(url: str, interactive: bool = True) -> str:
+def read_flow(url: str, interactive: bool = True, ai_summary: bool = True) -> str:
     """
     Run the read flow: fetch URL → extract text → Groq → display.
-    Returns the Groq response text.
+    Returns the Groq response text (or raw extracted text in raw mode).
     """
     print_status(f"↳ fetching {url[:60]}...")
     try:
@@ -365,35 +396,53 @@ def read_flow(url: str, interactive: bool = True) -> str:
     domain = url.replace("https://", "").replace("http://", "").split("/")[0]
     print_header(title or url, domain)
 
-    print_status("↳ asking Groq...")
-    prompt = build_read_prompt(title, text)
-    stream = stream_groq(prompt, READ_SYSTEM)
-    clear_status()
-
-    response = stream_to_terminal(stream)
+    if not ai_summary:
+        # Raw mode — show extracted text directly, no Groq
+        print(text[:8000])  # cap at 8000 chars for readability
+        response = text
+    else:
+        print_status("↳ asking Groq...")
+        prompt = build_read_prompt(title, text)
+        stream = stream_groq(prompt, READ_SYSTEM)
+        clear_status()
+        response = stream_to_terminal(stream)
 
     related = parse_related_topics(response)
     if related:
-        # Topics already streamed inline — just show the interactive prompt
         print()
         print_divider()
-        print(f"\033[90m[ 1-{len(related)} ] search related topic   [ n ] new search   [ q ] quit\033[0m")
-        if interactive:
-            _handle_related_input(related)
+        print(f"\033[90m[ 1-{len(related)} ] search related   [ o ] open in browser   [ ? ] follow-up   [ q ] quit\033[0m")
+    else:
+        print()
+        print_divider()
+        print(f"\033[90m[ o ] open in browser   [ ? ] follow-up   [ n ] new search   [ q ] quit\033[0m")
+
+    if interactive:
+        _handle_article_input(url, related, response)
 
     return response
 
-def _handle_related_input(related: list[str]) -> None:
-    """Wait for user to pick a related topic or quit."""
+def _handle_article_input(url: str, related: list[str], context: str) -> None:
+    """Interactive prompt after reading an article."""
     while True:
         try:
-            choice = input("\n› ").strip().lower()
+            choice = input("\n› ").strip()
         except (KeyboardInterrupt, EOFError):
             break
-        if choice == "q":
+
+        cl = choice.lower()
+
+        if cl == "q":
             break
-        elif choice.isdigit():
-            idx = int(choice) - 1
+        elif cl == "n":
+            query = input("New search: ").strip()
+            if query:
+                search_flow(query)
+            break
+        elif cl == "o":
+            open_in_browser(url)
+        elif cl.isdigit():
+            idx = int(cl) - 1
             if 0 <= idx < len(related):
                 topic = related[idx]
                 if len(topic) > 2 and topic[1] in ".)":
@@ -401,7 +450,11 @@ def _handle_related_input(related: list[str]) -> None:
                 search_flow(topic)
                 break
             else:
-                print(f"\033[90mPick a number between 1 and {len(related)}\033[0m")
+                print(f"\033[90mPick 1-{len(related)} or type a follow-up question\033[0m")
+        elif choice.strip():
+            # Follow-up question with article context
+            _handle_followup(choice, context=context)
+        # empty input: loop again
 
 CLASSIFIER_SYSTEM = """You are an intent classifier. Given a user query, return ONLY a JSON object — no explanation, no markdown, no code block. Just raw JSON.
 
