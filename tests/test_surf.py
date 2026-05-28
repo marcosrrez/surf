@@ -1,5 +1,6 @@
 # tests/test_surf.py
 from surf import load_config, detect_input_type, extract_text, fetch_page
+from surf import build_search_prompt, build_read_prompt, SEARCH_SYSTEM, READ_SYSTEM
 from unittest.mock import patch, MagicMock
 
 class TestDetectInputType:
@@ -112,3 +113,40 @@ class TestFetchPage:
                 assert False, "Should have raised"
             except req.HTTPError:
                 pass
+
+class TestBuildSearchPrompt:
+    def test_includes_query(self):
+        snippets = [{"title": "NASA", "url": "nasa.gov", "snippet": "Space stuff"}]
+        prompt = build_search_prompt("black holes", snippets)
+        assert "black holes" in prompt
+
+    def test_includes_snippets(self):
+        snippets = [{"title": "NASA", "url": "nasa.gov", "snippet": "Space stuff"}]
+        prompt = build_search_prompt("black holes", snippets)
+        assert "NASA" in prompt
+        assert "nasa.gov" in prompt
+        assert "Space stuff" in prompt
+
+    def test_handles_multiple_snippets(self):
+        snippets = [
+            {"title": "A", "url": "a.com", "snippet": "alpha"},
+            {"title": "B", "url": "b.com", "snippet": "beta"},
+        ]
+        prompt = build_search_prompt("test", snippets)
+        assert "alpha" in prompt and "beta" in prompt
+
+class TestBuildReadPrompt:
+    def test_includes_title(self):
+        prompt = build_read_prompt("NASA Black Holes", "Some article text here")
+        assert "NASA Black Holes" in prompt
+
+    def test_includes_text(self):
+        prompt = build_read_prompt("Title", "Important article content")
+        assert "Important article content" in prompt
+
+class TestSystemPrompts:
+    def test_search_system_mentions_tldr(self):
+        assert "TL;DR" in SEARCH_SYSTEM
+
+    def test_read_system_mentions_related(self):
+        assert "Related" in READ_SYSTEM

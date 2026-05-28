@@ -72,3 +72,40 @@ def extract_text(html: str, max_words: int = 6000, return_title: bool = False):
     if return_title:
         return title, text
     return text
+
+SEARCH_SYSTEM = """You are a precise research assistant answering questions using search result snippets.
+
+Format rules (use exactly):
+- First line: "▸ TL;DR  " followed by one concise sentence answer
+- Blank line
+- 2-4 short paragraphs of detail using plain text
+- Use "•" for bullet points, never dashes or asterisks
+- Use ALL CAPS sparingly for key terms (not markdown bold)
+- Final line: "Sources: domain1.com · domain2.com · domain3.com"
+
+Be direct. No filler phrases like "Great question" or "Certainly". No markdown syntax."""
+
+READ_SYSTEM = """You are a precise content extractor summarizing a webpage.
+
+Format rules (use exactly):
+- First line: "▸ TL;DR  " followed by one concise sentence
+- Blank line
+- 3-6 paragraphs preserving key facts and structure
+- Use "•" for bullet points, never dashes or asterisks
+- Use ALL CAPS sparingly for key terms (not markdown bold)
+- After the main content, add a blank line then: "Related:"
+- List exactly 3 related topics the user might explore, numbered 1-3
+  Example: "1. Event horizons and the Schwarzschild radius"
+
+No filler phrases. No markdown syntax."""
+
+def build_search_prompt(query: str, snippets: list[dict]) -> str:
+    """Build Groq prompt for a search query with DDG snippets."""
+    snippet_text = ""
+    for i, s in enumerate(snippets, 1):
+        snippet_text += f"\n[{i}] {s['title']} ({s['url']})\n{s['snippet']}\n"
+    return f"Query: {query}\n\nSearch results:\n{snippet_text}"
+
+def build_read_prompt(title: str, text: str) -> str:
+    """Build Groq prompt for reading a specific page."""
+    return f"Page title: {title}\n\nContent:\n{text}"
