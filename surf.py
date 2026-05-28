@@ -290,3 +290,69 @@ def _handle_results_input(results: list[dict]) -> None:
                 break
             else:
                 print(f"\033[90mPick a number between 1 and {len(results)}\033[0m")
+
+def parse_related_topics(text: str) -> list[str]:
+    """Extract numbered lines from the 'Related:' section of Groq's response."""
+    if "Related:" not in text:
+        return []
+    related_section = text.split("Related:")[-1]
+    topics = []
+    for line in related_section.strip().splitlines():
+        line = line.strip()
+        if line and line[0].isdigit() and len(line) > 3:
+            topics.append(line)  # keeps "1. Topic name" format for display
+    return topics[:3]
+
+def read_flow(url: str, interactive: bool = True) -> str:
+    """
+    Run the read flow: fetch URL → extract text → Groq → display.
+    Returns the Groq response text.
+    """
+    print_status(f"↳ fetching {url[:60]}...")
+    try:
+        html = fetch_page(url)
+    except Exception as e:
+        clear_status()
+        print(f"\033[31mCould not fetch page: {e}\033[0m")
+        return ""
+
+    title, text = extract_text(html, return_title=True)
+    clear_status()
+
+    domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+    print_header(title or url, domain)
+
+    print_status("↳ asking Groq...")
+    prompt = build_read_prompt(title, text)
+    stream = stream_groq(prompt, READ_SYSTEM)
+    clear_status()
+
+    response = stream_to_terminal(stream)
+
+    related = parse_related_topics(response)
+    if related:
+        print_related(related)
+        if interactive:
+            _handle_related_input(related)
+
+    return response
+
+def _handle_related_input(related: list[str]) -> None:
+    """Wait for user to pick a related topic or quit."""
+    while True:
+        try:
+            choice = input("\n› ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            break
+        if choice == "q":
+            break
+        elif choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(related):
+                topic = related[idx]
+                if len(topic) > 2 and topic[1] in ".)":
+                    topic = topic[2:].strip()
+                search_flow(topic)
+                break
+            else:
+                print(f"\033[90mPick a number between 1 and {len(related)}\033[0m")

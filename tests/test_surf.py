@@ -4,6 +4,7 @@ from surf import build_search_prompt, build_read_prompt, SEARCH_SYSTEM, READ_SYS
 from surf import ddg_search
 from surf import stream_groq
 from surf import search_flow
+from surf import read_flow, parse_related_topics
 from unittest.mock import patch, MagicMock
 
 class TestDetectInputType:
@@ -239,3 +240,31 @@ class TestSearchFlow:
 
         assert results == fake_results
         assert "TL;DR" in response
+
+class TestParseRelatedTopics:
+    def test_extracts_numbered_lines_after_related(self):
+        text = "Some content.\n\nRelated:\n1. Event horizons explained\n2. Hawking radiation\n3. Neutron stars"
+        topics = parse_related_topics(text)
+        assert len(topics) == 3
+        assert "Event horizons explained" in topics[0]
+
+    def test_returns_empty_if_no_related_section(self):
+        text = "Just some content with no related section."
+        topics = parse_related_topics(text)
+        assert topics == []
+
+class TestReadFlow:
+    def test_fetches_and_streams(self):
+        fake_html = "<html><head><title>NASA: Black Holes</title></head><body><p>Article content here.</p></body></html>"
+        fake_response = "▸ TL;DR  Black holes are dense.\n\nContent.\n\nRelated:\n1. Neutron stars\n2. Event horizons\n3. Hawking radiation"
+
+        with patch("surf.fetch_page", return_value=fake_html), \
+             patch("surf.stream_groq", return_value=iter([fake_response])), \
+             patch("surf.print_header"), \
+             patch("surf.print_status"), \
+             patch("surf.clear_status"), \
+             patch("surf.stream_to_terminal", return_value=fake_response), \
+             patch("surf.print_related"):
+            result = read_flow("https://nasa.gov/black-holes", interactive=False)
+
+        assert "TL;DR" in result
