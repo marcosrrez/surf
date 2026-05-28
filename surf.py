@@ -158,8 +158,26 @@ def extract_text(html: str, max_words: int = 6000, return_title: bool = False):
 
     text = soup.get_text(separator="\n", strip=True)
 
-    # Collapse blank lines
-    lines = [l for l in text.splitlines() if l.strip()]
+    # Collapse blank lines and strip navigation noise
+    nav_patterns = {
+        "MEN", "WOMEN", "ACADEMY", "CLUB", "Follow Us", "Login",
+        "Create account", "Switch User", "Become a member",
+        "Ticket Info", "See Full List", "GET READY FOR",
+        "Fill in our form", "Report abuse", "Check out our",
+        "Help Centre", "New Enquiry", "Website feedback",
+    }
+    lines = []
+    for l in text.splitlines():
+        stripped = l.strip()
+        if not stripped:
+            continue
+        # Skip lines that are purely navigation labels or very short repeated items
+        if stripped in nav_patterns:
+            continue
+        # Skip lines that look like fixture scores (e.g. "1  Arsenal  2  Chelsea")
+        if stripped.replace(" ", "").replace("\t", "").lstrip("0123456789").startswith("Arsenal") and len(stripped) < 40:
+            continue
+        lines.append(l)
     text = "\n".join(lines)
 
     # Truncate
@@ -183,26 +201,37 @@ Format rules (use exactly):
 
 Be direct. No filler phrases like "Great question" or "Certainly". No markdown syntax."""
 
-FULL_ARTICLE_SYSTEM = """You are a precise article formatter. Given a webpage's text, present the COMPLETE content — do not summarize, condense, or omit anything.
+FULL_ARTICLE_SYSTEM = """You are a precise article formatter. Given a webpage's text, present the COMPLETE article content — do not summarize, condense, or omit anything from the article itself.
 
 Format rules:
-- Preserve every section, statistic, and fact from the original
-- Format tables using clean space-aligned columns with a ─── separator line under headers:
+- Preserve every section, statistic, and fact from the article
+- Format tables using clean space-aligned columns with a ─── separator line under headers. When a source has side-by-side tables, render them as separate sequential tables, each with their own header row:
 
-  Example table format:
-  Team               Days at Top
-  ────────────────────────────
-  Arsenal            238
-  Liverpool           34
-  Manchester City      9
+  Example:
+  Team               Goals Conceded - Set Pieces
+  ───────────────────────────────────────────────
+  Arsenal            7
+  Brighton           7
+
+  Team               XG Against - Set Pieces
+  ──────────────────────────────────────────
+  Arsenal            6.49
+  Brentford          9.94
 
 - Use section headers in ALL CAPS followed by a blank line
 - Preserve all bullet points using •
-- Clean up HTML artifacts (navigation text, cookie banners, share buttons)
+- STOP rendering when you encounter any of the following — these are website navigation, not article content:
+  • Repeated short menu labels (MEN, WOMEN, ACADEMY, CLUB)
+  • Fixture or results listings (match scores, dates, kick-off times)
+  • Contact information (addresses, phone numbers, email forms)
+  • Social media prompts (Follow Us, share buttons)
+  • Login/membership prompts (Login, Create account, Become a member)
+  • Copyright notices and legal text
+  End your output at the last meaningful paragraph of the article, before any of the above.
 - Do NOT add commentary, analysis, or your own words
 - Do NOT add "Related:" or topic suggestions at the end
 
-Output the complete article content, formatted for clean terminal reading."""
+Output the complete article content only, formatted for clean terminal reading."""
 
 READ_SYSTEM = """You are a precise content extractor summarizing a webpage.
 
