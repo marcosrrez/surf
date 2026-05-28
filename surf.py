@@ -451,6 +451,36 @@ def open_in_browser(url: str) -> None:
     """Open a URL in the system default browser (macOS)."""
     subprocess.run(["open", url])
 
+def _build_booking_sites(query: str, intent: dict) -> list[dict]:
+    """Build a list of booking site options for transactional queries."""
+    sub = intent.get("sub_type", "").lower()
+    open_url = intent.get("open_url", "")
+
+    if "flight" in sub or "flight" in query.lower():
+        # Try to extract route from the Google Flights URL the classifier built
+        return [
+            {"name": "Google Flights", "domain": "google.com/flights", "url": open_url or "https://www.google.com/flights"},
+            {"name": "Kayak", "domain": "kayak.com", "url": f"https://www.kayak.com/flights"},
+            {"name": "Expedia", "domain": "expedia.com", "url": "https://www.expedia.com/Flights"},
+            {"name": "Skyscanner", "domain": "skyscanner.com", "url": "https://www.skyscanner.com"},
+        ]
+    elif "hotel" in sub or "hotel" in query.lower():
+        return [
+            {"name": "Booking.com", "domain": "booking.com", "url": "https://www.booking.com"},
+            {"name": "Hotels.com", "domain": "hotels.com", "url": "https://www.hotels.com"},
+            {"name": "Expedia", "domain": "expedia.com", "url": "https://www.expedia.com/Hotels"},
+            {"name": "Airbnb", "domain": "airbnb.com", "url": "https://www.airbnb.com"},
+        ]
+    else:
+        # Generic: use the classifier's URL + a few alternatives
+        sites = []
+        if open_url:
+            from urllib.parse import urlparse
+            domain = urlparse(open_url).netloc.removeprefix("www.")
+            sites.append({"name": domain, "domain": domain, "url": open_url})
+        sites.append({"name": "Google", "domain": "google.com", "url": f"https://www.google.com/search?q={query.replace(' ', '+')}"})
+        return sites
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(
@@ -491,7 +521,7 @@ def main():
             if intent.get("tip"):
                 print(f"\033[33m▸ Tip\033[0m  {intent['tip']}\n")
 
-            # Stream a summary from Groq using the search results
+            # Stream a Groq summary of the route/options
             if results:
                 print_status("↳ summarizing options...")
                 prompt = build_search_prompt(query, results)
@@ -499,10 +529,36 @@ def main():
                 clear_status()
                 stream_to_terminal(stream)
 
-            # Open the browser after the summary
-            url_domain = intent["open_url"].split("/")[2] if len(intent["open_url"].split("/")) > 2 else intent["open_url"]
-            print(f"\n\033[32mOpening {url_domain} to book...\033[0m")
-            open_in_browser(intent["open_url"])
+            # Build booking sites based on the intent's open_url and sub_type
+            sub = intent.get("sub_type", "")
+            # Extract route/params from the DDG query for deep links
+            booking_sites = _build_booking_sites(query, intent)
+
+            # Show numbered booking site options
+            print()
+            print_divider()
+            print("\033[90mBook on:\033[0m")
+            for i, site in enumerate(booking_sites, 1):
+                print(f" \033[33m{i}\033[0m  {site['name']}")
+                print(f"     \033[90m{site['domain']}\033[0m")
+            print()
+            print(f"\033[90m[ 1-{len(booking_sites)} ] open site   [ q ] quit\033[0m")
+
+            # Wait for user to pick
+            while True:
+                try:
+                    choice = input("\n› ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    break
+                if choice == "q":
+                    break
+                elif choice.isdigit():
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(booking_sites):
+                        open_in_browser(booking_sites[idx]["url"])
+                        break
+                    else:
+                        print(f"\033[90mPick a number between 1 and {len(booking_sites)}\033[0m")
 
         elif intent["intent"] == "navigation" and intent.get("open_url"):
             open_in_browser(intent["open_url"])
