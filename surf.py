@@ -374,7 +374,10 @@ def read_flow(url: str, interactive: bool = True) -> str:
 
     related = parse_related_topics(response)
     if related:
-        print_related(related)
+        # Topics already streamed inline — just show the interactive prompt
+        print()
+        print_divider()
+        print(f"\033[90m[ 1-{len(related)} ] search related topic   [ n ] new search   [ q ] quit\033[0m")
         if interactive:
             _handle_related_input(related)
 
