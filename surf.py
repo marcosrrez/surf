@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import re
 import os
+import sys
+import shutil
 import requests
 from bs4 import BeautifulSoup
 from groq import Groq
@@ -182,3 +184,58 @@ def stream_groq(prompt: str, system: str, model: str = GROQ_MODEL):
         content = chunk.choices[0].delta.content
         if content:
             yield content
+
+def _term_width() -> int:
+    return min(shutil.get_terminal_size().columns, 100)
+
+def print_header(title: str, meta: str = "") -> None:
+    """Print a Kagi-style header bar."""
+    width = _term_width()
+    bar = "━" * max(0, width - len(title) - 4)
+    print(f"\n\033[35m━━ {title} {bar}\033[0m")  # purple
+    if meta:
+        print(f"\033[90m{meta}\033[0m")           # gray
+    print()
+
+def print_status(message: str) -> None:
+    """Print a gray status line, overwriting the previous one."""
+    sys.stdout.write(f"\r\033[90m{message}\033[0m")
+    sys.stdout.flush()
+
+def clear_status() -> None:
+    """Clear the status line."""
+    sys.stdout.write("\r" + " " * 60 + "\r")
+    sys.stdout.flush()
+
+def stream_to_terminal(stream) -> str:
+    """Stream Groq output chunk-by-chunk to terminal. Returns full text."""
+    accumulated = ""
+    for chunk in stream:
+        sys.stdout.write(chunk)
+        sys.stdout.flush()
+        accumulated += chunk
+    print()  # newline after stream ends
+    return accumulated
+
+def print_divider() -> None:
+    print(f"\033[90m{'─' * _term_width()}\033[0m")
+
+def print_results(results: list[dict]) -> None:
+    """Print numbered search results list."""
+    print()
+    print_divider()
+    for i, r in enumerate(results, 1):
+        print(f" \033[33m{i}\033[0m  {r['title']}")  # yellow number
+        print(f"     \033[90m{r['domain']}\033[0m")
+    print()
+    print(f"\033[90m[ 1-{len(results)} ] read full article   [ n ] new search   [ q ] quit\033[0m")
+
+def print_related(related_lines: list[str]) -> None:
+    """Print related topics extracted from Groq's 'Related:' section."""
+    print()
+    print_divider()
+    print("\033[90mRelated topics:\033[0m")
+    for line in related_lines:
+        print(f"  \033[33m{line}\033[0m")
+    print()
+    print(f"\033[90m[ 1-{len(related_lines)} ] search topic   [ q ] quit\033[0m")
