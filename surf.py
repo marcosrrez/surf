@@ -109,3 +109,47 @@ def build_search_prompt(query: str, snippets: list[dict]) -> str:
 def build_read_prompt(title: str, text: str) -> str:
     """Build Groq prompt for reading a specific page."""
     return f"Page title: {title}\n\nContent:\n{text}"
+
+DDG_URL = "https://lite.duckduckgo.com/lite/"
+
+def ddg_search(query: str, num_results: int = 5) -> list[dict]:
+    """
+    Search DuckDuckGo Lite and return list of {title, url, domain, snippet}.
+    DDG Lite returns simple HTML — no JS required.
+    """
+    r = requests.post(
+        DDG_URL,
+        data={"q": query},
+        headers=HEADERS,
+        verify=SSL_CERT,
+        timeout=10
+    )
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    results = []
+    links = soup.find_all("a", class_="result-link")
+    snippets_els = soup.find_all("td", class_="result-snippet")
+
+    for link, snippet_el in zip(links, snippets_els):
+        href = link.get("href", "")
+        if "uddg=" in href:
+            from urllib.parse import unquote, urlparse, parse_qs
+            actual_url = parse_qs(urlparse(href).query).get("uddg", [href])[0]
+            actual_url = unquote(actual_url)
+        else:
+            actual_url = href
+
+        domain = actual_url.replace("https://", "").replace("http://", "").split("/")[0]
+
+        results.append({
+            "title": link.get_text(strip=True),
+            "url": actual_url,
+            "domain": domain,
+            "snippet": snippet_el.get_text(strip=True),
+        })
+
+        if len(results) >= num_results:
+            break
+
+    return results

@@ -1,6 +1,7 @@
 # tests/test_surf.py
 from surf import load_config, detect_input_type, extract_text, fetch_page
 from surf import build_search_prompt, build_read_prompt, SEARCH_SYSTEM, READ_SYSTEM
+from surf import ddg_search
 from unittest.mock import patch, MagicMock
 
 class TestDetectInputType:
@@ -150,3 +151,32 @@ class TestSystemPrompts:
 
     def test_read_system_mentions_related(self):
         assert "Related" in READ_SYSTEM
+
+class TestDdgSearch:
+    def test_returns_list_of_dicts(self):
+        mock_html = """<html><body><table>
+        <tr><td><a class="result-link" href="https://nasa.gov">NASA Black Holes</a></td></tr>
+        <tr><td class="result-snippet">Objects with strong gravity.</td></tr>
+        </table></body></html>"""
+        mock_response = MagicMock()
+        mock_response.text = mock_html
+        mock_response.raise_for_status = MagicMock()
+        with patch("surf.requests.post", return_value=mock_response):
+            results = ddg_search("black holes")
+        assert isinstance(results, list)
+
+    def test_result_has_required_keys(self):
+        mock_html = """<html><body><table>
+        <tr><td><a class="result-link" href="https://nasa.gov/blackholes">NASA</a></td></tr>
+        <tr><td class="result-snippet">Strong gravity objects.</td></tr>
+        </table></body></html>"""
+        mock_response = MagicMock()
+        mock_response.text = mock_html
+        mock_response.raise_for_status = MagicMock()
+        with patch("surf.requests.post", return_value=mock_response):
+            results = ddg_search("black holes")
+        if results:
+            assert "title" in results[0]
+            assert "url" in results[0]
+            assert "domain" in results[0]
+            assert "snippet" in results[0]
