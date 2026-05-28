@@ -2,6 +2,7 @@
 from surf import load_config, detect_input_type, extract_text, fetch_page
 from surf import build_search_prompt, build_read_prompt, SEARCH_SYSTEM, READ_SYSTEM
 from surf import ddg_search
+from surf import stream_groq
 from unittest.mock import patch, MagicMock
 
 class TestDetectInputType:
@@ -180,3 +181,40 @@ class TestDdgSearch:
             assert "url" in results[0]
             assert "domain" in results[0]
             assert "snippet" in results[0]
+
+class TestStreamGroq:
+    def test_yields_strings(self):
+        mock_chunk_1 = MagicMock()
+        mock_chunk_1.choices = [MagicMock()]
+        mock_chunk_1.choices[0].delta.content = "Hello "
+        mock_chunk_2 = MagicMock()
+        mock_chunk_2.choices = [MagicMock()]
+        mock_chunk_2.choices[0].delta.content = "world"
+        mock_chunk_empty = MagicMock()
+        mock_chunk_empty.choices = [MagicMock()]
+        mock_chunk_empty.choices[0].delta.content = None
+
+        mock_stream = [mock_chunk_1, mock_chunk_2, mock_chunk_empty]
+        mock_completion = MagicMock()
+        mock_completion.__iter__ = MagicMock(return_value=iter(mock_stream))
+
+        with patch("surf.Groq") as MockGroq:
+            instance = MockGroq.return_value
+            instance.chat.completions.create.return_value = mock_completion
+            result = list(stream_groq("test prompt", "system prompt"))
+
+        assert result == ["Hello ", "world"]
+
+    def test_skips_none_content(self):
+        mock_chunk = MagicMock()
+        mock_chunk.choices = [MagicMock()]
+        mock_chunk.choices[0].delta.content = None
+        mock_completion = MagicMock()
+        mock_completion.__iter__ = MagicMock(return_value=iter([mock_chunk]))
+
+        with patch("surf.Groq") as MockGroq:
+            instance = MockGroq.return_value
+            instance.chat.completions.create.return_value = mock_completion
+            result = list(stream_groq("prompt", "system"))
+
+        assert result == []

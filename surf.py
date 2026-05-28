@@ -3,6 +3,7 @@ import re
 import os
 import requests
 from bs4 import BeautifulSoup
+from groq import Groq
 
 CONFIG_PATH = os.path.expanduser("~/.config/surf/config")
 
@@ -153,3 +154,31 @@ def ddg_search(query: str, num_results: int = 5) -> list[dict]:
             break
 
     return results
+
+GROQ_MODEL = "llama-3.3-70b-versatile"
+CLASSIFIER_MODEL = "llama-3.1-8b-instant"
+
+def stream_groq(prompt: str, system: str, model: str = GROQ_MODEL):
+    """
+    Stream a Groq completion. Yields text chunks as they arrive.
+    Loads API key from ~/.config/surf/config.
+    """
+    config = load_config()
+    api_key = config.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
+    if not api_key:
+        raise ValueError("GROQ_API_KEY not found in ~/.config/surf/config")
+
+    client = Groq(api_key=api_key)
+    stream = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        stream=True,
+        max_tokens=2048,
+    )
+    for chunk in stream:
+        content = chunk.choices[0].delta.content
+        if content:
+            yield content
