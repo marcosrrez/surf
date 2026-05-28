@@ -8,6 +8,7 @@ import subprocess
 import requests
 import atexit
 from bs4 import BeautifulSoup
+import groq
 from groq import Groq
 
 try:
@@ -339,19 +340,85 @@ def stream_groq(prompt: str, system: str, model: str = GROQ_MODEL, max_tokens: i
         raise ValueError("GROQ_API_KEY not found in ~/.config/surf/config")
 
     client = Groq(api_key=api_key)
-    stream = client.chat.completions.create(
-        model=model,
-        messages=[
+    try:
+        stream = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            stream=True,
+            max_tokens=max_tokens,
+        )
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+    except groq.RateLimitError:
+        sys.stdout.write("\r\033[33m↳ Groq daily limit reached — switching to Gemini...\033[0m\n")
+        sys.stdout.flush()
+        yield from stream_gemini(prompt, system, max_tokens)
+    except groq.APIError as e:
+        sys.stdout.write(f"\r\033[33m↳ Groq error ({e.status_code}) — switching to Gemini...\033[0m\n")
+        sys.stdout.flush()
+        yield from stream_gemini(prompt, system, max_tokens)
+
+GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+
+def stream_gemini(prompt: str, system: str, max_tokens: int = 2048):
+    """
+    Stream a Gemini completion via Google's OpenAI-compatible endpoint.
+    Used as fallback when Groq is rate-limited.
+    """
+    config = load_config()
+    api_key = config.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+    if not api_key:
+        yield "[Gemini API key not configured in ~/.config/surf/config]"
+        return
+
+    payload = {
+        "model": GEMINI_MODEL,
+        "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ],
-        stream=True,
-        max_tokens=max_tokens,
-    )
-    for chunk in stream:
-        content = chunk.choices[0].delta.content
-        if content:
-            yield content
+        "max_tokens": max_tokens,
+        "stream": True,
+    }
+
+    try:
+        r = requests.post(
+            GEMINI_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            stream=True,
+            verify=SSL_CERT,
+            timeout=30,
+        )
+        r.raise_for_status()
+
+        for line in r.iter_lines():
+            if not line:
+                continue
+            decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+            if not decoded.startswith("data: "):
+                continue
+            data = decoded[6:]
+            if data.strip() == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+                content = chunk["choices"][0]["delta"].get("content", "")
+                if content:
+                    yield content
+            except (json.JSONDecodeError, KeyError, IndexError):
+                continue
+    except Exception as e:
+        yield f"\n[Gemini error: {e}]"
 
 def _term_width() -> int:
     return min(shutil.get_terminal_size().columns, 100)
