@@ -2,7 +2,9 @@
 import re
 import os
 import sys
+import json
 import shutil
+import subprocess
 import requests
 from bs4 import BeautifulSoup
 from groq import Groq
@@ -356,3 +358,54 @@ def _handle_related_input(related: list[str]) -> None:
                 break
             else:
                 print(f"\033[90mPick a number between 1 and {len(related)}\033[0m")
+
+CLASSIFIER_SYSTEM = """You are an intent classifier. Given a user query, return ONLY a JSON object — no explanation, no markdown, no code block. Just raw JSON.
+
+Schema:
+{
+  "intent": one of: "informational" | "current_events" | "how_to" | "transactional" | "comparison" | "instant" | "navigation",
+  "sub_type": string describing the specific type (e.g. "flights", "translation", "product_price"),
+  "open_url": string URL to open directly, or null,
+  "tip": short helpful tip relevant to this query, or null,
+  "fetch_snippets": boolean — true if live web data is needed
+}
+
+Rules:
+- "instant": translation, math, definitions, conversions — answer from knowledge, no search
+- "transactional": buying, booking, reserving — construct the best deep-link URL if possible
+- "navigation": user wants to go to a specific site — set open_url to that site
+- "current_events": news, latest, today, recent — always fetch_snippets: true
+- "how_to": step-by-step instructions — fetch_snippets: true
+- "comparison": best X, vs, compare — fetch_snippets: true
+- "informational": everything else — fetch_snippets: true
+
+For transactional flights, construct Google Flights URL:
+https://www.google.com/flights#search;f=ORIGIN;t=DEST;d=YYYY-MM-DD"""
+
+_INTENT_FALLBACK = {
+    "intent": "informational",
+    "sub_type": "general",
+    "open_url": None,
+    "tip": None,
+    "fetch_snippets": True,
+}
+
+def classify_intent(query: str) -> dict:
+    """
+    Classify the user's intent using a fast small model.
+    Falls back to informational on any error.
+    """
+    try:
+        chunks = list(stream_groq(query, CLASSIFIER_SYSTEM, model=CLASSIFIER_MODEL))
+        raw = "".join(chunks).strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        return json.loads(raw)
+    except Exception:
+        return _INTENT_FALLBACK.copy()
+
+def open_in_browser(url: str) -> None:
+    """Open a URL in the system default browser (macOS)."""
+    subprocess.run(["open", url])

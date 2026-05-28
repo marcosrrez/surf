@@ -5,6 +5,8 @@ from surf import ddg_search
 from surf import stream_groq
 from surf import search_flow
 from surf import read_flow, parse_related_topics
+from surf import classify_intent, open_in_browser
+import json
 from unittest.mock import patch, MagicMock
 
 class TestDetectInputType:
@@ -268,3 +270,44 @@ class TestReadFlow:
             result = read_flow("https://nasa.gov/black-holes", interactive=False)
 
         assert "TL;DR" in result
+
+class TestClassifyIntent:
+    def test_returns_dict_with_intent_key(self):
+        fake_chunks = ['{"intent": "informational", "sub_type": "factual", "open_url": null, "tip": null, "fetch_snippets": true}']
+        with patch("surf.stream_groq", return_value=iter(fake_chunks)):
+            result = classify_intent("what is a black hole")
+        assert "intent" in result
+
+    def test_informational_query(self):
+        fake_chunks = ['{"intent": "informational", "sub_type": "factual", "open_url": null, "tip": null, "fetch_snippets": true}']
+        with patch("surf.stream_groq", return_value=iter(fake_chunks)):
+            result = classify_intent("what is a black hole")
+        assert result["intent"] == "informational"
+        assert result["fetch_snippets"] is True
+
+    def test_instant_query_no_snippets(self):
+        fake_chunks = ['{"intent": "instant", "sub_type": "translation", "open_url": null, "tip": null, "fetch_snippets": false}']
+        with patch("surf.stream_groq", return_value=iter(fake_chunks)):
+            result = classify_intent("translate hello to spanish")
+        assert result["intent"] == "instant"
+        assert result["fetch_snippets"] is False
+
+    def test_transactional_has_open_url(self):
+        fake_chunks = ['{"intent": "transactional", "sub_type": "flights", "open_url": "https://google.com/flights", "tip": "Book 6 weeks out", "fetch_snippets": false}']
+        with patch("surf.stream_groq", return_value=iter(fake_chunks)):
+            result = classify_intent("flights JFK to LAX June 15")
+        assert result["open_url"] is not None
+        assert result["tip"] is not None
+
+    def test_malformed_json_returns_informational_fallback(self):
+        fake_chunks = ["not valid json at all"]
+        with patch("surf.stream_groq", return_value=iter(fake_chunks)):
+            result = classify_intent("anything")
+        assert result["intent"] == "informational"
+        assert result["fetch_snippets"] is True
+
+class TestOpenInBrowser:
+    def test_calls_open_command(self):
+        with patch("surf.subprocess.run") as mock_run:
+            open_in_browser("https://google.com")
+            mock_run.assert_called_once_with(["open", "https://google.com"])
