@@ -38,7 +38,19 @@ def detect_input_type(text: str) -> str:
     return "query"
 
 SSL_CERT = "/etc/ssl/cert.pem"
-HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "DNT": "1",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Cache-Control": "max-age=0",
+}
 
 def fetch_page(url: str) -> str:
     """Fetch a URL and return raw HTML. Raises requests.HTTPError on bad status."""
@@ -228,10 +240,11 @@ def print_results(results: list[dict]) -> None:
     print()
     print_divider()
     for i, r in enumerate(results, 1):
+        domain_display = r['domain'].removeprefix('www.')
         print(f" \033[33m{i}\033[0m  {r['title']}")  # yellow number
-        print(f"     \033[90m{r['domain']}\033[0m")
+        print(f"     \033[90m{domain_display}\033[0m")
     print()
-    print(f"\033[90m[ 1-{len(results)} ] read full article   [ n ] new search   [ q ] quit\033[0m")
+    print(f"\033[90m[ 1-{len(results)} ] read   [ o1-o{len(results)} ] open in browser   [ n ] new search   [ q ] quit\033[0m")
 
 def print_related(related_lines: list[str]) -> None:
     """Print related topics extracted from Groq's 'Related:' section."""
@@ -261,8 +274,14 @@ def search_flow(query: str, interactive: bool = True) -> tuple[list[dict], str]:
         print("\033[90mNo results found.\033[0m")
         return [], ""
 
-    domains = " · ".join(r["domain"] for r in results[:3])
-    print_header(query, domains)
+    domains = " · ".join(r["domain"].removeprefix("www.") for r in results[:3])
+    print_header(query.capitalize(), f"{domains}  ({len(results)} results)")
+
+    news_words = {"news", "latest", "today", "war", "conflict", "update", "breaking", "live"}
+    if any(w in query.lower().split() for w in news_words):
+        from datetime import datetime
+        ts = datetime.now().strftime("%B %d, %Y %H:%M")
+        print(f"\033[90mFetched {ts}\033[0m\n")
 
     print_status("↳ asking Groq...")
     prompt = build_search_prompt(query, results)
@@ -291,6 +310,13 @@ def _handle_results_input(results: list[dict]) -> None:
             if query:
                 search_flow(query)
             break
+        elif choice.startswith("o") and choice[1:].isdigit():
+            # o1, o2, etc. — open in browser directly
+            idx = int(choice[1:]) - 1
+            if 0 <= idx < len(results):
+                open_in_browser(results[idx]["url"])
+            else:
+                print(f"\033[90mPick a number between 1 and {len(results)}\033[0m")
         elif choice.isdigit():
             idx = int(choice) - 1
             if 0 <= idx < len(results):
@@ -321,7 +347,13 @@ def read_flow(url: str, interactive: bool = True) -> str:
         html = fetch_page(url)
     except Exception as e:
         clear_status()
-        print(f"\033[31mCould not fetch page: {e}\033[0m")
+        err = str(e)
+        if "401" in err or "403" in err or "Forbidden" in err or "Unauthorized" in err:
+            print(f"\033[33m⚠ This page blocks automated access (paywall or bot protection).\033[0m")
+            print(f"\033[90mOpening in your browser instead...\033[0m")
+            open_in_browser(url)
+        else:
+            print(f"\033[31mCould not fetch page: {e}\033[0m")
         return ""
 
     title, text = extract_text(html, return_title=True)
@@ -437,12 +469,12 @@ def main():
         clear_status()
 
         if intent["intent"] == "instant":
-            print_header(query)
+            print_header(query.capitalize())
             stream = stream_groq(f"Answer this directly and concisely: {query}", SEARCH_SYSTEM)
             stream_to_terminal(stream)
 
         elif intent["intent"] == "transactional" and intent.get("open_url"):
-            print_header(query)
+            print_header(query.capitalize())
             if intent.get("tip"):
                 print(f"\033[33m▸ Tip\033[0m  {intent['tip']}\n")
             url_domain = intent["open_url"].split("/")[2] if len(intent["open_url"].split("/")) > 2 else intent["open_url"]
