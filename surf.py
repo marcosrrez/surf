@@ -474,11 +474,31 @@ def main():
             stream_to_terminal(stream)
 
         elif intent["intent"] == "transactional" and intent.get("open_url"):
-            print_header(query.capitalize())
+            # Search DDG for context
+            print_status("↳ searching for options...")
+            try:
+                results = ddg_search(query)
+            except Exception:
+                results = []
+            clear_status()
+
+            domains = " · ".join(r["domain"].removeprefix("www.") for r in results[:3])
+            print_header(query.capitalize(), domains if domains else "")
+
             if intent.get("tip"):
                 print(f"\033[33m▸ Tip\033[0m  {intent['tip']}\n")
+
+            # Stream a summary from Groq using the search results
+            if results:
+                print_status("↳ summarizing options...")
+                prompt = build_search_prompt(query, results)
+                stream = stream_groq(prompt, SEARCH_SYSTEM)
+                clear_status()
+                stream_to_terminal(stream)
+
+            # Open the browser after the summary
             url_domain = intent["open_url"].split("/")[2] if len(intent["open_url"].split("/")) > 2 else intent["open_url"]
-            print(f"\033[32mOpening {url_domain} in your browser...\033[0m")
+            print(f"\n\033[32mOpening {url_domain} to book...\033[0m")
             open_in_browser(intent["open_url"])
 
         elif intent["intent"] == "navigation" and intent.get("open_url"):
