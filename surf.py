@@ -42,7 +42,10 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    # Omit Accept-Encoding so requests uses its own transparent decompression
+    # (gzip/deflate). Advertising "br" causes DDG to return Brotli-compressed
+    # content that requests cannot decompress without the optional brotli
+    # package, resulting in garbled bytes and zero parsed results.
     "DNT": "1",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
