@@ -239,3 +239,54 @@ def print_related(related_lines: list[str]) -> None:
         print(f"  \033[33m{line}\033[0m")
     print()
     print(f"\033[90m[ 1-{len(related_lines)} ] search topic   [ q ] quit\033[0m")
+
+def search_flow(query: str, interactive: bool = True) -> tuple[list[dict], str]:
+    """
+    Run the search flow: DDG → Groq → display results.
+    Returns (results, groq_response_text).
+    """
+    print_status("↳ searching DuckDuckGo...")
+    results = ddg_search(query)
+    clear_status()
+
+    if not results:
+        print("\033[90mNo results found.\033[0m")
+        return [], ""
+
+    domains = " · ".join(r["domain"] for r in results[:3])
+    print_header(query, domains)
+
+    print_status("↳ asking Groq...")
+    prompt = build_search_prompt(query, results)
+    stream = stream_groq(prompt, SEARCH_SYSTEM)
+    clear_status()
+
+    response = stream_to_terminal(stream)
+    print_results(results)
+
+    if interactive:
+        _handle_results_input(results)
+
+    return results, response
+
+def _handle_results_input(results: list[dict]) -> None:
+    """Wait for user to pick a result number or quit."""
+    while True:
+        try:
+            choice = input("\n› ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            break
+        if choice == "q":
+            break
+        elif choice == "n":
+            query = input("New search: ").strip()
+            if query:
+                search_flow(query)
+            break
+        elif choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(results):
+                read_flow(results[idx]["url"])
+                break
+            else:
+                print(f"\033[90mPick a number between 1 and {len(results)}\033[0m")

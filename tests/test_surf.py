@@ -3,6 +3,7 @@ from surf import load_config, detect_input_type, extract_text, fetch_page
 from surf import build_search_prompt, build_read_prompt, SEARCH_SYSTEM, READ_SYSTEM
 from surf import ddg_search
 from surf import stream_groq
+from surf import search_flow
 from unittest.mock import patch, MagicMock
 
 class TestDetectInputType:
@@ -218,3 +219,23 @@ class TestStreamGroq:
             result = list(stream_groq("prompt", "system"))
 
         assert result == []
+
+class TestSearchFlow:
+    def test_returns_results_and_response(self):
+        fake_results = [
+            {"title": "Wikipedia", "url": "https://en.wikipedia.org/wiki/BH",
+             "domain": "en.wikipedia.org", "snippet": "A black hole is..."},
+        ]
+        fake_response = "▸ TL;DR  Black holes are dense.\n\nMore detail."
+
+        with patch("surf.ddg_search", return_value=fake_results), \
+             patch("surf.stream_groq", return_value=iter(["▸ TL;DR  Black holes are dense."])), \
+             patch("surf.print_header"), \
+             patch("surf.print_status"), \
+             patch("surf.clear_status"), \
+             patch("surf.stream_to_terminal", return_value=fake_response), \
+             patch("surf.print_results"):
+            results, response = search_flow("black holes", interactive=False)
+
+        assert results == fake_results
+        assert "TL;DR" in response
