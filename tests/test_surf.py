@@ -23,8 +23,41 @@ class TestDetectInputType:
     def test_multi_word_with_tld_like_word_is_query(self):
         assert detect_input_type("how does the net work") == "query"
 
+    def test_long_tld_is_url(self):
+        assert detect_input_type("example.photography") == "url"
+
 class TestLoadConfig:
-    def test_returns_api_key(self):
-        config = load_config()
+    def test_returns_api_key(self, tmp_path):
+        config_file = tmp_path / "config"
+        config_file.write_text("GROQ_API_KEY=test-key-1234567890\n")
+        import surf
+        original = surf.CONFIG_PATH
+        surf.CONFIG_PATH = str(config_file)
+        try:
+            config = surf.load_config()
+        finally:
+            surf.CONFIG_PATH = original
         assert "GROQ_API_KEY" in config
         assert len(config["GROQ_API_KEY"]) > 10
+
+    def test_returns_empty_dict_for_missing_file(self, tmp_path):
+        import surf
+        original = surf.CONFIG_PATH
+        surf.CONFIG_PATH = str(tmp_path / "nonexistent")
+        try:
+            config = surf.load_config()
+        finally:
+            surf.CONFIG_PATH = original
+        assert config == {}
+
+    def test_skips_comments_and_blank_lines(self, tmp_path):
+        config_file = tmp_path / "config"
+        config_file.write_text("# comment\n\nKEY=value\n")
+        import surf
+        original = surf.CONFIG_PATH
+        surf.CONFIG_PATH = str(config_file)
+        try:
+            config = surf.load_config()
+        finally:
+            surf.CONFIG_PATH = original
+        assert config == {"KEY": "value"}

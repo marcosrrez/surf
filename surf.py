@@ -19,7 +19,7 @@ def load_config() -> dict:
 # Matches: nasa.gov, nasa.gov/path, www.nasa.gov, http://nasa.gov
 _URL_PATTERN = re.compile(
     r'^(https?://|www\.)'         # explicit scheme or www
-    r'|^[a-zA-Z0-9-]+\.[a-zA-Z]{2,6}(/\S*)?$'  # bare domain like nasa.gov
+    r'|^[a-zA-Z0-9-]+\.[a-zA-Z]{2,13}(/\S*)?$'  # bare domain like nasa.gov
 )
 
 def detect_input_type(text: str) -> str:
