@@ -9,6 +9,83 @@ import requests
 from bs4 import BeautifulSoup
 from groq import Groq
 
+try:
+    from rich.console import Console
+    from rich.table import Table as RichTable
+
+    _rich_console = Console()
+
+    def _render_rich_tables(text: str) -> str:
+        """
+        Detect │-delimited table blocks in text, render them with rich,
+        and return the text with table blocks replaced by rendered output.
+        This is called AFTER streaming to reprint tables cleanly.
+        """
+        lines = text.split("\n")
+        result_lines = []
+        table_block = []
+        in_table = False
+
+        for line in lines:
+            is_table_row = line.strip().startswith("│") and line.strip().endswith("│")
+            if is_table_row:
+                in_table = True
+                table_block.append(line)
+            else:
+                if in_table and table_block:
+                    # Render the accumulated table block
+                    rendered = _table_block_to_rich(table_block)
+                    result_lines.append(rendered)
+                    table_block = []
+                    in_table = False
+                result_lines.append(line)
+
+        if table_block:
+            result_lines.append(_table_block_to_rich(table_block))
+
+        return "\n".join(result_lines)
+
+    def _table_block_to_rich(rows: list[str]) -> str:
+        """Convert a list of │-delimited row strings to a rich-rendered table string."""
+        import io
+        parsed = []
+        for row in rows:
+            # Split on │, strip whitespace, drop empty first/last from leading/trailing │
+            cells = [c.strip() for c in row.split("│")]
+            cells = [c for c in cells if c != ""]
+            if cells:
+                parsed.append(cells)
+
+        if not parsed:
+            return "\n".join(rows)
+
+        # First row is the header if it differs from subsequent rows
+        headers = parsed[0]
+        data_rows = parsed[1:]
+
+        table = RichTable(show_header=True, header_style="bold cyan", border_style="dim")
+        for h in headers:
+            table.add_column(h)
+        for row in data_rows:
+            # Pad or truncate to match header count
+            padded = row + [""] * max(0, len(headers) - len(row))
+            table.add_row(*padded[:len(headers)])
+
+        # Capture rich output to a string
+        buf = io.StringIO()
+        console = Console(file=buf, highlight=False)
+        console.print(table)
+        return buf.getvalue().rstrip()
+
+except ImportError:
+    _rich_console = None
+
+    def _render_rich_tables(text: str) -> str:
+        return text
+
+    def _table_block_to_rich(rows: list[str]) -> str:
+        return "\n".join(rows)
+
 CONFIG_PATH = os.path.expanduser("~/.config/surf/config")
 
 def load_config() -> dict:
@@ -110,10 +187,18 @@ FULL_ARTICLE_SYSTEM = """You are a precise article formatter. Given a webpage's 
 
 Format rules:
 - Preserve every section, statistic, and fact from the original
-- Format tables as clean ASCII tables with aligned columns using │ and ─ characters
+- Format tables using clean space-aligned columns with a ─── separator line under headers:
+
+  Example table format:
+  Team               Days at Top
+  ────────────────────────────
+  Arsenal            238
+  Liverpool           34
+  Manchester City      9
+
 - Use section headers in ALL CAPS followed by a blank line
-- Preserve all bullet points and lists
-- Clean up HTML artifacts (duplicate words, navigation text, cookie banners)
+- Preserve all bullet points using •
+- Clean up HTML artifacts (navigation text, cookie banners, share buttons)
 - Do NOT add commentary, analysis, or your own words
 - Do NOT add "Related:" or topic suggestions at the end
 
@@ -373,17 +458,32 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
         # empty input: loop again
 
 def _handle_followup(question: str, context: str = "") -> None:
-    """Answer a follow-up question grounded in the current context."""
-    print_status("↳ thinking...")
-    if context:
-        prompt = f"Context from the current article/search:\n{context[:4000]}\n\nQuestion: {question}"
-        system = FOLLOWUP_SYSTEM
-    else:
-        prompt = question
-        system = SEARCH_SYSTEM
-    stream = stream_groq(prompt, system)
+    """Answer a follow-up question using web search + article context."""
+    # Search DDG for fresh perspectives on the question
+    print_status("↳ searching for perspectives...")
+    try:
+        search_results = ddg_search(question)
+    except Exception:
+        search_results = []
     clear_status()
-    print_header(question.capitalize())
+
+    domains = " · ".join(r["domain"].removeprefix("www.") for r in search_results[:3]) if search_results else ""
+    print_header(question.capitalize(), domains)
+
+    # Build prompt combining article context + web snippets
+    prompt_parts = []
+    if context:
+        prompt_parts.append(f"Article context (already read):\n{context[:2000]}")
+    if search_results:
+        snippets = ""
+        for i, r in enumerate(search_results, 1):
+            snippets += f"[{i}] {r['title']} ({r['domain']})\n{r['snippet']}\n\n"
+        prompt_parts.append(f"Web search results for '{question}':\n{snippets}")
+    prompt_parts.append(f"Question: {question}")
+    prompt = "\n\n".join(prompt_parts)
+
+    # Use SEARCH_SYSTEM so it properly cites sources from web results
+    stream = stream_groq(prompt, SEARCH_SYSTEM)
     stream_to_terminal(stream)
 
 def parse_related_topics(text: str) -> list[str]:
