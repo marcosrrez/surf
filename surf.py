@@ -1402,11 +1402,16 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     Returns (results, groq_response_text).
     """
     ddg_query = _enrich_ddg_query(query)
+    tier = _classify_tier(query)   # ← ADD
     print_status(f"↳ searching: \"{ddg_query[:55]}\"...")
     try:
         results = ddg_search(ddg_query)
-        if _needs_multi_search(query) and results:
-            alt_query = f"{ddg_query} analysis expert opinion"
+        if tier in ("research", "contested") and results:
+            alt_query = (
+                f"{ddg_query} analysis expert opinion"
+                if tier == "research"
+                else f"{ddg_query} alternative perspective drawbacks"
+            )
             try:
                 alt_results = ddg_search(alt_query, num_results=3)
                 # Merge, dedup by domain
@@ -1458,17 +1463,51 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         ts = datetime.now().strftime("%B %d, %Y %H:%M")
         print(f"\033[90mFetched {ts}\033[0m\n")
 
-    print_status("↳ thinking...")
-    prompt = build_search_prompt(query, results)
-    # Prepend session context so the model can use what it already learned this session
+    # Adaptive confidence gate — may escalate tier based on snippet quality
+    tier = _confidence_gate(query, results, tier)
+
+    # Build base prompt (used by all tiers)
+    base_prompt = build_search_prompt(query, results)
     session_ctx = format_session_context()
     if session_ctx:
-        prompt = f"{session_ctx}\n\n{prompt}"
-    _t0 = time.time()
-    stream = stream_ai(prompt, SEARCH_SYSTEM)
-    clear_status()
+        base_prompt = f"{session_ctx}\n\n{base_prompt}"
 
-    response = stream_to_terminal(stream)
+    _t0 = time.time()
+
+    if tier in ("current", "research", "contested"):
+        # Deep path: fetch real article content
+        print_status("↳ thinking...")
+        deep_content, deep_sources = _deep_research(query, tier, results, ddg_query)
+
+        if deep_content:
+            source_count = len(deep_sources)
+            print_status(f"↳ synthesizing {source_count} source{'s' if source_count != 1 else ''}...")
+            prompt = base_prompt + f"\n\nFull article content from {source_count} source(s):\n{deep_content}"
+            system = {
+                "current":   SEARCH_SYSTEM_CURRENT,
+                "research":  SEARCH_SYSTEM_RESEARCH,
+                "contested": SEARCH_SYSTEM_CONTESTED,
+            }[tier]
+        else:
+            # All reads failed — fall back to snippet path gracefully
+            prompt = base_prompt
+            system = SEARCH_SYSTEM
+            deep_sources = []
+
+        clear_status()
+        stream = stream_ai(prompt, system)
+        response = stream_to_terminal(stream)
+
+        # Use deep_sources for the linked sources line if available
+        if deep_sources:
+            results = deep_sources + [r for r in results if r not in deep_sources][:2]
+    else:
+        # Snippet path (fast — existing behavior)
+        print_status("↳ thinking...")
+        clear_status()
+        stream = stream_ai(base_prompt, SEARCH_SYSTEM)
+        response = stream_to_terminal(stream)
+
     _elapsed = time.time() - _t0
 
     # If response contains uncertainty signals, fetch the top result to verify

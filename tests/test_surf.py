@@ -445,3 +445,63 @@ class TestDeepResearch:
              patch("surf._is_spa_shell", return_value=False):
             content, sources = _deep_research("query", "current", results)
         assert sources == []
+
+
+from surf import search_flow
+from unittest.mock import patch
+
+class TestSearchFlowTiers:
+    def _fake_results(self):
+        return [{"title": "T", "url": "https://espn.com/1", "domain": "espn.com",
+                 "snippet": "PSG vs Arsenal Champions League 2026 final prediction"}]
+
+    def test_deep_research_called_for_current_tier(self):
+        with patch("surf.ddg_search", return_value=self._fake_results()), \
+             patch("surf._classify_tier", return_value="current"), \
+             patch("surf._confidence_gate", return_value="current"), \
+             patch("surf._deep_research", return_value=("deep content", self._fake_results())) as mock_deep, \
+             patch("surf.stream_ai", return_value=iter(["▸ TL;DR  PSG win."])), \
+             patch("surf.stream_to_terminal", return_value="▸ TL;DR  PSG win."), \
+             patch("surf.print_header"), patch("surf.print_status"), \
+             patch("surf.clear_status"), patch("surf._print_linked_sources"), \
+             patch("surf.print_results"), patch("surf.save_session_entry"), \
+             patch("surf.format_session_context", return_value=""):
+            search_flow("who will win the UCL", interactive=False)
+        mock_deep.assert_called_once()
+
+    def test_deep_research_not_called_for_snippet_tier(self):
+        with patch("surf.ddg_search", return_value=self._fake_results()), \
+             patch("surf._classify_tier", return_value="snippet"), \
+             patch("surf._confidence_gate", return_value="snippet"), \
+             patch("surf._deep_research") as mock_deep, \
+             patch("surf.stream_ai", return_value=iter(["▸ TL;DR  Jane Austen."])), \
+             patch("surf.stream_to_terminal", return_value="▸ TL;DR  Jane Austen."), \
+             patch("surf.print_header"), patch("surf.print_status"), \
+             patch("surf.clear_status"), patch("surf._print_linked_sources"), \
+             patch("surf.print_results"), patch("surf.save_session_entry"), \
+             patch("surf.format_session_context", return_value=""):
+            search_flow("who wrote Pride and Prejudice", interactive=False)
+        mock_deep.assert_not_called()
+
+    def test_tier_specific_system_prompt_used(self):
+        from surf import SEARCH_SYSTEM_CURRENT, SEARCH_SYSTEM
+        captured_system = []
+
+        def capture_stream(prompt, system, max_tokens=2048):
+            captured_system.append(system)
+            return iter(["▸ TL;DR  answer."])
+
+        with patch("surf.ddg_search", return_value=self._fake_results()), \
+             patch("surf._classify_tier", return_value="current"), \
+             patch("surf._confidence_gate", return_value="current"), \
+             patch("surf._deep_research", return_value=("deep content", self._fake_results())), \
+             patch("surf.stream_ai", side_effect=capture_stream), \
+             patch("surf.stream_to_terminal", return_value="▸ TL;DR  answer."), \
+             patch("surf.print_header"), patch("surf.print_status"), \
+             patch("surf.clear_status"), patch("surf._print_linked_sources"), \
+             patch("surf.print_results"), patch("surf.save_session_entry"), \
+             patch("surf.format_session_context", return_value=""):
+            search_flow("who will win the UCL", interactive=False)
+
+        assert captured_system[0] == SEARCH_SYSTEM_CURRENT
+        assert captured_system[0] != SEARCH_SYSTEM
