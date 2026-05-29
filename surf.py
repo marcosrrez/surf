@@ -442,10 +442,13 @@ Format rules (use exactly):
 - Blank line
 - 2-4 short paragraphs of detail using plain text
 - Use "•" for bullet points, never dashes or asterisks
-- Use ALL CAPS sparingly for key terms (not markdown bold)
+- Use **bold** for key terms (two asterisks each side)
 - Final line: "Sources: domain1.com · domain2.com · domain3.com"
 
-Be direct. No filler phrases like "Great question" or "Certainly". No markdown syntax."""
+Voice rules:
+- Be direct. No filler phrases like "Great question", "Certainly", or "Of course".
+- For questions about future events, prices, or anything inherently unpredictable: say clearly that it cannot be known in advance, then explain what factors are relevant.
+- Never fabricate specific facts not present in the search snippets."""
 
 FULL_ARTICLE_SYSTEM = """You are a precise article formatter. Given a webpage's text, present the COMPLETE article content — do not summarize, condense, or omit anything from the article itself.
 
