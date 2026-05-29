@@ -30,6 +30,12 @@ except ImportError:
     _HAS_PROMPT_TOOLKIT = False
 
 try:
+    from ddgs import DDGS
+    _HAS_DDGS = True
+except ImportError:
+    _HAS_DDGS = False
+
+try:
     from rich.console import Console
     from rich.table import Table as RichTable
 
@@ -202,7 +208,7 @@ def fetch_page(url: str) -> str:
     """Fetch a URL and return raw HTML. Raises requests.HTTPError on bad status."""
     if not url.startswith("http"):
         url = "https://" + url
-    r = requests.get(url, headers=HEADERS, verify=SSL_CERT, timeout=15)
+    r = requests.get(url, headers=HEADERS, verify=SSL_CERT, timeout=25)
     r.raise_for_status()
     return r.text
 
@@ -315,6 +321,18 @@ def _is_spa_shell(html: str) -> bool:
     soup = BeautifulSoup(html, "html.parser")
     body_text = soup.get_text(strip=True)
     return has_module_script and len(body_text) < 500
+
+_UNCERTAINTY_SIGNALS = [
+    "to be confirmed", "to be determined", "tbd", "yet to be announced",
+    "not yet confirmed", "not yet announced", "will be confirmed",
+    "will be determined", "has not been announced", "have not been announced",
+    "remains to be", "is yet to", "are yet to",
+]
+
+def _has_uncertainty(text: str) -> bool:
+    """Return True if response contains stale/uncertain data signals."""
+    text_lower = text.lower()
+    return any(signal in text_lower for signal in _UNCERTAINTY_SIGNALS)
 
 def _fetch_with_jina(url: str) -> str:
     """
@@ -501,10 +519,26 @@ def build_read_prompt(title: str, text: str) -> str:
 DDG_URL = "https://lite.duckduckgo.com/lite/"
 
 def ddg_search(query: str, num_results: int = 5) -> list[dict]:
-    """
-    Search DuckDuckGo Lite and return list of {title, url, domain, snippet}.
-    DDG Lite returns simple HTML — no JS required.
-    """
+    """Search DuckDuckGo and return list of {title, url, domain, snippet}."""
+    from urllib.parse import urlparse
+
+    if _HAS_DDGS:
+        with DDGS() as ddgs:
+            raw = list(ddgs.text(query, max_results=num_results))
+        results = []
+        for r in raw:
+            url = r.get("href", "")
+            parsed = urlparse(url)
+            domain = parsed.netloc.removeprefix("www.") if parsed.netloc else url.split("/")[0]
+            results.append({
+                "title": r.get("title", ""),
+                "url": url,
+                "domain": domain,
+                "snippet": r.get("body", ""),
+            })
+        return results
+
+    # Fallback: scrape DDG Lite directly
     r = requests.post(
         DDG_URL,
         data={"q": query},
@@ -520,10 +554,10 @@ def ddg_search(query: str, num_results: int = 5) -> list[dict]:
     snippets_els = soup.find_all("td", class_="result-snippet")
 
     for link, snippet_el in zip(links, snippets_els):
+        from urllib.parse import unquote, parse_qs
         href = link.get("href", "")
         actual_url = href
         if href:
-            from urllib.parse import unquote, urlparse, parse_qs
             parsed = urlparse(href)
             uddg = parse_qs(parsed.query).get("uddg", [])
             if uddg:
@@ -575,11 +609,11 @@ def stream_groq(prompt: str, system: str, model: str = GROQ_MODEL, max_tokens: i
             if content:
                 yield content
     except groq.RateLimitError:
-        sys.stdout.write("\r\033[33m↳ Groq daily limit reached — switching to Cerebras...\033[0m\n")
+        sys.stdout.write("\r\033[90m↳ using Cerebras\033[0m\n")
         sys.stdout.flush()
         yield from stream_cerebras(prompt, system, max_tokens)
-    except groq.APIError as e:
-        sys.stdout.write(f"\r\033[33m↳ Groq error — switching to Cerebras...\033[0m\n")
+    except groq.APIError:
+        sys.stdout.write("\r\033[90m↳ using Cerebras\033[0m\n")
         sys.stdout.flush()
         yield from stream_cerebras(prompt, system, max_tokens)
 
@@ -637,8 +671,79 @@ def stream_cerebras(prompt: str, system: str, max_tokens: int = 2048):
                     yield content
             except (json.JSONDecodeError, KeyError, IndexError):
                 continue
-    except Exception as e:
-        yield f"\n[Cerebras error: {e}]"
+    except requests.exceptions.HTTPError as e:
+        code = e.response.status_code if e.response is not None else 0
+        if code == 429:
+            sys.stdout.write("\r\033[90m↳ using Gemini\033[0m\n")
+            sys.stdout.flush()
+            yield from stream_gemini(prompt, system, max_tokens)
+        elif code in (401, 403):
+            yield "\033[33m↳ Cerebras auth failed — check CEREBRAS_API_KEY\033[0m"
+        else:
+            sys.stdout.write(f"\r\033[90m↳ Cerebras error ({code}) — using Gemini\033[0m\n")
+            sys.stdout.flush()
+            yield from stream_gemini(prompt, system, max_tokens)
+    except Exception:
+        sys.stdout.write("\r\033[90m↳ using Gemini\033[0m\n")
+        sys.stdout.flush()
+        yield from stream_gemini(prompt, system, max_tokens)
+
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:streamGenerateContent"
+
+def stream_gemini(prompt: str, system: str, max_tokens: int = 2048):
+    """Stream a Gemini completion. Tertiary fallback after Cerebras."""
+    config = load_config()
+    api_key = config.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+    if not api_key:
+        yield "\033[33m↳ Gemini API key not configured in ~/.config/surf/config\033[0m"
+        return
+
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "systemInstruction": {"parts": [{"text": system}]},
+        "generationConfig": {"maxOutputTokens": max_tokens},
+    }
+    try:
+        r = requests.post(
+            GEMINI_ENDPOINT,
+            params={"key": api_key, "alt": "sse"},
+            headers={"Content-Type": "application/json"},
+            json=payload,
+            stream=True,
+            verify=SSL_CERT,
+            timeout=30,
+        )
+        r.raise_for_status()
+        for line in r.iter_lines():
+            if not line:
+                continue
+            decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+            if not decoded.startswith("data: "):
+                continue
+            data = decoded[6:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+                parts = chunk.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                for part in parts:
+                    text = part.get("text", "")
+                    if text:
+                        yield text
+            except (json.JSONDecodeError, KeyError, IndexError):
+                continue
+    except requests.exceptions.HTTPError as e:
+        code = e.response.status_code if e.response is not None else 0
+        if code == 429:
+            yield "\033[33m↳ Gemini rate limit hit. Try again shortly.\033[0m"
+        elif code in (401, 403):
+            yield "\033[33m↳ Gemini auth failed — check GEMINI_API_KEY\033[0m"
+        else:
+            yield f"\033[33m↳ Gemini error ({code}).\033[0m"
+    except Exception:
+        yield "\033[33m↳ Gemini unavailable.\033[0m"
+
 
 class Spinner:
     """Animated braille spinner for the thinking phase."""
@@ -671,13 +776,21 @@ class Spinner:
 def _term_width() -> int:
     return min(shutil.get_terminal_size().columns, 100)
 
+_BOLD_RE = re.compile(r'\*\*(.+?)\*\*')
+
 def print_header(title: str, meta: str = "") -> None:
-    """Print a Kagi-style header bar."""
+    """Print a Kagi-style header bar. Truncates long titles with … rather than wrapping."""
     width = _term_width()
-    bar = "━" * max(0, width - len(title) - 4)
-    print(f"\n\033[35m━━ {title} {bar}\033[0m")  # purple
+    max_title = width - 5  # room for "━━ " prefix and one trailing char
+    if len(title) > max_title:
+        title = title[:max_title - 1] + "…"
+        line = f"━━ {title}"
+    else:
+        bar = "━" * max(0, width - len(title) - 4)
+        line = f"━━ {title} {bar}" if bar else f"━━ {title}"
+    print(f"\n\033[35m{line}\033[0m")
     if meta:
-        print(f"\033[90m{meta}\033[0m")           # gray
+        print(f"\033[90m{meta}\033[0m")
     print()
 
 def print_status(message: str) -> None:
@@ -691,25 +804,33 @@ def clear_status() -> None:
     sys.stdout.flush()
 
 def stream_to_terminal(stream) -> str:
-    """Stream Groq output to terminal with word-aware line wrapping. Returns full text."""
+    """Stream output with word-aware wrapping, TL;DR styling, bold, and bullet indent."""
     width = _term_width()
     accumulated = ""
     col = 0
     word_buf = ""
+    blank_lines = 0       # consecutive blank lines seen
+    in_tldr_line = False  # currently on the ▸ TL;DR line
+    tldr_done = False     # TL;DR line has been output
+    in_bold = False       # inside a **...** span
 
     def flush_word():
         nonlocal col, word_buf
         if not word_buf:
             return
-        if col > 0 and col + len(word_buf) > width:
+        vis_len = len(word_buf)
+        if col > 0 and col + vis_len > width:
             sys.stdout.write("\n")
             sys.stdout.flush()
             col = 0
-        # Output character by character — the "alive" feeling
-        for char in word_buf:
-            sys.stdout.write(char)
-            sys.stdout.flush()
-        col += len(word_buf)
+        if in_tldr_line:
+            # Force bright-white bold regardless of current state
+            sys.stdout.write(f"\033[1;97m{word_buf}\033[0m")
+        else:
+            # Output raw — inherits current terminal bold state from ** toggles
+            sys.stdout.write(word_buf)
+        sys.stdout.flush()
+        col += vis_len
         word_buf = ""
 
     for chunk in stream:
@@ -717,8 +838,19 @@ def stream_to_terminal(stream) -> str:
         for char in chunk:
             if char == "\n":
                 flush_word()
-                sys.stdout.write("\n")
-                sys.stdout.flush()
+                if in_tldr_line:
+                    sys.stdout.write("\033[0m")
+                    in_tldr_line = False
+                # Collapse consecutive blank lines to at most one
+                if col == 0:
+                    blank_lines += 1
+                    if blank_lines <= 1:
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                else:
+                    blank_lines = 0
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
                 col = 0
             elif char == " ":
                 flush_word()
@@ -729,10 +861,34 @@ def stream_to_terminal(stream) -> str:
                 flush_word()
                 sys.stdout.write("  ")
                 col += 2
+            elif char == "*" and word_buf.endswith("*"):
+                # Second consecutive * — this is a ** bold toggle
+                word_buf = word_buf[:-1]  # strip the pending single *
+                flush_word()
+                in_bold = not in_bold
+                sys.stdout.write("\033[1m" if in_bold else "\033[22m")
+                sys.stdout.flush()
             else:
                 word_buf += char
+                blank_lines = 0
+                # Detect TL;DR line: response opens with ▸
+                if not tldr_done and col == 0 and word_buf == "▸":
+                    sys.stdout.write("\033[36m▸\033[0m")
+                    sys.stdout.flush()
+                    col += 1
+                    word_buf = ""
+                    in_tldr_line = True
+                    tldr_done = True
+                # Bullet indent: 2 spaces before • at line start
+                elif col == 0 and word_buf == "•":
+                    sys.stdout.write("  ")
+                    col += 2
 
     flush_word()
+    if in_tldr_line:
+        sys.stdout.write("\033[0m")
+    if in_bold:
+        sys.stdout.write("\033[22m")
     sys.stdout.write("\n")
     sys.stdout.flush()
     return accumulated
@@ -749,7 +905,9 @@ def print_results(results: list[dict]) -> None:
         print(f" \033[33m{i}\033[0m  {r['title']}")  # yellow number
         print(f"     \033[90m{domain_display}\033[0m")
     print()
-    print(f"\033[90m[ 1-{len(results)} ] full article   [ s1-s{len(results)} ] summary   [ o1-o{len(results)} ] browser   [ n ] new search   [ q ] quit\033[0m")
+    n = len(results)
+    print(f"\033[90m  read: 1–{n}   summary: s1–s{n}   browser: o1–o{n}\033[0m")
+    print(f"\033[90m  new: n        quit: q\033[0m")
 
 def print_related(related_lines: list[str]) -> None:
     """Print related topics extracted from Groq's 'Related:' section."""
@@ -812,6 +970,27 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
                         seen_domains.add(r["domain"])
             except Exception:
                 pass
+
+        # For news/current-events queries, explicitly check authoritative news sources
+        # — only when main results lack them, using a single combined query to minimize DDG hits
+        news_signals = ["news", "latest", "today", "2026", "breaking", "current", "update"]
+        is_news_query = any(s in query.lower() for s in news_signals)
+        auth_news_domains = ("reuters.com", "apnews.com", "bbc.com",
+                             "bloomberg.com", "wsj.com", "nytimes.com")
+        already_has_auth = any(
+            any(a in r.get("domain", "") for a in auth_news_domains)
+            for r in (results or [])
+        )
+        if is_news_query and results is not None and not already_has_auth:
+            try:
+                targeted = ddg_search(f"reuters bbc apnews {query}", num_results=4)
+                seen = {r["domain"] for r in results}
+                for r in targeted:
+                    if r["domain"] not in seen:
+                        results.append(r)
+                        seen.add(r["domain"])
+            except Exception:
+                pass
     except Exception as e:
         clear_status()
         print(f"\033[31mSearch failed: {e}\033[0m")
@@ -834,10 +1013,39 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
 
     print_status("↳ asking Groq...")
     prompt = build_search_prompt(query, results)
+    _t0 = time.time()
     stream = stream_groq(prompt, SEARCH_SYSTEM)
     clear_status()
 
     response = stream_to_terminal(stream)
+    _elapsed = time.time() - _t0
+
+    # If response contains uncertainty signals, fetch the top result to verify
+    if _has_uncertainty(response) and results:
+        top_url = results[0].get("url", "")
+        if top_url and top_url.startswith("http"):
+            print_status("↳ answer uncertain — verifying from source...")
+            try:
+                page_html = fetch_page(top_url)
+                if _is_spa_shell(page_html):
+                    page_content = _fetch_with_jina(top_url)
+                else:
+                    _, page_content = extract_text(page_html, max_words=2000, return_title=True)
+                if page_content and len(page_content) > 200:
+                    # Re-ask Groq with the actual page content
+                    verify_prompt = (
+                        f"Original search snippets gave an uncertain answer about: {query}\n\n"
+                        f"Here is the actual current content from {results[0].get('domain', 'the top source')}:\n"
+                        f"{page_content[:3000]}\n\n"
+                        f"Please provide the correct, definitive answer with specific facts. "
+                        f"If the venue, date, or any key fact was listed as TBD in the earlier answer, correct it now."
+                    )
+                    clear_status()
+                    print(f"\n\033[90m↳ verifying from {results[0].get('domain', 'source')}...\033[0m")
+                    verify_stream = stream_groq(verify_prompt, SEARCH_SYSTEM)
+                    response = stream_to_terminal(verify_stream)
+            except Exception:
+                clear_status()
 
     # Save to session memory
     # Extract a brief summary: first 200 chars of response after TL;DR
@@ -851,6 +1059,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         _output_json(query, response, sources, intent="search")
         return results, response
 
+    print(f"\033[90m↳ {_elapsed:.1f}s\033[0m")
     print_results(results)
 
     if interactive:
@@ -939,7 +1148,8 @@ def _handle_followup(question: str, context: str = "") -> None:
     # Generate a context-aware search query so "how much does he charge?"
     # becomes "Marcos Gutierrez therapist fees marcosgutierrezcounseling.com"
     search_query = _contextualize_query(question, context)
-    entity_type = _identify_entity_type(context)
+    # Identify entity type from both context and the question itself
+    entity_type = _identify_entity_type(context) or _identify_entity_type(question)
     if entity_type:
         print_status(f"↳ searching {entity_type} sources for: \"{search_query[:40]}\"...")
     else:
@@ -1025,6 +1235,8 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
             print(f"\033[33m⚠ This page blocks automated access (paywall or bot protection).\033[0m")
             print(f"\033[90mOpening in your browser instead...\033[0m")
             open_in_browser(url)
+        elif "timed out" in err or "timeout" in err.lower() or "TimeoutError" in err:
+            print(f"\033[33m⚠ {domain_display} timed out. Use [ o ] to open in browser.\033[0m")
         else:
             print(f"\033[31mCould not fetch page: {e}\033[0m")
         return ""
@@ -1357,6 +1569,8 @@ def _identify_entity_type(text: str) -> str | None:
         "company": ["founded", "headquarters", "employees", "revenue", "ceo", "startup"],
         "medical": ["symptoms", "treatment", "diagnosis", "clinical", "study", "patients"],
         "finance": ["stock", "shares", "earnings", "market cap", "dividend", "sec filing"],
+        "news": ["latest news", "breaking news", "today", "this week", "2026",
+                 "current events", "what happened", "update", "announced", "released"],
     }
     best_match = None
     best_score = 0
