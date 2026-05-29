@@ -214,10 +214,11 @@ _VALUABLE_PAGE_KEYWORDS = {
     "faq", "info", "team", "staff", "appointment", "book", "schedule",
 }
 
-def _fetch_sub_pages(html: str, base_url: str, max_pages: int = 3) -> str:
+def _fetch_sub_pages(html: str, base_url: str, max_pages: int = 3) -> tuple[str, list[str]]:
     """
     Extract internal links from the page, fetch sub-pages that look valuable
-    (contact, rates, fees, about, services), and return their combined text.
+    (contact, rates, fees, about, services).
+    Returns (combined_text, list_of_fetched_page_labels).
     """
     from urllib.parse import urljoin, urlparse
     soup = BeautifulSoup(html, "html.parser")
@@ -237,7 +238,7 @@ def _fetch_sub_pages(html: str, base_url: str, max_pages: int = 3) -> str:
         path = parsed.path.lower()
         link_text = a.get_text(strip=True).lower()
         if any(kw in path or kw in link_text for kw in _VALUABLE_PAGE_KEYWORDS):
-            candidate_links.append((link_text or path, full_url))
+            candidate_links.append((link_text or path.strip("/"), full_url))
 
     # Deduplicate by URL
     seen = set()
@@ -247,18 +248,22 @@ def _fetch_sub_pages(html: str, base_url: str, max_pages: int = 3) -> str:
             seen.add(url)
             unique_links.append((text, url))
 
-    # Fetch up to max_pages
+    # Fetch up to max_pages, track what we successfully read
     extra_texts = []
+    fetched_labels = []
     for link_text, page_url in unique_links[:max_pages]:
         try:
             page_html = fetch_page(page_url)
             _, page_text = extract_text(page_html, max_words=800, return_title=True)
             if page_text.strip():
                 extra_texts.append(f"\n\n--- {link_text} ({page_url}) ---\n{page_text.strip()}")
+                # Use a short readable label: prefer link text, fall back to path segment
+                label = link_text.split("/")[-1].strip() or link_text
+                fetched_labels.append(label[:20])
         except Exception:
             continue
 
-    return "".join(extra_texts)
+    return "".join(extra_texts), fetched_labels
 
 
 SEARCH_SYSTEM = """You are a precise research assistant answering questions using search result snippets.
@@ -800,8 +805,9 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True) -> st
     title, text = extract_text(html, return_title=True)
 
     # Fetch relevant sub-pages (contact, rates, about) and append their content
+    sub_labels = []
     try:
-        sub_page_text = _fetch_sub_pages(html, url)
+        sub_page_text, sub_labels = _fetch_sub_pages(html, url)
         if sub_page_text:
             text = text + sub_page_text
     except Exception:
@@ -809,6 +815,13 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True) -> st
 
     domain = url.replace("https://", "").replace("http://", "").split("/")[0]
     print_header(title or url, domain)
+
+    # Show transparency line: what was actually read
+    if sub_labels:
+        label_str = ", ".join(sub_labels)
+        print(f"\033[90m↳ read {domain} + {len(sub_labels)} sub-page{'s' if len(sub_labels) != 1 else ''} ({label_str})\033[0m\n")
+    else:
+        print(f"\033[90m↳ read {domain}\033[0m\n")
 
     if not ai_summary:
         # Full article mode — Groq formats everything, no summarizing
