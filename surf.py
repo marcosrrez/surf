@@ -1140,17 +1140,72 @@ def _output_json(query: str, response: str, sources: list[str],
         "sources": sources,
     }, ensure_ascii=False, indent=2))
 
+_TEMPORAL_SIGNALS = {
+    "will", "who will", "who wins", "winner", "predict", "prediction",
+    "odds", "chance", "favorite", "favourite", "expect", "likely",
+    "latest", "current", "today", "this week", "this month", "this year",
+    "right now", "at the moment", "upcoming", "next", "soon",
+}
+
+
+def _enrich_ddg_query(user_query: str) -> str:
+    """
+    Improve DDG search relevance for time-sensitive queries.
+
+    Two passes:
+    1. If the query has temporal/predictive signals and lacks the current year,
+       append it — "who will win the UCL" → "who will win the UCL 2026".
+    2. If session context has relevant facts, use the fast classifier to generate
+       a more specific search string — context "PSG vs Arsenal final" turns
+       "who will win" into "PSG Arsenal Champions League final 2026 predictions".
+    """
+    year = time.strftime("%Y")
+    q_lower = user_query.lower()
+
+    # Pass 1: temporal year injection (zero cost)
+    is_temporal = any(s in q_lower for s in _TEMPORAL_SIGNALS)
+    enriched = user_query
+    if is_temporal and year not in user_query:
+        enriched = f"{user_query} {year}"
+
+    # Pass 2: session-context-aware query generation (one fast classifier call)
+    session_ctx = format_session_context()
+    if session_ctx and is_temporal:
+        prompt = (
+            f"Today is {time.strftime('%B %d, %Y')}.\n\n"
+            f"The user asked: \"{user_query}\"\n\n"
+            f"What they've already searched this session:\n{session_ctx[:600]}\n\n"
+            f"Generate a precise web search query (max 8 words) that will find "
+            f"today's relevant results — include specific names, the year, and "
+            f"any known context. Output ONLY the search query, no quotes, no explanation."
+        )
+        try:
+            chunks = list(stream_groq(
+                prompt,
+                "You are a search query optimizer. Output only a concise search query. Maximum 8 words.",
+                model=CLASSIFIER_MODEL,
+                max_tokens=20,
+            ))
+            generated = "".join(chunks).strip().strip('"').strip("'")
+            if generated and 5 < len(generated) < 100:
+                return generated
+        except Exception:
+            pass
+
+    return enriched
+
+
 def search_flow(query: str, interactive: bool = True, json_output: bool = False) -> tuple[list[dict], str]:
     """
     Run the search flow: DDG → Groq → display results.
     Returns (results, groq_response_text).
     """
-    print_status(f"↳ searching: \"{query[:50]}\"...")
+    ddg_query = _enrich_ddg_query(query)
+    print_status(f"↳ searching: \"{ddg_query[:55]}\"...")
     try:
-        results = ddg_search(query)
+        results = ddg_search(ddg_query)
         if _needs_multi_search(query) and results:
-            # Second search with a different angle for complex queries
-            alt_query = f"{query} analysis expert opinion"
+            alt_query = f"{ddg_query} analysis expert opinion"
             try:
                 alt_results = ddg_search(alt_query, num_results=3)
                 # Merge, dedup by domain
@@ -1174,7 +1229,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         )
         if is_news_query and results is not None and not already_has_auth:
             try:
-                targeted = ddg_search(f"reuters bbc apnews {query}", num_results=4)
+                targeted = ddg_search(f"reuters bbc apnews {ddg_query}", num_results=4)
                 seen = {r["domain"] for r in results}
                 for r in targeted:
                     if r["domain"] not in seen:
