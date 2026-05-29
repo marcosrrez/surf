@@ -1147,6 +1147,84 @@ _TEMPORAL_SIGNALS = {
     "right now", "at the moment", "upcoming", "next", "soon",
 }
 
+SEARCH_TIER_SIGNALS = {
+    "current": {
+        " will ", "who will", "predict", "prediction", "odds", "chance",
+        "favorite", "favourite", " expect", "likely", "latest", "current ",
+        " today", "this week", "this month", "upcoming", " next ", " soon",
+        "winner", "who wins", "going to win", "going to beat", "forecast",
+    },
+    "research": {
+        "how does", "how do ", "why does", "why do ", "why is ", "why are ",
+        "explain ", "what causes", "how to ", "what is the difference",
+        "what makes", "how come", "mechanism", "what happens when",
+    },
+    "contested": {
+        " best ", " vs ", " versus ", "compare", "should i ", "worth it",
+        "better than", "recommend", "which is better", "which should",
+        "pros and cons", "advantages", "disadvantages",
+    },
+}
+
+SOURCE_HIERARCHY = {
+    "sports":   ["espn.com", "bbc.com/sport", "theathletic.com", "skysports.com",
+                 "uefa.com", "nfl.com", "nba.com", "mlb.com"],
+    "finance":  ["bloomberg.com", "ft.com", "wsj.com", "reuters.com", "cnbc.com",
+                 "marketwatch.com"],
+    "tech":     ["arstechnica.com", "wired.com", "techcrunch.com", "theverge.com",
+                 "zdnet.com", "9to5mac.com"],
+    "medical":  ["mayoclinic.org", "pubmed.ncbi.nlm.nih.gov", "webmd.com", "nih.gov",
+                 "nejm.org"],
+    "science":  ["nature.com", "sciencedaily.com", "nasa.gov", "scientificamerican.com",
+                 "newscientist.com"],
+    "news":     ["reuters.com", "apnews.com", "bbc.com", "nytimes.com",
+                 "theguardian.com"],
+    "legal":    ["law.cornell.edu", "oyez.org", "courtlistener.com", "justia.com"],
+}
+
+SEARCH_SYSTEM_CURRENT = """You are a precise research assistant synthesizing today's journalism and analysis.
+
+Format rules:
+- First line: "▸ TL;DR  " followed by one concrete, specific sentence — include names, numbers, dates
+- Blank line
+- 2-4 paragraphs using the actual content from the sources provided
+- Use **bold** for key names and facts
+- Use "•" for bullet points, never dashes
+
+Voice rules:
+- Be specific. If the sources have names, scores, odds, dates — use them.
+- If an event is imminent, lead with who is involved and when.
+- Correct any outdated information from the search snippets.
+- No filler phrases. No "Great question"."""
+
+SEARCH_SYSTEM_RESEARCH = """You are a precise research assistant synthesizing explanatory sources.
+
+Format rules:
+- First line: "▸ TL;DR  " followed by one clear, direct sentence
+- Blank line
+- 3-5 paragraphs building from fundamentals to implications
+- Use **bold** for key concepts
+- Use "•" for bullet points where appropriate
+
+Voice rules:
+- Synthesize across sources — don't summarize each separately.
+- Note where sources agree and where they meaningfully differ.
+- No filler phrases."""
+
+SEARCH_SYSTEM_CONTESTED = """You are a precise research assistant presenting multiple perspectives fairly.
+
+Format rules:
+- First line: "▸ TL;DR  " followed by a sentence that names the central tradeoff
+- Blank line
+- Present each major perspective with its strongest argument
+- Use **bold** for key positions and tradeoffs
+- End with your honest assessment of which is right for which use case
+
+Voice rules:
+- Name the tradeoffs explicitly. Don't pick a winner unless evidence is overwhelming.
+- The answer is not which side is right — it is which side is right for what.
+- No filler phrases."""
+
 
 def _enrich_ddg_query(user_query: str) -> str:
     """
@@ -1796,6 +1874,7 @@ _SPAM_DOMAINS = {
 # Authoritative sources by content category
 # These are the places where specific types of information reliably live
 _SOURCE_INTELLIGENCE = {
+    "sports": ["espn.com", "bbc.com/sport", "theathletic.com", "skysports.com", "uefa.com"],
     "therapist": ["psychologytoday.com", "therapyden.com", "goodtherapy.org", "zocdoc.com"],
     "doctor": ["healthgrades.com", "zocdoc.com", "vitals.com", "npiregistry.cms.hhs.gov"],
     "lawyer": ["avvo.com", "martindale.com", "lawyers.com", "justia.com"],
@@ -1818,6 +1897,10 @@ def _identify_entity_type(text: str) -> str | None:
     """
     text_lower = text.lower()[:2000]
     signals = {
+        "sports": ["football", "soccer", "basketball", "baseball", "tennis",
+                   "nfl", "nba", "mlb", "nhl", "premier league", "champions league",
+                   "world cup", "tournament", "championship", "final", "match",
+                   "game", "season", "playoff", "standings", "score"],
         "therapist": ["therapist", "counselor", "psychologist", "therapy", "counseling", "mental health", "lac", "lcsw", "lpc"],
         "doctor": ["physician", "doctor", "md ", "medical doctor", "clinic", "patient", "diagnosis"],
         "lawyer": ["attorney", "lawyer", "law firm", "legal", "esq", "counsel", "litigation"],
