@@ -1147,6 +1147,10 @@ _TEMPORAL_SIGNALS = {
     "right now", "at the moment", "upcoming", "next", "soon",
 }
 
+# SEARCH_TIER_SIGNALS["current"] intentionally overlaps with _TEMPORAL_SIGNALS.
+# _TEMPORAL_SIGNALS drives year-injection in _enrich_ddg_query (operational).
+# SEARCH_TIER_SIGNALS["current"] drives tier classification (routing).
+# Keep both in sync when adding temporal signals.
 SEARCH_TIER_SIGNALS = {
     "current": {
         " will ", "who will", "predict", "prediction", "odds", "chance",
@@ -1156,7 +1160,7 @@ SEARCH_TIER_SIGNALS = {
     },
     "research": {
         "how does", "how do ", "why does", "why do ", "why is ", "why are ",
-        "explain ", "what causes", "how to ", "what is the difference",
+        "explain ", "what causes", "what is the difference",
         "what makes", "how come", "mechanism", "what happens when",
     },
     "contested": {
@@ -1166,6 +1170,9 @@ SEARCH_TIER_SIGNALS = {
     },
 }
 
+# SOURCE_HIERARCHY: authoritative reading targets for deep-tier research (Tasks 4-5).
+# Distinct from _SOURCE_INTELLIGENCE (used in _handle_followup for targeted re-queries).
+# These serve different purposes — keep them separate.
 SOURCE_HIERARCHY = {
     "sports":   ["espn.com", "bbc.com/sport", "theathletic.com", "skysports.com",
                  "uefa.com", "nfl.com", "nba.com", "mlb.com"],
@@ -1194,7 +1201,7 @@ Format rules:
 Voice rules:
 - Be specific. If the sources have names, scores, odds, dates — use them.
 - If an event is imminent, lead with who is involved and when.
-- Correct any outdated information from the search snippets.
+- Note if snippets appear outdated or contradictory; prefer the most recent source.
 - No filler phrases. No "Great question"."""
 
 SEARCH_SYSTEM_RESEARCH = """You are a precise research assistant synthesizing explanatory sources.
@@ -1899,8 +1906,7 @@ def _identify_entity_type(text: str) -> str | None:
     signals = {
         "sports": ["football", "soccer", "basketball", "baseball", "tennis",
                    "nfl", "nba", "mlb", "nhl", "premier league", "champions league",
-                   "world cup", "tournament", "championship", "final", "match",
-                   "game", "season", "playoff", "standings", "score"],
+                   "world cup", "playoff", "standings"],
         "therapist": ["therapist", "counselor", "psychologist", "therapy", "counseling", "mental health", "lac", "lcsw", "lpc"],
         "doctor": ["physician", "doctor", "md ", "medical doctor", "clinic", "patient", "diagnosis"],
         "lawyer": ["attorney", "lawyer", "law firm", "legal", "esq", "counsel", "litigation"],
