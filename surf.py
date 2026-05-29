@@ -944,18 +944,39 @@ def stream_to_terminal(stream) -> str:
 def print_divider() -> None:
     print(f"\033[90m{'─' * _term_width()}\033[0m")
 
+
+def _link(url: str, text: str) -> str:
+    """OSC 8 clickable hyperlink. Cmd+click opens in browser. Degrades gracefully."""
+    if not url:
+        return text
+    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+
+
+def _print_linked_sources(results: list[dict]) -> None:
+    """Print a clickable Sources line using OSC 8 hyperlinks."""
+    if not results:
+        return
+    parts = []
+    for r in results[:5]:
+        url = r.get("url", "")
+        domain = r["domain"].removeprefix("www.")
+        parts.append(_link(url, domain) if url else domain)
+    print(f"\033[90mSources: {' · '.join(parts)}\033[0m")
+
+
 def print_results(results: list[dict]) -> None:
-    """Print numbered search results list."""
+    """Print numbered search results with clickable OSC 8 hyperlinks."""
     print()
     print_divider()
     for i, r in enumerate(results, 1):
         domain_display = r['domain'].removeprefix('www.')
-        print(f" \033[33m{i}\033[0m  {r['title']}")  # yellow number
-        print(f"     \033[90m{domain_display}\033[0m")
+        url = r.get('url', '')
+        print(f" \033[33m{i}\033[0m  {_link(url, r['title'])}")
+        print(f"     \033[90m{_link(url, domain_display)}\033[0m")
     print()
     n = len(results)
-    print(f"\033[90m  read: 1–{n}   summary: s1–s{n}   browser: o1–o{n}\033[0m")
-    print(f"\033[90m  new: n        quit: q\033[0m")
+    print(f"\033[90m  reader: 1–{n}   summary: s1–s{n}   browser: o1–o{n}\033[0m")
+    print(f"\033[90m  new: n   quit: q\033[0m")
 
 def print_related(related_lines: list[str]) -> None:
     """Print related topics extracted from Groq's 'Related:' section."""
@@ -1108,6 +1129,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         return results, response
 
     print(f"\033[90m↳ {_elapsed:.1f}s\033[0m")
+    _print_linked_sources(results)
     print_results(results)
 
     if interactive:
