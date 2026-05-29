@@ -1990,13 +1990,15 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     # Adaptive confidence gate — may escalate tier based on snippet quality
     tier = _confidence_gate(query, results, tier)
 
-    # Self-evaluating source check: if research/current tier but sources are thin,
-    # try one more targeted search from a different angle before synthesizing
-    # Fast check: if snippets are all near-copies, sources are thin regardless of LLM opinion
-    if results and not _snippets_are_diverse(results):
-        # Skip the LLM call — we already know they're repetitive
-        pass  # will fall through to retry logic below
-    elif results and not _sources_are_substantive(query, results):
+    # Self-evaluating source check: try one more targeted search when sources are thin.
+    # Fast cosine check first (free) — if snippets are near-copies, skip the LLM call.
+    # Only run on deep tiers where it's worth the extra search.
+    _sources_thin = (
+        tier in ("research", "current", "contested")
+        and results
+        and (not _snippets_are_diverse(results) or not _sources_are_substantive(query, results))
+    )
+    if _sources_thin:
         retry_query = f"{ddg_query} analysis in-depth {time.strftime('%Y')}"
         try:
             print_status("↳ sources thin — searching deeper...")
@@ -2041,9 +2043,9 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
                     "contested": SEARCH_SYSTEM_CONTESTED,
                 }[tier]
         else:
-            # All reads failed — fall back to snippet path gracefully
+            # All reads failed — fall back to snippets, but keep evaluative voice if relevant
             prompt = base_prompt
-            system = SEARCH_SYSTEM
+            system = SEARCH_SYSTEM_EVALUATIVE if (eval_context and eval_context.get("is_evaluative")) else SEARCH_SYSTEM
             deep_sources = []
 
         clear_status()
