@@ -713,7 +713,9 @@ def stream_groq(prompt: str, system: str, model: str = GROQ_MODEL, max_tokens: i
     config = load_config()
     api_key = config.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
     if not api_key:
-        raise ValueError("GROQ_API_KEY not found in ~/.config/surf/config")
+        # No Groq key — skip silently to Cerebras
+        yield from stream_cerebras(prompt, system, max_tokens)
+        return
 
     client = Groq(api_key=api_key)
     try:
@@ -770,7 +772,8 @@ def stream_cerebras(prompt: str, system: str, max_tokens: int = 2048):
     config = load_config()
     api_key = config.get("CEREBRAS_API_KEY", os.environ.get("CEREBRAS_API_KEY", ""))
     if not api_key:
-        yield "[Cerebras API key not configured in ~/.config/surf/config]"
+        # No Cerebras key — skip silently to Gemini
+        yield from stream_gemini(prompt, system, max_tokens)
         return
 
     payload = {
@@ -877,7 +880,7 @@ def stream_gemini(prompt: str, system: str, max_tokens: int = 2048):
     config = load_config()
     api_key = config.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
     if not api_key:
-        yield "\033[33m↳ Gemini API key not configured in ~/.config/surf/config\033[0m"
+        yield "\033[33m↳ Monthly budget reached. Add GROQ_API_KEY or GEMINI_API_KEY to ~/.config/surf/config for unlimited free queries.\033[0m"
         return
 
     payload = {
@@ -1803,11 +1806,33 @@ def main():
         prog="surf",
         description="Search or read any URL — Kagi-style, in your terminal."
     )
-    parser.add_argument("input", nargs="+", help="A search query or URL")
+    parser.add_argument("input", nargs="*", help="A search query or URL")
     parser.add_argument("--json", action="store_true", dest="json_output",
                         help="Output as JSON (for scripts and automation)")
+    parser.add_argument("--usage", action="store_true",
+                        help="Show Claude monthly spend and exit")
     args = parser.parse_args()
     json_output = args.json_output
+
+    if args.usage:
+        data = _claude_usage_load()
+        spent = data.get("cost_usd", 0.0)
+        calls = data.get("calls", 0)
+        remaining = max(0.0, CLAUDE_MONTHLY_BUDGET - spent)
+        bar_filled = int(spent / CLAUDE_MONTHLY_BUDGET * 20)
+        bar = "█" * bar_filled + "░" * (20 - bar_filled)
+        print(f"\n\033[1mClaude usage — {data.get('month', 'this month')}\033[0m")
+        print(f"  {bar}  \033[1m${spent:.3f}\033[0m / ${CLAUDE_MONTHLY_BUDGET:.2f}")
+        print(f"  {calls} queries  ·  ${remaining:.3f} remaining")
+        if remaining > 0:
+            est = int(remaining / 0.0004) if spent > 0 else 2500
+            print(f"  ≈ {est:,} queries left this month")
+        print()
+        return
+
+    if not args.input:
+        parser.print_help()
+        return
 
     query = " ".join(args.input)
     _add_to_history(query)

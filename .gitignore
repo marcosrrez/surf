@@ -9,3 +9,5 @@ build/
 .superpowers/
 .env
 .env.*
+# Benchmark results contain full responses — too large and too personal for git
+tests/quality/results/
