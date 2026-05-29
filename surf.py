@@ -604,10 +604,14 @@ FEATURE_USAGE_FILE = os.path.expanduser("~/.config/surf/feature_usage.json")
 # Shown one per session for features the user hasn't tried yet.
 # Disappear once the feature has been used.
 FEATURE_TIPS = {
+    # Core features — shown to new users first
     "reader":   "tip: press \033[33m1\033[90m to read any result directly in your terminal — no browser needed",
     "summary":  "tip: press \033[33ms1\033[90m for a quick AI summary of the top result",
-    "browser":  "tip: press \033[33mo1\033[90m to open a source in your browser, or cmd+click its link",
-    "followup": "tip: just type a follow-up question — surf remembers the context of this search",
+    "browser":  "tip: press \033[33mo1\033[90m to open a source in your browser, or cmd+click any link",
+    "followup": "tip: just type a follow-up question — surf remembers your whole session as context",
+    # Power features — shown after core features are mastered
+    "session":  "tip: session memory means 'who replaced her?' works without repeating what you were researching",
+    "automation": "tip: \033[33msurf 'query' --json | jq .tldr\033[90m  pipes cleanly into scripts and cron jobs",
 }
 _session_tip_shown: bool = False  # one tip per session maximum
 
@@ -624,6 +628,9 @@ def record_feature_use(feature: str) -> None:
     """Increment usage count for a feature. Called when the user actually uses it."""
     data = _load_feature_usage()
     data[feature] = data.get(feature, 0) + 1
+    # Track total searches so we can gate the automation tip
+    if feature == "search":
+        data["_searches"] = data.get("_searches", 0) + 1
     try:
         os.makedirs(os.path.dirname(FEATURE_USAGE_FILE), exist_ok=True)
         with open(FEATURE_USAGE_FILE, "w") as f:
@@ -638,11 +645,25 @@ def _get_contextual_tip() -> str | None:
     if _session_tip_shown:
         return None
     usage = _load_feature_usage()
+
+    # Gate power tips: only show after core features mastered
+    searches = usage.get("_searches", 0)
+    core_done = all(usage.get(f, 0) > 0 for f in ["reader", "summary", "browser", "followup"])
+
     for feature, tip in FEATURE_TIPS.items():
+        if feature.startswith("_"):
+            continue
+        if feature == "session" and not core_done:
+            continue  # not yet — teach basics first
+        if feature == "automation" and searches < 10:
+            continue  # show after they've used surf enough to care
         if usage.get(feature, 0) == 0:
             _session_tip_shown = True
             return tip
     return None
+
+
+
 
 
 def _claude_usage_load() -> dict:
@@ -2115,8 +2136,13 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     _t0 = time.time()
 
     if tier in ("current", "research", "contested"):
-        # Deep path: fetch real article content
-        print_status("↳ thinking...")
+        # Show why surf is going deep — teaches users the tier system passively
+        _tier_why = {
+            "current":   "↳ current events — reading today's sources...",
+            "research":  "↳ research question — reading in depth...",
+            "contested": "↳ evaluating from multiple perspectives...",
+        }
+        print_status(_tier_why.get(tier, "↳ thinking..."))
         deep_content, deep_sources = _deep_research(query, tier, results, ddg_query, entity_type=_entity_type)
 
         if deep_content:
@@ -2189,13 +2215,25 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     if "▸ TL;DR" in summary:
         summary = summary.split("▸ TL;DR")[-1].strip()
     save_session_entry(query, "search", _truncate_at_sentence(summary, 300))
+    record_feature_use("search")  # counts toward automation tip threshold
 
     if json_output:
         sources = [r["domain"] for r in results]
         _output_json(query, response, sources, intent="search")
         return results, response
 
-    spend = f" · claude {claude_monthly_spend()}" if (_HAS_ANTHROPIC and _claude_budget_ok()) else ""
+    if _HAS_ANTHROPIC and _claude_budget_ok():
+        _usage_d = _claude_usage_load()
+        _spent = _usage_d.get("cost_usd", 0.0)
+        spend = f" · \033[90mclaude {claude_monthly_spend()}"
+        # Nudge toward --usage once spend is meaningful
+        if _spent >= 0.50 and _usage_d.get("_usage_hint_shown", 0) == 0:
+            spend += " · try \033[33msurf --usage\033[90m"
+            _usage_d["_usage_hint_shown"] = 1
+            _claude_usage_save(_usage_d)
+        spend += "\033[0m"
+    else:
+        spend = ""
     _ec = _elapsed_color(_elapsed)
     print(f"{_ec}↳ {_elapsed:.1f}s\033[0m{spend}")
     _print_linked_sources(results)
@@ -2219,6 +2257,20 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
 
         if cl == "q":
             break
+        elif cl == "?":
+            n = len(results)
+            print()
+            print("\033[1msurf commands\033[0m")
+            print(f"  \033[33m1–{n}\033[0m      read article in terminal (reader mode — no browser)")
+            print(f"  \033[33ms1–s{n}\033[0m    quick AI summary of the article")
+            print(f"  \033[33mo1–o{n}\033[0m    open in browser  (or cmd+click any link)")
+            print(f"  \033[33mn\033[0m        new search")
+            print(f"  \033[33mq\033[0m        quit")
+            print(f"  \033[33m↵\033[0m        ask a follow-up — surf remembers this session")
+            print()
+            print("\033[90m  surf 'query' --json | jq .tldr   pipes into scripts")
+            print(f"  surf --usage                       shows Claude monthly spend\033[0m")
+            print()
         elif cl == "n":
             query = surf_input("New search: ")
             if query:
@@ -2252,6 +2304,9 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
                 print(f"\033[90m(surf is a search tool — try asking a question or picking a result)\033[0m")
             else:
                 record_feature_use("followup")
+                # If there's session context from prior searches, this is a session-memory use
+                if format_session_context():
+                    record_feature_use("session")
                 new_results, new_response = _handle_followup(choice, context=context)
                 if new_results:
                     print_results(new_results)
@@ -2369,7 +2424,18 @@ def _handle_followup(question: str, context: str = "") -> tuple[list[dict], str]
     response = stream_to_terminal(stream, results=cite_results)
     _elapsed = time.time() - _t0
 
-    spend = f" · claude {claude_monthly_spend()}" if (_HAS_ANTHROPIC and _claude_budget_ok()) else ""
+    if _HAS_ANTHROPIC and _claude_budget_ok():
+        _usage_d = _claude_usage_load()
+        _spent = _usage_d.get("cost_usd", 0.0)
+        spend = f" · \033[90mclaude {claude_monthly_spend()}"
+        # Nudge toward --usage once spend is meaningful
+        if _spent >= 0.50 and _usage_d.get("_usage_hint_shown", 0) == 0:
+            spend += " · try \033[33msurf --usage\033[90m"
+            _usage_d["_usage_hint_shown"] = 1
+            _claude_usage_save(_usage_d)
+        spend += "\033[0m"
+    else:
+        spend = ""
     _ec = _elapsed_color(_elapsed)
     print(f"{_ec}↳ {_elapsed:.1f}s\033[0m{spend}")
     _print_linked_sources(search_results)
@@ -2514,6 +2580,14 @@ def _handle_article_input(url: str, related: list[str], context: str) -> None:
 
         if cl == "q":
             break
+        elif cl == "?":
+            print()
+            print("\033[1msurf reader commands\033[0m")
+            print(f"  \033[33mo\033[0m   open in browser  (or cmd+click the link in the header)")
+            print(f"  \033[33m?\033[0m   ask a follow-up question about this article")
+            print(f"  \033[33mn\033[0m   new search")
+            print(f"  \033[33mq\033[0m   quit")
+            print()
         elif cl == "n":
             query = surf_input("New search: ")
             if query:
