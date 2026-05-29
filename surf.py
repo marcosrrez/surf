@@ -7,6 +7,9 @@ import shutil
 import subprocess
 import requests
 import atexit
+import threading
+import itertools
+import time
 from bs4 import BeautifulSoup
 import groq
 from groq import Groq
@@ -16,6 +19,15 @@ try:
     _HAS_READLINE = True
 except ImportError:
     _HAS_READLINE = False
+
+try:
+    from prompt_toolkit import prompt as _ptk_prompt
+    from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+    from prompt_toolkit.completion import Completer, Completion
+    _HAS_PROMPT_TOOLKIT = True
+except ImportError:
+    _HAS_PROMPT_TOOLKIT = False
 
 try:
     from rich.console import Console
@@ -420,6 +432,34 @@ def stream_cerebras(prompt: str, system: str, max_tokens: int = 2048):
     except Exception as e:
         yield f"\n[Cerebras error: {e}]"
 
+class Spinner:
+    """Animated braille spinner for the thinking phase."""
+    FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+    def __init__(self, message: str = ""):
+        self.message = message
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+
+    def _spin(self):
+        for frame in itertools.cycle(self.FRAMES):
+            if self._stop_event.is_set():
+                break
+            sys.stdout.write(f"\r\033[90m{frame} {self.message}\033[0m")
+            sys.stdout.flush()
+            time.sleep(0.08)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *args):
+        self._stop_event.set()
+        self._thread.join()
+        sys.stdout.write("\r" + " " * min(_term_width(), 60) + "\r")
+        sys.stdout.flush()
+
+
 def _term_width() -> int:
     return min(shutil.get_terminal_size().columns, 100)
 
@@ -455,8 +495,12 @@ def stream_to_terminal(stream) -> str:
             return
         if col > 0 and col + len(word_buf) > width:
             sys.stdout.write("\n")
+            sys.stdout.flush()
             col = 0
-        sys.stdout.write(word_buf)
+        # Output character by character — the "alive" feeling
+        for char in word_buf:
+            sys.stdout.write(char)
+            sys.stdout.flush()
         col += len(word_buf)
         word_buf = ""
 
@@ -514,14 +558,28 @@ def search_flow(query: str, interactive: bool = True) -> tuple[list[dict], str]:
     Run the search flow: DDG → Groq → display results.
     Returns (results, groq_response_text).
     """
-    print_status("↳ searching DuckDuckGo...")
+    print_status(f"↳ searching: \"{query[:50]}\"...")
     try:
         results = ddg_search(query)
+        if _needs_multi_search(query) and results:
+            # Second search with a different angle for complex queries
+            alt_query = f"{query} analysis expert opinion"
+            try:
+                alt_results = ddg_search(alt_query, num_results=3)
+                # Merge, dedup by domain
+                seen_domains = {r["domain"] for r in results}
+                for r in alt_results:
+                    if r["domain"] not in seen_domains:
+                        results.append(r)
+                        seen_domains.add(r["domain"])
+            except Exception:
+                pass
     except Exception as e:
         clear_status()
         print(f"\033[31mSearch failed: {e}\033[0m")
         return [], ""
     clear_status()
+    results = _filter_results(results)
 
     if not results:
         print("\033[90mNo results found.\033[0m")
@@ -553,7 +611,7 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
     """Wait for user to pick a result or ask a follow-up question."""
     while True:
         try:
-            choice = input("\n› ").strip()
+            choice = surf_input()
         except (KeyboardInterrupt, EOFError):
             break
 
@@ -563,7 +621,7 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
         if cl == "q":
             break
         elif cl == "n":
-            query = input("New search: ").strip()
+            query = surf_input("New search: ")
             if query:
                 search_flow(query)
             break
@@ -590,19 +648,22 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
             else:
                 print(f"\033[90mPick 1-{len(results)}\033[0m")
         elif choice.strip():
-            # Follow-up question
-            _handle_followup(choice, context=context)
+            if _is_casual_input(choice):
+                print(f"\033[90m(surf is a search tool — try asking a question or picking a result)\033[0m")
+            else:
+                _handle_followup(choice, context=context)
         # empty input: loop again
 
 def _handle_followup(question: str, context: str = "") -> None:
     """Answer a follow-up question using web search + article context."""
     # Search DDG for fresh perspectives on the question
-    print_status("↳ searching for perspectives...")
+    print_status(f"↳ searching: \"{question[:50]}\"...")
     try:
         search_results = ddg_search(question)
     except Exception:
         search_results = []
     clear_status()
+    search_results = _filter_results(search_results)
 
     domains = " · ".join(r["domain"].removeprefix("www.") for r in search_results[:3]) if search_results else ""
     print_header(question.capitalize(), domains)
@@ -640,11 +701,10 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True) -> st
     Run the read flow: fetch URL → extract text → Groq → display.
     Returns the Groq response text (or raw extracted text in raw mode).
     """
-    print_status(f"↳ fetching {url[:60]}...")
     try:
-        html = fetch_page(url)
+        with Spinner(f"fetching {url[:60]}..."):
+            html = fetch_page(url)
     except Exception as e:
-        clear_status()
         err = str(e)
         if "401" in err or "403" in err or "Forbidden" in err or "Unauthorized" in err:
             print(f"\033[33m⚠ This page blocks automated access (paywall or bot protection).\033[0m")
@@ -655,7 +715,6 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True) -> st
         return ""
 
     title, text = extract_text(html, return_title=True)
-    clear_status()
 
     domain = url.replace("https://", "").replace("http://", "").split("/")[0]
     print_header(title or url, domain)
@@ -808,6 +867,87 @@ def _build_booking_sites(query: str, intent: dict) -> list[dict]:
 
 HISTORY_FILE = os.path.expanduser("~/.config/surf/history")
 
+class _DDGCompleter(Completer):
+    """Tab-completion using DuckDuckGo autocomplete API."""
+    def get_completions(self, document, complete_event):
+        word = document.text.strip()
+        if len(word) < 2:
+            return
+        try:
+            r = requests.get(
+                "https://ac.duckduckgo.com/ac/",
+                params={"q": word, "type": "list"},
+                headers=HEADERS,
+                verify=SSL_CERT,
+                timeout=2,
+            )
+            if r.ok:
+                data = r.json()
+                suggestions = data[1] if len(data) > 1 else []
+                for s in suggestions[:6]:
+                    yield Completion(s, start_position=-len(word))
+        except Exception:
+            return
+
+def surf_input(placeholder: str = "") -> str:
+    """
+    Smart input prompt with history, DDG autocomplete, and ghost suggestions.
+    Falls back to plain input() if prompt_toolkit is unavailable.
+    """
+    if not _HAS_PROMPT_TOOLKIT:
+        return input(f"\n{placeholder}› ").strip()
+    try:
+        return _ptk_prompt(
+            "› ",
+            history=FileHistory(HISTORY_FILE),
+            auto_suggest=AutoSuggestFromHistory(),
+            completer=_DDGCompleter(),
+            complete_while_typing=False,
+        ).strip()
+    except (KeyboardInterrupt, EOFError):
+        raise KeyboardInterrupt
+
+_CASUAL_STARTERS = {
+    "that's", "thats", "wow", "amazing", "awesome", "great", "nice", "cool",
+    "interesting", "fascinating", "incredible", "unbelievable", "haha", "lol",
+    "yeah", "yes", "no", "ok", "okay", "sure", "thanks", "thank", "good",
+    "bad", "sad", "happy", "excited", "oh", "ah", "hmm", "well",
+}
+
+def _is_casual_input(text: str) -> bool:
+    """Return True if text is a casual comment/reaction, not a search query."""
+    text = text.strip()
+    if not text:
+        return False
+    words = text.lower().split()
+    # Very short exclamatory inputs with no question mark
+    if len(words) <= 4 and "?" not in text and words[0] in _CASUAL_STARTERS:
+        return True
+    # Pure exclamations
+    if text.rstrip("!").strip().lower() in _CASUAL_STARTERS:
+        return True
+    return False
+
+def _needs_multi_search(query: str) -> bool:
+    """True if query is complex enough to benefit from a second search."""
+    complex_signals = [
+        "vs", "versus", "compare", "difference", "predict", "odds", "chance",
+        "best", "worst", "top", "rank", "should i", "which is", "how does",
+        "why did", "who won", "what happened", "latest", "news", "2025", "2026",
+    ]
+    q = query.lower()
+    return any(s in q for s in complex_signals)
+
+_SPAM_DOMAINS = {
+    "roblox.com", "y8.com", "grindsuccess.com", "quora.com",
+    "pinterest.com", "facebook.com", "instagram.com", "twitter.com",
+    "tiktok.com", "reddit.com",  # these rarely have the actual article content
+}
+
+def _filter_results(results: list[dict]) -> list[dict]:
+    """Remove low-quality domains from search results."""
+    return [r for r in results if r.get("domain", "") not in _SPAM_DOMAINS]
+
 def _setup_readline() -> None:
     """Enable up-arrow history and Ctrl+R search for all input() calls."""
     if not _HAS_READLINE:
@@ -842,9 +982,8 @@ def main():
             read_flow(query)
             return
 
-        print_status("↳ understanding your intent...")
-        intent = classify_intent(query)
-        clear_status()
+        with Spinner("understanding your intent..."):
+            intent = classify_intent(query)
 
         if intent["intent"] == "instant":
             print_header(query.capitalize())
@@ -853,12 +992,11 @@ def main():
 
         elif intent["intent"] == "transactional" and intent.get("open_url"):
             # Search DDG for context
-            print_status("↳ searching for options...")
             try:
-                results = ddg_search(query)
+                with Spinner("searching for options..."):
+                    results = ddg_search(query)
             except Exception:
                 results = []
-            clear_status()
 
             domains = " · ".join(r["domain"].removeprefix("www.") for r in results[:3])
             print_header(query.capitalize(), domains if domains else "")
