@@ -1331,6 +1331,22 @@ Voice rules:
 - No filler phrases."""
 
 
+def _clean_conversational_query(query: str) -> str:
+    """
+    Extract the searchable question from conversational statement+question format.
+    'America is 250 years old. is it the longest standing global power?'
+    → 'America is it the longest standing global power'
+    """
+    # Detect: statement sentence followed by a question
+    parts = re.split(r'\.\s+', query, maxsplit=1)
+    if len(parts) == 2:
+        statement, question = parts[0].strip(), parts[1].strip()
+        if question and len(question) > 8:
+            # Combine: question first (searchable), statement as context
+            return f"{statement} {question}"
+    return query
+
+
 def _enrich_ddg_query(user_query: str, tier: str = "snippet") -> str:
     """
     Improve DDG search relevance based on query type.
@@ -1399,6 +1415,64 @@ def _enrich_ddg_query(user_query: str, tier: str = "snippet") -> str:
             pass
 
     return enriched
+
+
+_ENTITY_RE = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})\b')
+_LOCATION_RE = re.compile(
+    r'\b(northwest|northeast|southeast|southwest|north|south|east|west)\s+\w+', re.IGNORECASE
+)
+
+
+def _extract_specific_entities(query: str) -> list[str]:
+    """
+    Extract multi-word proper nouns and location phrases from a query.
+    These are entities that DDG must match precisely.
+    'John Brown University' → ['John Brown University']
+    'northwest arkansas restaurants' → ['northwest arkansas']
+    """
+    entities: list[str] = []
+    # Multi-word capitalized phrases (institutions, people, brands)
+    for m in _ENTITY_RE.finditer(query):
+        phrase = m.group(1)
+        if len(phrase.split()) >= 2:
+            entities.append(phrase)
+    # Location phrases ("northwest arkansas", "south florida")
+    for m in _LOCATION_RE.finditer(query):
+        entities.append(m.group(0).strip())
+    return entities
+
+
+def _entity_in_results(entity: str, results: list[dict]) -> bool:
+    """True if the entity phrase appears in any result title, snippet, or domain."""
+    entity_lower = entity.lower()
+    for r in results:
+        text = (r.get("title", "") + " " + r.get("snippet", "") + " " + r.get("domain", "")).lower()
+        if entity_lower in text:
+            return True
+    return False
+
+
+def _fix_entity_mismatch(query: str, results: list[dict], ddg_query: str) -> tuple[list[dict], str]:
+    """
+    If a specific entity in the query isn't in any result, retry with quoted exact-match search.
+    Returns (new_results_or_original, new_ddg_query_or_original).
+    """
+    entities = _extract_specific_entities(query)
+    for entity in entities:
+        if not _entity_in_results(entity, results):
+            # DDG returned wrong entity — retry with quoted phrase for exact match
+            retry_q = f'"{entity}" ' + " ".join(
+                w for w in query.lower().split()
+                if w not in entity.lower() and len(w) > 3
+            )
+            retry_q = retry_q.strip()
+            try:
+                new_results = _filter_results(ddg_search(retry_q, num_results=5))
+                if new_results:
+                    return new_results, retry_q
+            except Exception:
+                pass
+    return results, ddg_query
 
 
 def _sources_are_substantive(query: str, snippets: list[dict]) -> bool:
@@ -1554,7 +1628,8 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     Returns (results, groq_response_text).
     """
     tier = _classify_tier(query)
-    ddg_query = _enrich_ddg_query(query, tier=tier)
+    clean_query = _clean_conversational_query(query)
+    ddg_query = _enrich_ddg_query(clean_query, tier=tier)
     print_status(f"↳ searching: \"{ddg_query[:55]}\"...")
     try:
         results = ddg_search(ddg_query)
@@ -1602,6 +1677,10 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     clear_status()
     results = _filter_results(results)
 
+    # Entity match check: if query mentions a specific institution/location but
+    # results are about a different entity, retry with quoted exact-match search
+    results, ddg_query = _fix_entity_mismatch(query, results, ddg_query)
+
     if not results:
         print("\033[90mNo results found.\033[0m")
         return [], ""
@@ -1620,7 +1699,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
 
     # Self-evaluating source check: if research/current tier but sources are thin,
     # try one more targeted search from a different angle before synthesizing
-    if tier in ("research", "current") and results and not _sources_are_substantive(query, results):
+    if results and not _sources_are_substantive(query, results):
         retry_query = f"{ddg_query} analysis in-depth {time.strftime('%Y')}"
         try:
             print_status("↳ sources thin — searching deeper...")
@@ -1668,18 +1747,19 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
 
         clear_status()
         stream = stream_ai(prompt, system)
+        # Deep path: pass results so [1][2][3] citations render as clickable links
         response = stream_to_terminal(stream, results=results)
 
         # Use deep_sources for the linked sources line if available
         if deep_sources:
             results = deep_sources + [r for r in results if r not in deep_sources][:2]
     else:
-        # Snippet path (fast — existing behavior)
+        # Snippet path: no inline citations — clean prose reads better without [1][2] noise
         system = SEARCH_SYSTEM
         print_status("↳ thinking...")
         clear_status()
         stream = stream_ai(base_prompt, system)
-        response = stream_to_terminal(stream, results=results)
+        response = stream_to_terminal(stream, results=None)
 
     _elapsed = time.time() - _t0
 
@@ -1888,7 +1968,9 @@ def _handle_followup(question: str, context: str = "") -> tuple[list[dict], str]
         prompt, system = base_prompt, SEARCH_SYSTEM
 
     stream = stream_ai(prompt, system)
-    response = stream_to_terminal(stream, results=search_results)
+    # Only pass results for deep-tier follow-ups where citations make sense
+    cite_results = search_results if tier in ("current", "research", "contested") else None
+    response = stream_to_terminal(stream, results=cite_results)
     _elapsed = time.time() - _t0
 
     print(f"\033[90m↳ {_elapsed:.1f}s\033[0m")
