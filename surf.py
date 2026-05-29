@@ -463,8 +463,11 @@ Format rules (use exactly):
 
 Voice rules:
 - Be direct. No filler phrases like "Great question", "Certainly", or "Of course".
-- For simple factual questions (a name, a date, a definition): one short paragraph is enough — do not pad with restatements or obvious context.
-- For questions about future events, prices, or anything inherently unpredictable: say clearly that it cannot be known in advance, then explain what factors are relevant.
+- Every sentence must add information not already stated. Never rephrase the TL;DR or repeat a fact in different words.
+- If your sources only contain one key fact, write one focused paragraph — do not pad to fill space.
+- For simple factual questions (a name, a date, a definition): one short paragraph is enough.
+- For questions about future events or anything inherently unpredictable: say clearly that it cannot be known, then explain what factors are relevant.
+- If sources are thin or all repeating the same basic fact, say what you know concisely and tell the user this question deserves deeper research.
 - Never fabricate specific facts not present in the search snippets."""
 
 FULL_ARTICLE_SYSTEM = """You are a precise article formatter. Given a webpage's text, present the COMPLETE article content — do not summarize, condense, or omit anything from the article itself.
@@ -1246,9 +1249,12 @@ SEARCH_TIER_SIGNALS = {
         "winner", "who wins", "going to win", "going to beat", "forecast",
     },
     "research": {
-        "how does", "how do ", "why does", "why do ", "why is ", "why are ",
-        "explain ", "what causes", "what is the difference",
-        "what makes", "how come", "mechanism", "what happens when",
+        "how does", "how do ", "how did ", "how was ", "how were ",
+        "why does", "why do ", "why did ", "why is ", "why are ", "why was ",
+        "explain ", "what caused", "what causes", "what is the difference",
+        "what made", "what makes", "how come", "mechanism", "what happened to",
+        "how they ", "how arsenal", "how did they", "story of ", "history of ",
+        "broke the", "ended the", "broke through",
     },
     "contested": {
         " best ", " vs ", " versus ", "compare", "should i ", "worth it",
@@ -1262,7 +1268,9 @@ SEARCH_TIER_SIGNALS = {
 # These serve different purposes — keep them separate.
 SOURCE_HIERARCHY = {
     "sports":   ["espn.com", "bbc.com/sport", "theathletic.com", "skysports.com",
-                 "uefa.com", "nfl.com", "nba.com", "mlb.com"],
+                 "uefa.com", "nfl.com", "nba.com", "mlb.com",
+                 "arsenal.com", "manutd.com", "liverpoolfc.com", "chelseafc.com",
+                 "mancity.com", "tottenhamhotspur.com"],  # official club sites have primary data
     "finance":  ["bloomberg.com", "ft.com", "wsj.com", "reuters.com", "cnbc.com",
                  "marketwatch.com"],
     "tech":     ["arstechnica.com", "wired.com", "techcrunch.com", "theverge.com",
@@ -1287,9 +1295,11 @@ Format rules:
 - When a specific fact comes from a source, cite it inline as [1], [2], etc. matching the numbered snippets
 
 Voice rules:
-- Be specific. If the sources have names, scores, odds, dates — use them.
+- Be specific. Use names, scores, dates, numbers from the sources.
+- Every section must add new information — never restate the TL;DR in the body.
 - If an event is imminent, lead with who is involved and when.
 - Note if snippets appear outdated or contradictory; prefer the most recent source.
+- If sources are thin and all saying the same basic thing, say so in one paragraph rather than padding.
 - No filler phrases. No "Great question"."""
 
 SEARCH_SYSTEM_RESEARCH = """You are a precise research assistant synthesizing explanatory sources.
@@ -1304,7 +1314,9 @@ Format rules:
 
 Voice rules:
 - Synthesize across sources — don't summarize each separately.
+- Every section must add new information. Never restate the TL;DR or repeat a prior section's point.
 - Note where sources agree and where they meaningfully differ.
+- If sources only contain one key insight, write one focused section — do not pad.
 - No filler phrases."""
 
 SEARCH_SYSTEM_CONTESTED = """You are a precise research assistant presenting multiple perspectives fairly.
@@ -1323,16 +1335,16 @@ Voice rules:
 - No filler phrases."""
 
 
-def _enrich_ddg_query(user_query: str) -> str:
+def _enrich_ddg_query(user_query: str, tier: str = "snippet") -> str:
     """
-    Improve DDG search relevance for time-sensitive queries.
+    Improve DDG search relevance based on query type.
 
-    Two passes:
-    1. If the query has temporal/predictive signals and lacks the current year,
-       append it — "who will win the UCL" → "who will win the UCL 2026".
-    2. If session context has relevant facts, use the fast classifier to generate
-       a more specific search string — context "PSG vs Arsenal final" turns
-       "who will win" into "PSG Arsenal Champions League final 2026 predictions".
+    Temporal queries: inject current year, use session context to generate
+    a specific search string (e.g. "who will win" → "PSG Arsenal UCL final 2026").
+
+    Research/contested queries: transform journalist phrasing into analyst
+    phrasing to surface quality sources (e.g. "how did Arsenal win the PL"
+    → "Arsenal 2026 Premier League title tactical analysis statistics").
     """
     year = time.strftime("%Y")
     q_lower = user_query.lower()
@@ -1343,7 +1355,7 @@ def _enrich_ddg_query(user_query: str) -> str:
     if is_temporal and year not in user_query:
         enriched = f"{user_query} {year}"
 
-    # Pass 2: session-context-aware query generation (one fast classifier call)
+    # Pass 2: session-context-aware enrichment for temporal queries
     session_ctx = format_session_context()
     if session_ctx and is_temporal:
         prompt = (
@@ -1367,7 +1379,59 @@ def _enrich_ddg_query(user_query: str) -> str:
         except Exception:
             pass
 
+    # Pass 3: research/contested enrichment — transform journalist phrasing
+    # into analyst phrasing to surface quality sources over SEO farms
+    if tier in ("research", "contested") and not is_temporal:
+        prompt = (
+            f"The user asked: \"{user_query}\"\n\n"
+            f"Generate a precise web search query (max 8 words) that an analyst "
+            f"or journalist would use to find in-depth, data-rich coverage of this topic. "
+            f"Use specific terms, include {year} if relevant. "
+            f"Output ONLY the search query, no quotes, no explanation."
+        )
+        try:
+            chunks = list(stream_groq(
+                prompt,
+                "You are a search query optimizer. Output only a concise search query. Maximum 8 words.",
+                model=CLASSIFIER_MODEL,
+                max_tokens=20,
+            ))
+            generated = "".join(chunks).strip().strip('"').strip("'")
+            if generated and 5 < len(generated) < 100:
+                return generated
+        except Exception:
+            pass
+
     return enriched
+
+
+def _sources_are_substantive(query: str, snippets: list[dict]) -> bool:
+    """
+    Fast pre-synthesis check: do these sources actually answer this query?
+    Returns False when all snippets are thin or repeating the same basic fact —
+    triggering a retry search before we synthesize a padded answer.
+    Only runs for research/current tiers where quality matters most.
+    """
+    if not snippets:
+        return False
+    combined = " ".join(r.get("snippet", "") + " " + r.get("title", "") for r in snippets[:5])
+    prompt = (
+        f"Query: {query}\n\n"
+        f"Sources available:\n{combined[:600]}\n\n"
+        f"Do these sources contain enough specific information to answer the query "
+        f"in a substantive way — not just confirming that something happened, but "
+        f"explaining how, why, or with what specific detail? Answer YES or NO only."
+    )
+    try:
+        chunks = list(stream_groq(
+            prompt,
+            "You evaluate source quality. Answer only YES or NO.",
+            model=CLASSIFIER_MODEL,
+            max_tokens=5,
+        ))
+        return "YES" in "".join(chunks).upper()
+    except Exception:
+        return True  # default to proceeding if check fails
 
 
 def _classify_tier(query: str) -> str:
@@ -1493,8 +1557,8 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     Run the search flow: DDG → Groq → display results.
     Returns (results, groq_response_text).
     """
-    ddg_query = _enrich_ddg_query(query)
-    tier = _classify_tier(query)   # ← ADD
+    tier = _classify_tier(query)
+    ddg_query = _enrich_ddg_query(query, tier=tier)
     print_status(f"↳ searching: \"{ddg_query[:55]}\"...")
     try:
         results = ddg_search(ddg_query)
@@ -1557,6 +1621,26 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
 
     # Adaptive confidence gate — may escalate tier based on snippet quality
     tier = _confidence_gate(query, results, tier)
+
+    # Self-evaluating source check: if research/current tier but sources are thin,
+    # try one more targeted search from a different angle before synthesizing
+    if tier in ("research", "current") and results and not _sources_are_substantive(query, results):
+        retry_query = f"{ddg_query} analysis in-depth {time.strftime('%Y')}"
+        try:
+            print_status("↳ sources thin — searching deeper...")
+            retry_results = _filter_results(ddg_search(retry_query, num_results=5))
+            if retry_results:
+                # Merge, dedup by domain, prefer retry results
+                seen = {r["domain"] for r in retry_results}
+                for r in results:
+                    if r["domain"] not in seen:
+                        retry_results.append(r)
+                        seen.add(r["domain"])
+                results = retry_results
+                ddg_query = retry_query
+                clear_status()
+        except Exception:
+            clear_status()
 
     # Build base prompt (used by all tiers)
     base_prompt = build_search_prompt(query, results)
@@ -2135,6 +2219,9 @@ _SPAM_DOMAINS = {
     # Generic "news analysis" spam farms observed in results
     "desirs-volupte.com", "austrianfood.net", "thedailyjagran.com",
     "wanttoknowit.com", "quickapedia.com", "feeddi.com",
+    # Sports SEO farms that outrank real journalism
+    "athletics-info.com", "blazetrends.com", "newz.com", "pulseheadlines.com",
+    "thegoldenkeys.co.uk", "footballbh.net", "newsanyway.com",
 }
 
 # Authoritative sources by content category
@@ -2178,6 +2265,12 @@ def _identify_entity_type(text: str) -> str | None:
         "news": ["latest news", "breaking news", "today", "this week", "2026",
                  "current events", "what happened", "update", "announced", "released"],
     }
+    # High-confidence multi-word sports signals — one hit is enough
+    high_confidence_sports = {"premier league", "champions league", "world cup",
+                               "nfl", "nba", "mlb", "nhl"}
+    if any(s in text_lower for s in high_confidence_sports):
+        return "sports"
+
     best_match = None
     best_score = 0
     for entity_type, keywords in signals.items():
@@ -2261,7 +2354,9 @@ def main():
 
         if intent["intent"] == "instant":
             print_header(query.capitalize())
-            stream = stream_ai(f"Answer this directly and concisely: {query}", SEARCH_SYSTEM)
+            # No snippets — use a lightweight prompt without citation instructions
+            instant_system = "Answer directly and concisely. Lead with the answer. No filler."
+            stream = stream_ai(f"{query}", instant_system)
             stream_to_terminal(stream)
 
         elif intent["intent"] == "transactional" and intent.get("open_url"):

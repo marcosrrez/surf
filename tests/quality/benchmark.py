@@ -149,10 +149,12 @@ Rate the VOICE quality — not accuracy, just how it feels to read.
 
 Return ONLY valid JSON (no markdown, no explanation): {"score": N, "reason": "one short sentence"}
 
+Note: bold renders as **word** in this text, bullets use •, TL;DR is prefixed with ▸. Evaluate content and conciseness — not the markdown syntax.
+
 Scoring guide:
-2 = Excellent. Feels like a sharp tool, not a chatbot. Direct, no padding, reads naturally in a terminal. A developer would reach for this daily.
-1 = Acceptable. Gets the job done but slightly verbose, has minor filler, or feels a bit generic.
-0 = Poor. Chatbot-like, padded, repetitive, or reads like it's trying too hard."""
+2 = Excellent. Feels like a sharp tool, not a chatbot. Direct, no padding, leads with the most useful fact. A developer would reach for this daily.
+1 = Acceptable. Gets the job done but slightly verbose, restates the TL;DR, or feels a bit generic.
+0 = Poor. Chatbot-like, padded, repetitive body after TL;DR, or reads like it's trying too hard."""
 
 
 def _extract_tldr(response: str) -> str:
@@ -192,13 +194,11 @@ def score_delight(query_def: dict, response: str) -> dict:
             scores["tldr_quality"] = 1
 
     # 2. Format cleanliness (0-1)
-    has_sources = "sources:" in response_lower
     has_bad_bullets = bool(re.search(r'^\s*[-–]\s+\w', response, re.MULTILINE))
-    # ** is rendered as bold in the terminal — not a format defect
+    # ** is rendered as bold in terminal — not a defect
+    # Sources line: prompts explicitly say "do not add a Sources line" — don't penalise
     has_filler = any(f in response_lower for f in FILLER_PHRASES)
     format_issues = []
-    if not has_sources and query_def.get("must_have_tldr", True):
-        format_issues.append("no Sources line")
     if has_bad_bullets:
         format_issues.append("uses - for bullets")
     if has_filler:
