@@ -1204,6 +1204,10 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
 
     print_status("↳ thinking...")
     prompt = build_search_prompt(query, results)
+    # Prepend session context so the model can use what it already learned this session
+    session_ctx = format_session_context()
+    if session_ctx:
+        prompt = f"{session_ctx}\n\n{prompt}"
     _t0 = time.time()
     stream = stream_ai(prompt, SEARCH_SYSTEM)
     clear_status()
