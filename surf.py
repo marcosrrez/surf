@@ -14,6 +14,66 @@ from bs4 import BeautifulSoup
 import groq
 from groq import Groq
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# surf Design System  ·  docs/product/design-system.md
+# All visual decisions resolve to one of these tokens.
+# Never use raw ANSI codes or hardcoded spacing outside this block.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# — Spacing tokens (in terminal lines) ————————————————————————————————————————
+SPACE_NONE = 0   # elements that belong together — no gap
+SPACE_XS   = 1   # within a zone — nearby related elements
+SPACE_SM   = 2   # between zones — clear transition, ANSWER BEGINS HERE
+SPACE_MD   = 3   # major section break — reserved for dramatic transitions
+
+# Zone spacing rules: from → to → token
+ZONE_SPACING = {
+    ("query",    "context"):  SPACE_NONE,  # header + sources are one unit
+    ("context",  "answer"):   SPACE_SM,    # ← THE key beat: 2 blank lines
+    ("answer",   "metadata"): SPACE_XS,    # timing/spend is a caption
+    ("metadata", "actions"):  SPACE_NONE,  # GLYPH_DIVIDER handles this visually
+    ("actions",  "prompt"):   SPACE_XS,    # breath before the interaction point
+}
+
+# — Color tokens (semantic roles) ─────────────────────────────────────────────
+C_BRAND        = "\033[35m"    # purple  — header bar, brand identity
+C_INTERACTIVE  = "\033[33m"    # amber   — numbers, shortcuts, tips, actions
+C_ANSWER_MARK  = "\033[36m"    # cyan    — ▸ TL;DR marker only
+C_ANSWER_TEXT  = "\033[1;97m"  # bold white — TL;DR sentence only
+C_BODY         = ""             # default — body text (inherits terminal fg)
+C_BOLD         = "\033[1m"     # bold    — **key terms** mid-body
+C_BOLD_END     = "\033[22m"    # intensity reset (not full reset)
+C_META         = "\033[90m"    # dim gray — all secondary info
+C_ERROR        = "\033[31m"    # red     — errors only
+C_RESET        = "\033[0m"     # full reset — end of any colored span
+C_SPEED_FAST   = "\033[32m"    # green   — response ≤ 3s
+C_SPEED_MED    = "\033[33m"    # amber   — response ≤ 8s  (= C_INTERACTIVE)
+C_SPEED_SLOW   = "\033[90m"    # dim gray — response > 8s (= C_META)
+
+# — Glyph vocabulary (one role per character) ─────────────────────────────────
+GLYPH_HEADER_FILL = "━"   # U+2501  thick bar — header zone only
+GLYPH_DIVIDER     = "─"   # U+2500  thin rule — action zone separator only
+GLYPH_TLDR        = "▸"   # U+25B8  TL;DR marker — answer zone, first line only
+GLYPH_META        = "↳"   # U+21B3  metadata prefix — timing, status, tips
+GLYPH_PROMPT      = "›"   # U+203A  input prompt — interaction point only
+GLYPH_SEPARATOR   = "·"   # U+00B7  inline separator — sources, domains
+GLYPH_ELLIPSIS    = "…"   # U+2026  truncation — never three dots
+GLYPH_RANGE       = "–"   # U+2013  ranges like 1–5 — en-dash, not hyphen
+GLYPH_BULLET      = "•"   # U+2022  list bullets — never - or *
+
+# — Indent tokens (in character spaces) ───────────────────────────────────────
+INDENT_NONE = 0   # full-width: header bar, divider, body text
+INDENT_SM   = 2   # result number prefix, footer lines
+INDENT_MD   = 5   # domain under result title, sub-items
+
+
+def vspace(token: int) -> None:
+    """Print N blank lines using a spacing token. The only way to add vertical space."""
+    for _ in range(token):
+        print()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+
 try:
     import readline as _readline
     _HAS_READLINE = True
@@ -1183,20 +1243,26 @@ def _edit_distance(a: str, b: str) -> int:
 # ── End classical algorithms ────────────────────────────────────────────────
 
 
-def print_header(title: str, meta: str = "") -> None:
-    """Print a Kagi-style header bar. Truncates long titles with … rather than wrapping."""
+def print_header(title: str, meta: str = "", zone_after: int = SPACE_SM) -> None:
+    """
+    Query Zone → Context Zone (SPACE_NONE between them, both printed here).
+    zone_after controls the spacing to the NEXT zone (default SPACE_SM = answer begins).
+    """
     width = _term_width()
-    max_title = width - 5  # room for "━━ " prefix and one trailing char
+    max_title = width - 5
     if len(title) > max_title:
-        title = title[:max_title - 1] + "…"
-        line = f"━━ {title}"
+        title = title[:max_title - 1] + GLYPH_ELLIPSIS
+        line = f"{GLYPH_HEADER_FILL}{GLYPH_HEADER_FILL} {title}"
     else:
-        bar = "━" * max(0, width - len(title) - 4)
-        line = f"━━ {title} {bar}" if bar else f"━━ {title}"
-    print(f"\n\033[35m{line}\033[0m")
-    if meta:
-        print(f"\033[90m{meta}\033[0m")
+        bar = GLYPH_HEADER_FILL * max(0, width - len(title) - 4)
+        line = f"{GLYPH_HEADER_FILL}{GLYPH_HEADER_FILL} {title} {bar}" if bar else f"{GLYPH_HEADER_FILL}{GLYPH_HEADER_FILL} {title}"
+    # One blank line before header (terminal breath before new response)
     print()
+    print(f"{C_BRAND}{line}{C_RESET}")
+    if meta:
+        print(f"{C_META}{meta}{C_RESET}")
+    # Zone transition: Context → [next zone] per caller's instruction
+    vspace(zone_after)
 
 def print_status(message: str) -> None:
     """Print a gray status line, overwriting the previous one."""
@@ -1312,7 +1378,8 @@ def stream_to_terminal(stream, results: list[dict] | None = None) -> str:
     return accumulated
 
 def print_divider() -> None:
-    print(f"\033[90m{'─' * _term_width()}\033[0m")
+    """Metadata → Action zone separator. Uses GLYPH_DIVIDER (thin rule)."""
+    print(f"{C_META}{GLYPH_DIVIDER * _term_width()}{C_RESET}")
 
 
 def _link(url: str, text: str) -> str:
@@ -1323,12 +1390,12 @@ def _link(url: str, text: str) -> str:
 
 
 def _elapsed_color(seconds: float) -> str:
-    """ANSI color for elapsed time: green ≤3s, amber ≤8s, gray otherwise."""
+    """Speed token for elapsed time. Uses design system color tokens."""
     if seconds <= 3.0:
-        return "\033[32m"   # green — fast
+        return C_SPEED_FAST
     if seconds <= 8.0:
-        return "\033[33m"   # amber — acceptable
-    return "\033[90m"       # gray — slow
+        return C_SPEED_MED
+    return C_SPEED_SLOW
 
 
 def _shorten_domain(domain: str, max_len: int = 28) -> str:
@@ -1363,34 +1430,39 @@ def _print_linked_sources(results: list[dict]) -> None:
         parts.append(_link(url, display) if url else display)
         used += item_len
 
-    print(f"\033[90m{prefix}{separator.join(parts)}\033[0m")
+    print(f"{C_META}{prefix}{(f' {GLYPH_SEPARATOR} ').join(parts)}{C_RESET}")
 
 
 def print_results(results: list[dict]) -> None:
-    """Print numbered search results with clickable OSC 8 hyperlinks."""
-    print()
+    """
+    Action Zone. Separated from Metadata Zone by GLYPH_DIVIDER (SPACE_NONE — divider handles it).
+    Followed by prompt with SPACE_XS.
+    """
+    # Metadata → Action zone: SPACE_NONE (the divider IS the visual break)
     print_divider()
     for i, r in enumerate(results, 1):
         domain_display = _shorten_domain(r['domain'])
         url = r.get('url', '')
-        print(f" \033[33m{i}\033[0m  {_link(url, r['title'])}")
-        print(f"     \033[90m{_link(url, domain_display)}\033[0m")
-    print()
+        # INDENT_SM (2 spaces) before number per design system
+        print(f"{' ' * INDENT_SM}{C_INTERACTIVE}{i}{C_RESET}  {_link(url, r['title'])}")
+        print(f"{' ' * INDENT_MD}{C_META}{_link(url, domain_display)}{C_RESET}")
+    vspace(SPACE_XS)
     n = len(results)
-    print(f"\033[90m  read in terminal: 1–{n}   open in browser: o1–o{n}   summary: s1–s{n}\033[0m")
+    print(f"{C_META}  read in terminal: 1{GLYPH_RANGE}{n}   open in browser: o1{GLYPH_RANGE}o{n}   summary: s1{GLYPH_RANGE}s{n}{C_RESET}")
     tip = _get_contextual_tip()
     if tip:
-        print(f"\033[90m  {tip}\033[0m")
+        print(f"{C_META}  {tip}{C_RESET}")
+    # Action → Prompt zone transition: SPACE_XS
+    vspace(ZONE_SPACING[("actions", "prompt")])
 
 def print_related(related_lines: list[str]) -> None:
-    """Print related topics extracted from Groq's 'Related:' section."""
-    print()
+    """Print related topics (article reader). Uses design system tokens."""
     print_divider()
-    print("\033[90mRelated topics:\033[0m")
+    print(f"{C_META}Related topics:{C_RESET}")
     for line in related_lines:
-        print(f"  \033[33m{line}\033[0m")
-    print()
-    print(f"\033[90m[ 1-{len(related_lines)} ] search topic   [ q ] quit\033[0m")
+        print(f"  {C_INTERACTIVE}{line}{C_RESET}")
+    vspace(SPACE_XS)
+    print(f"{C_META}[ 1{GLYPH_RANGE}{len(related_lines)} ] search topic   [ q ] quit{C_RESET}")
 
 def _output_json(query: str, response: str, sources: list[str],
                  url: str = "", intent: str = "") -> None:
@@ -2286,9 +2358,12 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         spend += "\033[0m"
     else:
         spend = ""
+    # Answer → Metadata zone transition: SPACE_XS (timing is a caption)
+    vspace(ZONE_SPACING[("answer", "metadata")])
     _ec = _elapsed_color(_elapsed)
-    print(f"{_ec}↳ {_elapsed:.1f}s\033[0m{spend}")
+    print(f"{_ec}{GLYPH_META} {_elapsed:.1f}s{C_RESET}{spend}")
     _print_linked_sources(results)
+    # Metadata → Action zone: SPACE_NONE (print_results starts with divider)
     print_results(results)
 
     if interactive:
@@ -2488,8 +2563,9 @@ def _handle_followup(question: str, context: str = "") -> tuple[list[dict], str]
         spend += "\033[0m"
     else:
         spend = ""
+    vspace(ZONE_SPACING[("answer", "metadata")])
     _ec = _elapsed_color(_elapsed)
-    print(f"{_ec}↳ {_elapsed:.1f}s\033[0m{spend}")
+    print(f"{_ec}{GLYPH_META} {_elapsed:.1f}s{C_RESET}{spend}")
     _print_linked_sources(search_results)
     return search_results, response
 
@@ -2607,12 +2683,14 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
 
     related = parse_related_topics(response) if ai_summary else []
     domain_link = _link(url, domain)
-    print()
+    # Answer → Metadata/Action zone: SPACE_XS then divider
+    vspace(ZONE_SPACING[("answer", "metadata")])
     print_divider()
     if related:
-        print(f"\033[90m  related: 1–{len(related)}   open {domain_link}: o   follow-up: ?   quit: q\033[0m")
+        print(f"{C_META}  related: 1{GLYPH_RANGE}{len(related)}   open {domain_link}: o   follow-up: ?   quit: q{C_RESET}")
     else:
-        print(f"\033[90m  open {domain_link}: o   follow-up: ?   new search: n   quit: q\033[0m")
+        print(f"{C_META}  open {domain_link}: o   follow-up: ?   new search: n   quit: q{C_RESET}")
+    vspace(ZONE_SPACING[("actions", "prompt")])
 
     if interactive:
         _handle_article_input(url, related, response)
