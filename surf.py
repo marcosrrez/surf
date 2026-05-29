@@ -214,54 +214,115 @@ _VALUABLE_PAGE_KEYWORDS = {
     "faq", "info", "team", "staff", "appointment", "book", "schedule",
 }
 
+JINA_BASE = "https://r.jina.ai/"
+
+def _is_spa_shell(html: str) -> bool:
+    """Return True if html looks like a JS SPA shell with no real content."""
+    if len(html) > 15000:
+        return False  # too big to be a shell
+    # SPA shells typically have a module script and almost no body text
+    has_module_script = 'type="module"' in html or "type='module'" in html
+    soup = BeautifulSoup(html, "html.parser")
+    body_text = soup.get_text(strip=True)
+    return has_module_script and len(body_text) < 500
+
+def _fetch_with_jina(url: str) -> str:
+    """
+    Fetch a JS-rendered page using Jina.ai Reader.
+    Returns rendered markdown text, or empty string on failure.
+    """
+    jina_url = JINA_BASE + url
+    try:
+        r = requests.get(
+            jina_url,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "text/plain"},
+            verify=SSL_CERT,
+            timeout=20,
+        )
+        r.raise_for_status()
+        return r.text
+    except Exception:
+        return ""
+
+def _get_sitemap_urls(base_url: str) -> list[str]:
+    """Fetch sitemap.xml and return a list of page URLs."""
+    import re
+    try:
+        r = requests.get(
+            base_url.rstrip("/") + "/sitemap.xml",
+            headers=HEADERS,
+            verify=SSL_CERT,
+            timeout=8,
+        )
+        if not r.ok:
+            return []
+        return re.findall(r"<loc>(.*?)</loc>", r.text)
+    except Exception:
+        return []
+
 def _fetch_sub_pages(html: str, base_url: str, max_pages: int = 3) -> tuple[str, list[str]]:
     """
-    Extract internal links from the page, fetch sub-pages that look valuable
-    (contact, rates, fees, about, services).
+    Fetch relevant sub-pages for a URL.
+    For normal sites: extract links from HTML.
+    For JS SPAs: use sitemap.xml + Jina.ai reader.
     Returns (combined_text, list_of_fetched_page_labels).
     """
     from urllib.parse import urljoin, urlparse
-    soup = BeautifulSoup(html, "html.parser")
-    base_parsed = urlparse(base_url)
-    base_domain = base_parsed.netloc
-
-    # Find internal links that look valuable
-    candidate_links = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"].strip()
-        if not href or href.startswith("#") or href.startswith("mailto:"):
-            continue
-        full_url = urljoin(base_url, href)
-        parsed = urlparse(full_url)
-        if parsed.netloc != base_domain:
-            continue
-        path = parsed.path.lower()
-        link_text = a.get_text(strip=True).lower()
-        if any(kw in path or kw in link_text for kw in _VALUABLE_PAGE_KEYWORDS):
-            candidate_links.append((link_text or path.strip("/"), full_url))
-
-    # Deduplicate by URL
-    seen = set()
-    unique_links = []
-    for text, url in candidate_links:
-        if url not in seen and url != base_url:
-            seen.add(url)
-            unique_links.append((text, url))
-
-    # Fetch up to max_pages, track what we successfully read
+    base_domain = urlparse(base_url).netloc
     extra_texts = []
     fetched_labels = []
-    for link_text, page_url in unique_links[:max_pages]:
-        try:
-            page_html = fetch_page(page_url)
-            _, page_text = extract_text(page_html, max_words=800, return_title=True)
-            if page_text.strip():
-                extra_texts.append(f"\n\n--- {link_text} ({page_url}) ---\n{page_text.strip()}")
-                # Use a short readable label: prefer link text, fall back to path segment
-                label = link_text.split("/")[-1].strip() or link_text
+
+    if _is_spa_shell(html):
+        # SPA: use sitemap to discover pages, Jina to read them
+        sitemap_urls = _get_sitemap_urls(base_url)
+        candidate_urls = []
+        for url in sitemap_urls:
+            if url == base_url or url == base_url.rstrip("/"):
+                continue  # skip homepage, already read
+            path = urlparse(url).path.lower()
+            if any(kw in path for kw in _VALUABLE_PAGE_KEYWORDS):
+                label = path.strip("/").split("/")[-1] or path.strip("/")
+                candidate_urls.append((label, url))
+
+        for label, page_url in candidate_urls[:max_pages]:
+            jina_text = _fetch_with_jina(page_url)
+            if jina_text and len(jina_text.strip()) > 100:
+                extra_texts.append(f"\n\n--- {label} ---\n{jina_text[:2000]}")
                 fetched_labels.append(label[:20])
-        except Exception:
-            continue
+    else:
+        # Normal site: extract internal links from HTML
+        soup = BeautifulSoup(html, "html.parser")
+        candidate_links = []
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            if not href or href.startswith("#") or href.startswith("mailto:"):
+                continue
+            full_url = urljoin(base_url, href)
+            parsed = urlparse(full_url)
+            if parsed.netloc != base_domain:
+                continue
+            path = parsed.path.lower()
+            link_text = a.get_text(strip=True).lower()
+            if any(kw in path or kw in link_text for kw in _VALUABLE_PAGE_KEYWORDS):
+                candidate_links.append((link_text or path.strip("/"), full_url))
+
+        seen = set()
+        unique_links = []
+        for text, url in candidate_links:
+            if url not in seen and url != base_url:
+                seen.add(url)
+                unique_links.append((text, url))
+
+        for link_text, page_url in unique_links[:max_pages]:
+            try:
+                page_html = fetch_page(page_url)
+                _, page_text = extract_text(page_html, max_words=800, return_title=True)
+                if page_text.strip():
+                    extra_texts.append(f"\n\n--- {link_text} ({page_url}) ---\n{page_text.strip()}")
+                    label = link_text.split("/")[-1].strip() or link_text
+                    fetched_labels.append(label[:20])
+            except Exception:
+                continue
 
     return "".join(extra_texts), fetched_labels
 
@@ -802,7 +863,21 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True) -> st
             print(f"\033[31mCould not fetch page: {e}\033[0m")
         return ""
 
-    title, text = extract_text(html, return_title=True)
+    # For JS SPAs, the fetched HTML is a shell — use Jina to get real content
+    if _is_spa_shell(html):
+        jina_content = _fetch_with_jina(url)
+        if jina_content:
+            # Extract title from Jina's markdown header
+            title = ""
+            for line in jina_content.splitlines():
+                if line.startswith("Title:"):
+                    title = line.replace("Title:", "").strip()
+                    break
+            text = jina_content
+        else:
+            title, text = extract_text(html, return_title=True)
+    else:
+        title, text = extract_text(html, return_title=True)
 
     # Fetch relevant sub-pages (contact, rates, about) and append their content
     sub_labels = []
