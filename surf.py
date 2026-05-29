@@ -1731,7 +1731,8 @@ def _entity_in_results(entity: str, results: list[dict]) -> bool:
     return False
 
 
-def _fix_entity_mismatch(query: str, results: list[dict], ddg_query: str) -> tuple[list[dict], str]:
+def _fix_entity_mismatch(query: str, results: list[dict], ddg_query: str,
+                          evaluative_context: dict | None = None) -> tuple[list[dict], str]:
     """
     If a specific entity in the query isn't in any result, retry with quoted exact-match search.
     Returns (new_results_or_original, new_ddg_query_or_original).
@@ -1739,14 +1740,16 @@ def _fix_entity_mismatch(query: str, results: list[dict], ddg_query: str) -> tup
     entities = _extract_specific_entities(query)
     for entity in entities:
         if not _entity_in_results(entity, results):
-            # DDG returned wrong entity — retry with quoted phrase for exact match
             retry_q = f'"{entity}" ' + " ".join(
                 w for w in query.lower().split()
                 if w not in entity.lower() and len(w) > 3
             )
             retry_q = retry_q.strip()
             try:
-                new_results = _filter_results(ddg_search(retry_q, num_results=5))
+                new_results = _filter_results(
+                    ddg_search(retry_q, num_results=5),
+                    evaluative_context=evaluative_context,
+                )
                 if new_results:
                     return new_results, retry_q
             except Exception:
@@ -1796,7 +1799,8 @@ def _classify_tier(query: str) -> str:
     return "snippet"
 
 
-def _confidence_gate(query: str, results: list[dict], tier: str) -> str:
+def _confidence_gate(query: str, results: list[dict], tier: str,
+                     entity_type: str | None = None) -> str:
     """
     Check snippet quality. Returns the final tier to use — same as input or escalated one level.
     Never downgrades. Deep tiers (research, contested) pass through unchanged.
@@ -1823,7 +1827,8 @@ def _confidence_gate(query: str, results: list[dict], tier: str) -> str:
             return "research"
 
     # Authority: domain-specific query but zero authoritative sources returned
-    entity_type = _identify_entity_type(query)
+    if entity_type is None:
+        entity_type = _identify_entity_type(query)
     if entity_type and entity_type in SOURCE_HIERARCHY:
         result_domains = {r.get("domain", "") for r in results}
         has_authority = any(
@@ -1841,6 +1846,7 @@ def _deep_research(
     tier: str,
     results: list[dict],
     enriched_query: str = "",
+    entity_type: str | None = None,
 ) -> tuple[str, list[dict]]:
     """
     Fetch real article content for deep-tier searches.
@@ -1850,7 +1856,8 @@ def _deep_research(
     sources_to_read = list(results[:3])
 
     # For current/contested: if no authoritative sources in results, add a targeted search
-    entity_type = _identify_entity_type(query)
+    if entity_type is None:
+        entity_type = _identify_entity_type(query)
     if tier in ("current", "contested") and entity_type in SOURCE_HIERARCHY:
         result_domains = {r.get("domain", "") for r in results}
         has_authority = any(
@@ -1968,7 +1975,8 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
 
     # Entity match check: if query mentions a specific institution/location but
     # results are about a different entity, retry with quoted exact-match search
-    results, ddg_query = _fix_entity_mismatch(query, results, ddg_query)
+    results, ddg_query = _fix_entity_mismatch(query, results, ddg_query,
+                                               evaluative_context=eval_context)
 
     if not results:
         print("\033[90mNo results found.\033[0m")
@@ -1987,8 +1995,11 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     if len(results) > 1:
         results = _bm25_rank(query, results)
 
+    # Compute entity type once — used by confidence gate, deep research, and fix_entity_mismatch
+    _entity_type = _identify_entity_type(query)
+
     # Adaptive confidence gate — may escalate tier based on snippet quality
-    tier = _confidence_gate(query, results, tier)
+    tier = _confidence_gate(query, results, tier, entity_type=_entity_type)
 
     # Self-evaluating source check: try one more targeted search when sources are thin.
     # Fast cosine check first (free) — if snippets are near-copies, skip the LLM call.
@@ -2027,7 +2038,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     if tier in ("current", "research", "contested"):
         # Deep path: fetch real article content
         print_status("↳ thinking...")
-        deep_content, deep_sources = _deep_research(query, tier, results, ddg_query)
+        deep_content, deep_sources = _deep_research(query, tier, results, ddg_query, entity_type=_entity_type)
 
         if deep_content:
             source_count = len(deep_sources)
@@ -2276,7 +2287,8 @@ def _handle_followup(question: str, context: str = "") -> tuple[list[dict], str]
     response = stream_to_terminal(stream, results=cite_results)
     _elapsed = time.time() - _t0
 
-    print(f"\033[90m↳ {_elapsed:.1f}s\033[0m")
+    spend = f" · claude {claude_monthly_spend()}" if (_HAS_ANTHROPIC and _claude_budget_ok()) else ""
+    print(f"\033[90m↳ {_elapsed:.1f}s{spend}\033[0m")
     _print_linked_sources(search_results)
     return search_results, response
 
