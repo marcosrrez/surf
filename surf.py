@@ -1280,6 +1280,19 @@ def _enrich_ddg_query(user_query: str) -> str:
     return enriched
 
 
+def _classify_tier(query: str) -> str:
+    """Classify query into search tier using heuristics. Returns snippet | current | research | contested."""
+    q = " " + query.lower() + " "
+    # Current takes priority — time-sensitive queries beat everything
+    if any(s in q for s in SEARCH_TIER_SIGNALS["current"]):
+        return "current"
+    if any(s in q for s in SEARCH_TIER_SIGNALS["contested"]):
+        return "contested"
+    if any(s in q for s in SEARCH_TIER_SIGNALS["research"]):
+        return "research"
+    return "snippet"
+
+
 def search_flow(query: str, interactive: bool = True, json_output: bool = False) -> tuple[list[dict], str]:
     """
     Run the search flow: DDG → Groq → display results.

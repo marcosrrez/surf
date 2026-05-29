@@ -6,6 +6,7 @@ from surf import stream_groq
 from surf import search_flow
 from surf import read_flow, parse_related_topics
 from surf import classify_intent, open_in_browser
+from surf import _classify_tier
 import json
 from unittest.mock import patch, MagicMock
 
@@ -311,3 +312,41 @@ class TestOpenInBrowser:
         with patch("surf.subprocess.run") as mock_run:
             open_in_browser("https://google.com")
             mock_run.assert_called_once_with(["open", "https://google.com"])
+
+class TestClassifyTier:
+    def test_current_tier_will(self):
+        assert _classify_tier("who will win the UEFA champions league") == "current"
+
+    def test_current_tier_latest(self):
+        assert _classify_tier("latest news on AI regulation") == "current"
+
+    def test_current_tier_predict(self):
+        assert _classify_tier("predict the stock market tomorrow") == "current"
+
+    def test_research_tier_how_does(self):
+        assert _classify_tier("how does a vaccine work") == "research"
+
+    def test_research_tier_explain(self):
+        assert _classify_tier("explain quantum entanglement") == "research"
+
+    def test_research_tier_what_causes(self):
+        assert _classify_tier("what causes inflation") == "research"
+
+    def test_contested_tier_vs(self):
+        assert _classify_tier("React vs Vue for a new project") == "contested"
+
+    def test_contested_tier_best(self):
+        assert _classify_tier("best Python web framework 2026") == "contested"
+
+    def test_contested_tier_should_i(self):
+        assert _classify_tier("should I use Postgres or MongoDB") == "contested"
+
+    def test_snippet_tier_stable_fact(self):
+        assert _classify_tier("who wrote Pride and Prejudice") == "snippet"
+
+    def test_snippet_tier_definition(self):
+        assert _classify_tier("what is a black hole") == "snippet"
+
+    def test_current_priority_over_contested(self):
+        # "will" signal should beat "best" — current events wins
+        assert _classify_tier("who will win the best picture oscar") == "current"
