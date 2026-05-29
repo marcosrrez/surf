@@ -753,7 +753,7 @@ def _handle_article_input(url: str, related: list[str], context: str) -> None:
     """Interactive prompt after reading an article."""
     while True:
         try:
-            choice = input("\n› ").strip()
+            choice = surf_input()
         except (KeyboardInterrupt, EOFError):
             break
 
@@ -763,7 +763,7 @@ def _handle_article_input(url: str, related: list[str], context: str) -> None:
         if cl == "q":
             break
         elif cl == "n":
-            query = input("New search: ").strip()
+            query = surf_input("New search: ")
             if query:
                 search_flow(query)
             break
@@ -780,8 +780,11 @@ def _handle_article_input(url: str, related: list[str], context: str) -> None:
             else:
                 print(f"\033[90mPick 1-{len(related)} or type a follow-up question\033[0m")
         elif choice.strip():
-            # Follow-up question with article context
-            _handle_followup(choice, context=context)
+            if _is_casual_input(choice):
+                print(f"\033[90m(surf is a search tool — try asking a question or picking a result)\033[0m")
+            else:
+                # Follow-up question with article context
+                _handle_followup(choice, context=context)
         # empty input: loop again
 
 CLASSIFIER_SYSTEM = """You are an intent classifier. Given a user query, return ONLY a JSON object — no explanation, no markdown, no code block. Just raw JSON.
@@ -867,27 +870,28 @@ def _build_booking_sites(query: str, intent: dict) -> list[dict]:
 
 HISTORY_FILE = os.path.expanduser("~/.config/surf/history")
 
-class _DDGCompleter(Completer):
-    """Tab-completion using DuckDuckGo autocomplete API."""
-    def get_completions(self, document, complete_event):
-        word = document.text.strip()
-        if len(word) < 2:
-            return
-        try:
-            r = requests.get(
-                "https://ac.duckduckgo.com/ac/",
-                params={"q": word, "type": "list"},
-                headers=HEADERS,
-                verify=SSL_CERT,
-                timeout=2,
-            )
-            if r.ok:
-                data = r.json()
-                suggestions = data[1] if len(data) > 1 else []
-                for s in suggestions[:6]:
-                    yield Completion(s, start_position=-len(word))
-        except Exception:
-            return
+if _HAS_PROMPT_TOOLKIT:
+    class _DDGCompleter(Completer):
+        """Tab-completion using DuckDuckGo autocomplete API."""
+        def get_completions(self, document, complete_event):
+            word = document.text.strip()
+            if len(word) < 2:
+                return
+            try:
+                r = requests.get(
+                    "https://ac.duckduckgo.com/ac/",
+                    params={"q": word, "type": "list"},
+                    headers=HEADERS,
+                    verify=SSL_CERT,
+                    timeout=2,
+                )
+                if r.ok:
+                    data = r.json()
+                    suggestions = data[1] if len(data) > 1 else []
+                    for s in suggestions[:6]:
+                        yield Completion(s, start_position=-len(word))
+            except Exception:
+                return
 
 def surf_input(placeholder: str = "") -> str:
     """
@@ -897,11 +901,12 @@ def surf_input(placeholder: str = "") -> str:
     if not _HAS_PROMPT_TOOLKIT:
         return input(f"\n{placeholder}› ").strip()
     try:
+        completer = _DDGCompleter() if _HAS_PROMPT_TOOLKIT else None
         return _ptk_prompt(
             "› ",
             history=FileHistory(HISTORY_FILE),
             auto_suggest=AutoSuggestFromHistory(),
-            completer=_DDGCompleter(),
+            completer=completer,
             complete_while_typing=False,
         ).strip()
     except (KeyboardInterrupt, EOFError):
@@ -965,7 +970,6 @@ def _add_to_history(text: str) -> None:
         _readline.add_history(text.strip())
 
 def main():
-    _setup_readline()
     import argparse
     parser = argparse.ArgumentParser(
         prog="surf",
@@ -1030,7 +1034,7 @@ def main():
             # Wait for user to pick
             while True:
                 try:
-                    choice = input("\n› ").strip().lower()
+                    choice = surf_input().lower()
                 except (KeyboardInterrupt, EOFError):
                     break
                 if choice == "q":
