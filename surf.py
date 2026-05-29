@@ -209,6 +209,50 @@ def extract_text(html: str, max_words: int = 6000, return_title: bool = False):
         return title, text
     return text
 
+def extract_schema_data(html: str) -> dict:
+    """
+    Extract schema.org JSON-LD structured data from HTML.
+    Returns a dict of the most useful fields found, or empty dict.
+    Common schemas: LocalBusiness, Person, Product, Article, FAQPage.
+    """
+    import json as _json
+    soup = BeautifulSoup(html, "html.parser")
+    schema_data = {}
+
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = _json.loads(script.string or "")
+            # Handle both single objects and arrays
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                schema_type = item.get("@type", "")
+                # LocalBusiness, MedicalBusiness, Physician, etc.
+                if any(t in schema_type for t in ["Business", "Organization", "Person", "Medical"]):
+                    for field in ["name", "telephone", "email", "address",
+                                  "priceRange", "openingHours", "url",
+                                  "description", "areaServed", "currenciesAccepted"]:
+                        val = item.get(field)
+                        if val:
+                            if isinstance(val, dict):
+                                # address object
+                                parts = [val.get(k, "") for k in
+                                         ["streetAddress", "addressLocality",
+                                          "addressRegion", "postalCode"]]
+                                val = ", ".join(p for p in parts if p)
+                            schema_data[field] = val
+                # Product pricing
+                if "Product" in schema_type:
+                    offers = item.get("offers", {})
+                    if isinstance(offers, dict):
+                        price = offers.get("price") or offers.get("lowPrice")
+                        currency = offers.get("priceCurrency", "USD")
+                        if price:
+                            schema_data["price"] = f"{currency} {price}"
+        except Exception:
+            continue
+
+    return schema_data
+
 _VALUABLE_PAGE_KEYWORDS = {
     "contact", "rate", "fee", "price", "cost", "about", "service",
     "faq", "info", "team", "staff", "appointment", "book", "schedule",
@@ -806,12 +850,40 @@ def _handle_followup(question: str, context: str = "") -> None:
     # Generate a context-aware search query so "how much does he charge?"
     # becomes "Marcos Gutierrez therapist fees marcosgutierrezcounseling.com"
     search_query = _contextualize_query(question, context)
-    print_status(f"↳ searching: \"{search_query[:55]}\"...")
+    entity_type = _identify_entity_type(context)
+    if entity_type:
+        print_status(f"↳ searching {entity_type} sources for: \"{search_query[:40]}\"...")
+    else:
+        print_status(f"↳ searching: \"{search_query[:55]}\"...")
     try:
         search_results = ddg_search(search_query)
     except Exception:
         search_results = []
     search_results = _filter_results(search_results)
+
+    # Source intelligence: if results are thin or from unknown sources,
+    # check category-specific authoritative sources
+    if entity_type and entity_type in _SOURCE_INTELLIGENCE:
+        authoritative_domains = _SOURCE_INTELLIGENCE[entity_type]
+        # Check if we already have results from authoritative sources
+        result_domains = {r.get("domain", "") for r in search_results}
+        has_authoritative = any(
+            any(auth in domain for auth in authoritative_domains)
+            for domain in result_domains
+        )
+        if not has_authoritative or len(search_results) < 3:
+            # Search specifically on authoritative sources
+            auth_query = search_query + " " + authoritative_domains[0].split(".")[0]
+            try:
+                auth_results = _filter_results(ddg_search(auth_query, num_results=3))
+                # Merge unique results
+                seen = {r["domain"] for r in search_results}
+                for r in auth_results:
+                    if r["domain"] not in seen:
+                        search_results.append(r)
+                        seen.add(r["domain"])
+            except Exception:
+                pass
     clear_status()
 
     domains = " · ".join(r["domain"].removeprefix("www.") for r in search_results[:3]) if search_results else ""
@@ -850,8 +922,9 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True) -> st
     Run the read flow: fetch URL → extract text → Groq → display.
     Returns the Groq response text (or raw extracted text in raw mode).
     """
+    domain_display = url.replace("https://", "").replace("http://", "").split("/")[0]
     try:
-        with Spinner(f"fetching {url[:60]}..."):
+        with Spinner(f"reading {domain_display}..."):
             html = fetch_page(url)
     except Exception as e:
         err = str(e)
@@ -879,10 +952,29 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True) -> st
     else:
         title, text = extract_text(html, return_title=True)
 
+    # Extract schema.org structured data — fast, accurate, zero tokens
+    schema = extract_schema_data(html if not _is_spa_shell(html) else "")
+    if schema:
+        schema_lines = ["Structured data from page:"]
+        field_labels = {
+            "name": "Name", "telephone": "Phone", "email": "Email",
+            "address": "Address", "priceRange": "Price Range",
+            "openingHours": "Hours", "areaServed": "Area Served",
+            "description": "Description", "price": "Price"
+        }
+        for key, label in field_labels.items():
+            if key in schema:
+                schema_lines.append(f"  {label}: {schema[key]}")
+        text = "\n".join(schema_lines) + "\n\n" + text
+
     # Fetch relevant sub-pages (contact, rates, about) and append their content
     sub_labels = []
     try:
-        sub_page_text, sub_labels = _fetch_sub_pages(html, url)
+        is_spa = _is_spa_shell(html)
+        if is_spa:
+            print_status(f"↳ {domain_display} is JS-rendered — using Jina reader...")
+            time.sleep(0.3)  # brief pause so user can read
+        sub_page_text, sub_labels = _fetch_sub_pages(html, url, max_pages=4)
         if sub_page_text:
             text = text + sub_page_text
     except Exception:
@@ -1127,6 +1219,50 @@ _SPAM_DOMAINS = {
     "pinterest.com", "facebook.com", "instagram.com", "twitter.com",
     "tiktok.com", "reddit.com",  # these rarely have the actual article content
 }
+
+# Authoritative sources by content category
+# These are the places where specific types of information reliably live
+_SOURCE_INTELLIGENCE = {
+    "therapist": ["psychologytoday.com", "therapyden.com", "goodtherapy.org", "zocdoc.com"],
+    "doctor": ["healthgrades.com", "zocdoc.com", "vitals.com", "npiregistry.cms.hhs.gov"],
+    "lawyer": ["avvo.com", "martindale.com", "lawyers.com", "justia.com"],
+    "restaurant": ["yelp.com", "tripadvisor.com", "opentable.com"],
+    "hotel": ["booking.com", "tripadvisor.com", "expedia.com"],
+    "product": ["amazon.com", "bestbuy.com", "consumerreports.org"],
+    "company": ["crunchbase.com", "linkedin.com", "bloomberg.com"],
+    "medical": ["pubmed.ncbi.nlm.nih.gov", "mayoclinic.org", "webmd.com"],
+    "legal": ["law.cornell.edu", "justia.com", "findlaw.com"],
+    "academic": ["scholar.google.com", "arxiv.org", "semanticscholar.org"],
+    "news": ["reuters.com", "apnews.com", "bbc.com"],
+    "finance": ["sec.gov", "finance.yahoo.com", "bloomberg.com"],
+    "government": ["usa.gov", "congress.gov", "regulations.gov"],
+}
+
+def _identify_entity_type(text: str) -> str | None:
+    """
+    Identify what type of entity the content is about.
+    Returns a key from _SOURCE_INTELLIGENCE or None.
+    """
+    text_lower = text.lower()[:2000]
+    signals = {
+        "therapist": ["therapist", "counselor", "psychologist", "therapy", "counseling", "mental health", "lac", "lcsw", "lpc"],
+        "doctor": ["physician", "doctor", "md ", "medical doctor", "clinic", "patient", "diagnosis"],
+        "lawyer": ["attorney", "lawyer", "law firm", "legal", "esq", "counsel", "litigation"],
+        "restaurant": ["restaurant", "menu", "cuisine", "dining", "reservations", "chef"],
+        "hotel": ["hotel", "resort", "check-in", "amenities", "rooms", "suites"],
+        "product": ["price", "buy now", "add to cart", "shipping", "model number"],
+        "company": ["founded", "headquarters", "employees", "revenue", "ceo", "startup"],
+        "medical": ["symptoms", "treatment", "diagnosis", "clinical", "study", "patients"],
+        "finance": ["stock", "shares", "earnings", "market cap", "dividend", "sec filing"],
+    }
+    best_match = None
+    best_score = 0
+    for entity_type, keywords in signals.items():
+        score = sum(1 for kw in keywords if kw in text_lower)
+        if score > best_score:
+            best_score = score
+            best_match = entity_type
+    return best_match if best_score >= 2 else None
 
 def _filter_results(results: list[dict]) -> list[dict]:
     """Remove low-quality domains from search results."""
