@@ -542,3 +542,34 @@ class TestSearchFlowTiers:
 
         assert captured_system[0] == SEARCH_SYSTEM_CURRENT
         assert captured_system[0] != SEARCH_SYSTEM
+
+
+from surf import stream_to_terminal
+
+class TestInlineCitations:
+    def test_citation_renders_as_gray_text_without_results(self):
+        """[1] with no results list passes through as plain text"""
+        def fake_stream():
+            yield "Answer text [1] more text"
+        import io, sys
+        captured = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = captured
+        result = stream_to_terminal(fake_stream(), results=None)
+        sys.stdout = old_stdout
+        assert "[1]" in result
+
+    def test_citation_in_result_contains_url_when_results_provided(self):
+        """[1] with results renders an OSC 8 hyperlink containing the URL"""
+        results = [{"url": "https://reuters.com/article", "domain": "reuters.com", "title": "T", "snippet": "S"}]
+        def fake_stream():
+            yield "Iran [1] ceasefire"
+        import io, sys
+        captured = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = captured
+        result = stream_to_terminal(fake_stream(), results=results)
+        sys.stdout = old_stdout
+        # The URL should appear somewhere in stdout (as OSC 8 escape sequence)
+        output = captured.getvalue()
+        assert "reuters.com" in output

@@ -449,6 +449,7 @@ Format rules (use exactly):
 - 2-4 short paragraphs of detail using plain text
 - Use "•" for bullet points, never dashes or asterisks
 - Use **bold** for key terms (two asterisks each side)
+- When a specific fact comes from a source, cite it inline as [1], [2], etc. matching the numbered snippets
 - End after your last paragraph — do not add a Sources line
 
 Voice rules:
@@ -1049,7 +1050,7 @@ def clear_status() -> None:
     sys.stdout.write("\r" + " " * _term_width() + "\r")
     sys.stdout.flush()
 
-def stream_to_terminal(stream) -> str:
+def stream_to_terminal(stream, results: list[dict] | None = None) -> str:
     """Stream output with word-aware wrapping, TL;DR styling, bold, and bullet indent."""
     width = _term_width()
     accumulated = ""
@@ -1072,6 +1073,19 @@ def stream_to_terminal(stream) -> str:
         if in_tldr_line:
             # Force bright-white bold regardless of current state
             sys.stdout.write(f"\033[1;97m{word_buf}\033[0m")
+        elif results and re.match(r'^\[\d\]$', word_buf):
+            # Inline citation — render as dim clickable link
+            idx = int(word_buf[1]) - 1
+            if 0 <= idx < len(results):
+                url = results[idx].get("url", "")
+                domain = results[idx].get("domain", "").removeprefix("www.")
+                if url:
+                    # OSC 8 hyperlink: dim gray [N] that opens the source
+                    sys.stdout.write(f"\033[90m\033]8;;{url}\033\\[{idx+1}]\033]8;;\033\\\033[0m")
+                else:
+                    sys.stdout.write(f"\033[90m{word_buf}\033[0m")
+            else:
+                sys.stdout.write(f"\033[90m{word_buf}\033[0m")
         else:
             # Output raw — inherits current terminal bold state from ** toggles
             sys.stdout.write(word_buf)
@@ -1273,6 +1287,7 @@ Format rules:
 - 2-4 paragraphs using the actual content from the sources provided
 - Use **bold** for key names and facts
 - Use "•" for bullet points, never dashes
+- When a specific fact comes from a source, cite it inline as [1], [2], etc. matching the numbered snippets
 
 Voice rules:
 - Be specific. If the sources have names, scores, odds, dates — use them.
@@ -1288,6 +1303,7 @@ Format rules:
 - 3-5 paragraphs building from fundamentals to implications
 - Use **bold** for key concepts
 - Use "•" for bullet points where appropriate
+- When a specific fact comes from a source, cite it inline as [1], [2], etc. matching the numbered snippets
 
 Voice rules:
 - Synthesize across sources — don't summarize each separately.
@@ -1302,6 +1318,7 @@ Format rules:
 - Present each major perspective with its strongest argument
 - Use **bold** for key positions and tradeoffs
 - End with your honest assessment of which is right for which use case
+- When a specific fact comes from a source, cite it inline as [1], [2], etc. matching the numbered snippets
 
 Voice rules:
 - Name the tradeoffs explicitly. Don't pick a winner unless evidence is overwhelming.
@@ -1572,7 +1589,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
 
         clear_status()
         stream = stream_ai(prompt, system)
-        response = stream_to_terminal(stream)
+        response = stream_to_terminal(stream, results=results)
 
         # Use deep_sources for the linked sources line if available
         if deep_sources:
@@ -1583,7 +1600,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         print_status("↳ thinking...")
         clear_status()
         stream = stream_ai(base_prompt, system)
-        response = stream_to_terminal(stream)
+        response = stream_to_terminal(stream, results=results)
 
     _elapsed = time.time() - _t0
 
@@ -1610,7 +1627,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
                     clear_status()
                     print(f"\n\033[90m↳ verifying from {results[0].get('domain', 'source')}...\033[0m")
                     verify_stream = stream_ai(verify_prompt, system)
-                    response = stream_to_terminal(verify_stream)
+                    response = stream_to_terminal(verify_stream, results=results)
             except Exception:
                 clear_status()
 
