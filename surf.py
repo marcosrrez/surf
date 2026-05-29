@@ -1503,9 +1503,10 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
             results = deep_sources + [r for r in results if r not in deep_sources][:2]
     else:
         # Snippet path (fast — existing behavior)
+        system = SEARCH_SYSTEM
         print_status("↳ thinking...")
         clear_status()
-        stream = stream_ai(base_prompt, SEARCH_SYSTEM)
+        stream = stream_ai(base_prompt, system)
         response = stream_to_terminal(stream)
 
     _elapsed = time.time() - _t0
@@ -1532,7 +1533,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
                     )
                     clear_status()
                     print(f"\n\033[90m↳ verifying from {results[0].get('domain', 'source')}...\033[0m")
-                    verify_stream = stream_ai(verify_prompt, SEARCH_SYSTEM)
+                    verify_stream = stream_ai(verify_prompt, system)
                     response = stream_to_terminal(verify_stream)
             except Exception:
                 clear_status()
@@ -2014,15 +2015,6 @@ def _is_casual_input(text: str) -> bool:
         return True
     return False
 
-def _needs_multi_search(query: str) -> bool:
-    """True if query is complex enough to benefit from a second search."""
-    complex_signals = [
-        "vs", "versus", "compare", "difference", "predict", "odds", "chance",
-        "best", "worst", "top", "rank", "should i", "which is", "how does",
-        "why did", "who won", "what happened", "latest", "news", "2025", "2026",
-    ]
-    q = query.lower()
-    return any(s in q for s in complex_signals)
 
 _SPAM_DOMAINS = {
     "roblox.com", "y8.com", "grindsuccess.com", "quora.com",
