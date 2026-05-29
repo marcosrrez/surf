@@ -1293,6 +1293,46 @@ def _classify_tier(query: str) -> str:
     return "snippet"
 
 
+def _confidence_gate(query: str, results: list[dict], tier: str) -> str:
+    """
+    Check snippet quality. Returns the final tier to use — same as input or escalated one level.
+    Never downgrades. Deep tiers (research, contested) pass through unchanged.
+    """
+    if tier in ("research", "contested") or not results:
+        return tier
+
+    year = time.strftime("%Y")
+    q_lower = query.lower()
+    snippets_text = " ".join(
+        r.get("snippet", "") + " " + r.get("title", "") for r in results
+    ).lower()
+
+    # Freshness: temporal query but snippets contain no current-year signal
+    is_temporal = any(s.strip() in (" " + q_lower + " ") for s in SEARCH_TIER_SIGNALS["current"])
+    if is_temporal and year not in snippets_text and str(int(year) - 1) not in snippets_text:
+        return "current"
+
+    # Coverage: fewer than 30% of meaningful query words appear in snippets
+    query_words = [w for w in q_lower.split() if len(w) > 4]
+    if query_words:
+        found = sum(1 for w in query_words if w in snippets_text)
+        if found / len(query_words) < 0.3:
+            return "research"
+
+    # Authority: domain-specific query but zero authoritative sources returned
+    entity_type = _identify_entity_type(query)
+    if entity_type and entity_type in SOURCE_HIERARCHY:
+        result_domains = {r.get("domain", "") for r in results}
+        has_authority = any(
+            any(auth in d for auth in SOURCE_HIERARCHY[entity_type])
+            for d in result_domains
+        )
+        if not has_authority:
+            return "current"
+
+    return tier
+
+
 def search_flow(query: str, interactive: bool = True, json_output: bool = False) -> tuple[list[dict], str]:
     """
     Run the search flow: DDG → Groq → display results.

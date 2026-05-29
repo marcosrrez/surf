@@ -7,6 +7,7 @@ from surf import search_flow
 from surf import read_flow, parse_related_topics
 from surf import classify_intent, open_in_browser
 from surf import _classify_tier
+from surf import _confidence_gate
 import json
 from unittest.mock import patch, MagicMock
 
@@ -350,3 +351,51 @@ class TestClassifyTier:
     def test_current_priority_over_contested(self):
         # "will" signal should beat "best" — current events wins
         assert _classify_tier("who will win the best picture oscar") == "current"
+
+
+class TestConfidenceGate:
+    def _make_results(self, snippets, domains=None):
+        domains = domains or ["example.com"] * len(snippets)
+        return [{"snippet": s, "title": "", "domain": d, "url": f"https://{d}"}
+                for s, d in zip(snippets, domains)]
+
+    def test_stays_snippet_when_snippets_are_good(self):
+        results = self._make_results(
+            ["Jane Austen wrote Pride and Prejudice in 1813"],
+        )
+        assert _confidence_gate("who wrote Pride and Prejudice", results, "snippet") == "snippet"
+
+    def test_escalates_to_current_stale_temporal_query(self):
+        # Query is temporal (will), snippets have no current year
+        results = self._make_results(
+            ["Manchester City predicted to win Champions League 2023-24 season"],
+        )
+        assert _confidence_gate("who will win the UCL", results, "snippet") == "current"
+
+    def test_escalates_to_research_low_coverage(self):
+        # Query words don't appear in snippets at all
+        results = self._make_results(["Some completely unrelated content about cookies"])
+        result = _confidence_gate("what causes quantum entanglement decoherence", results, "snippet")
+        assert result == "research"
+
+    def test_doesnt_downgrade_research_tier(self):
+        # Research tier should never be downgraded, even with good snippets
+        results = self._make_results(["Great snippet with lots of relevant words about research topics"])
+        assert _confidence_gate("how does a vaccine work", results, "research") == "research"
+
+    def test_doesnt_downgrade_contested_tier(self):
+        results = self._make_results(["React is better than Vue for large apps"])
+        assert _confidence_gate("React vs Vue", results, "contested") == "contested"
+
+    def test_stays_current_with_fresh_snippets(self):
+        import time
+        year = time.strftime("%Y")
+        results = self._make_results(
+            [f"PSG vs Arsenal Champions League Final {year}"],
+            domains=["espn.com"],
+        )
+        result = _confidence_gate("who will win the UCL", results, "current")
+        assert result == "current"  # already current, stays current
+
+    def test_empty_results_returns_tier_unchanged(self):
+        assert _confidence_gate("anything", [], "snippet") == "snippet"
