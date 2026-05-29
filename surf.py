@@ -468,7 +468,7 @@ Voice rules:
 - Every sentence must add information not already stated. Never rephrase the TL;DR in the body.
 - Use specific language: prefer "reduced by 40%" over "significantly reduced", "in 2026" over "recently".
 - If sources only contain one key fact, write one focused paragraph — do not pad.
-- For simple factual questions: one short paragraph is enough.
+- For simple factual questions (a name, a date, a number, a definition): one short paragraph — 50 words maximum. Stop when the fact is stated.
 - For questions about future events or anything unpredictable: say it cannot be known, then explain what factors are relevant.
 - If sources are thin or all repeating the same basic fact, say so clearly rather than padding.
 - Never fabricate specific facts not present in the search snippets."""
@@ -2942,7 +2942,13 @@ def main():
         if intent["intent"] == "instant":
             print_header(query.capitalize())
             # No snippets — use a lightweight prompt without citation instructions
-            instant_system = "Answer directly and concisely. Lead with the answer. No filler."
+            instant_system = (
+                "Answer in one sentence maximum — often just a word or number is right. "
+                "Calculations: output the number only, e.g. '51'. "
+                "Translations: output the word only, e.g. 'Hola'. "
+                "Conversions: number + unit, e.g. '5,280 feet'. "
+                "Definitions: one sentence. No explanation, no context, no filler."
+            )
             stream = stream_ai(f"{query}", instant_system)
             stream_to_terminal(stream)
 
