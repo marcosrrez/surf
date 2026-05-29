@@ -363,7 +363,7 @@ def stream_groq(prompt: str, system: str, model: str = GROQ_MODEL, max_tokens: i
         sys.stdout.flush()
         yield from stream_cerebras(prompt, system, max_tokens)
 
-CEREBRAS_MODEL = "llama-3.3-70b"
+CEREBRAS_MODEL = "gpt-oss-120b"
 CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
 
 def stream_cerebras(prompt: str, system: str, max_tokens: int = 2048):
