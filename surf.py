@@ -449,7 +449,7 @@ Format rules (use exactly):
 - 2-4 short paragraphs of detail using plain text
 - Use "•" for bullet points, never dashes or asterisks
 - Use **bold** for key terms (two asterisks each side)
-- Final line: "Sources: domain1.com · domain2.com · domain3.com"
+- End after your last paragraph — do not add a Sources line
 
 Voice rules:
 - Be direct. No filler phrases like "Great question", "Certainly", or "Of course".
