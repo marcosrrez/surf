@@ -355,30 +355,30 @@ def stream_groq(prompt: str, system: str, model: str = GROQ_MODEL, max_tokens: i
             if content:
                 yield content
     except groq.RateLimitError:
-        sys.stdout.write("\r\033[33m↳ Groq daily limit reached — switching to Gemini...\033[0m\n")
+        sys.stdout.write("\r\033[33m↳ Groq daily limit reached — switching to Cerebras...\033[0m\n")
         sys.stdout.flush()
-        yield from stream_gemini(prompt, system, max_tokens)
+        yield from stream_cerebras(prompt, system, max_tokens)
     except groq.APIError as e:
-        sys.stdout.write(f"\r\033[33m↳ Groq error ({e.status_code}) — switching to Gemini...\033[0m\n")
+        sys.stdout.write(f"\r\033[33m↳ Groq error — switching to Cerebras...\033[0m\n")
         sys.stdout.flush()
-        yield from stream_gemini(prompt, system, max_tokens)
+        yield from stream_cerebras(prompt, system, max_tokens)
 
-GEMINI_MODEL = "gemini-2.0-flash"
-GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+CEREBRAS_MODEL = "llama-3.3-70b"
+CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
 
-def stream_gemini(prompt: str, system: str, max_tokens: int = 2048):
+def stream_cerebras(prompt: str, system: str, max_tokens: int = 2048):
     """
-    Stream a Gemini completion via Google's OpenAI-compatible endpoint.
-    Used as fallback when Groq is rate-limited.
+    Stream a Cerebras completion. Used as fallback when Groq is rate-limited.
+    Cerebras uses the same Llama 3.3 70B model with an OpenAI-compatible API.
     """
     config = load_config()
-    api_key = config.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+    api_key = config.get("CEREBRAS_API_KEY", os.environ.get("CEREBRAS_API_KEY", ""))
     if not api_key:
-        yield "[Gemini API key not configured in ~/.config/surf/config]"
+        yield "[Cerebras API key not configured in ~/.config/surf/config]"
         return
 
     payload = {
-        "model": GEMINI_MODEL,
+        "model": CEREBRAS_MODEL,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
@@ -389,7 +389,7 @@ def stream_gemini(prompt: str, system: str, max_tokens: int = 2048):
 
     try:
         r = requests.post(
-            GEMINI_ENDPOINT,
+            CEREBRAS_ENDPOINT,
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -418,7 +418,7 @@ def stream_gemini(prompt: str, system: str, max_tokens: int = 2048):
             except (json.JSONDecodeError, KeyError, IndexError):
                 continue
     except Exception as e:
-        yield f"\n[Gemini error: {e}]"
+        yield f"\n[Cerebras error: {e}]"
 
 def _term_width() -> int:
     return min(shutil.get_terminal_size().columns, 100)
