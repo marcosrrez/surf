@@ -450,6 +450,7 @@ def _fetch_sub_pages(html: str, base_url: str, max_pages: int = 3) -> tuple[str,
     return "".join(extra_texts), fetched_labels
 
 
+# Shared rules injected into all search system prompts
 SEARCH_SYSTEM = """You are a precise research assistant answering questions using search result snippets.
 
 Format rules (use exactly):
@@ -462,12 +463,14 @@ Format rules (use exactly):
 - End after your last paragraph — do not add a Sources line
 
 Voice rules:
-- Be direct. No filler phrases like "Great question", "Certainly", or "Of course".
-- Every sentence must add information not already stated. Never rephrase the TL;DR or repeat a fact in different words.
-- If your sources only contain one key fact, write one focused paragraph — do not pad to fill space.
-- For simple factual questions (a name, a date, a definition): one short paragraph is enough.
-- For questions about future events or anything inherently unpredictable: say clearly that it cannot be known, then explain what factors are relevant.
-- If sources are thin or all repeating the same basic fact, say what you know concisely and tell the user this question deserves deeper research.
+- Be direct. Lead with the most useful fact — do not open with context the user didn't ask for.
+- No filler phrases ("Great question", "Certainly", "Of course", "It is worth noting that").
+- Every sentence must add information not already stated. Never rephrase the TL;DR in the body.
+- Use specific language: prefer "reduced by 40%" over "significantly reduced", "in 2026" over "recently".
+- If sources only contain one key fact, write one focused paragraph — do not pad.
+- For simple factual questions: one short paragraph is enough.
+- For questions about future events or anything unpredictable: say it cannot be known, then explain what factors are relevant.
+- If sources are thin or all repeating the same basic fact, say so clearly rather than padding.
 - Never fabricate specific facts not present in the search snippets."""
 
 FULL_ARTICLE_SYSTEM = """You are a precise article formatter. Given a webpage's text, present the COMPLETE article content — do not summarize, condense, or omit anything from the article itself.
@@ -489,14 +492,7 @@ Format rules:
 
 - Use section headers in ALL CAPS followed by a blank line
 - Preserve all bullet points using •
-- STOP rendering when you encounter any of the following — these are website navigation, not article content:
-  • Repeated short menu labels (MEN, WOMEN, ACADEMY, CLUB)
-  • Fixture or results listings (match scores, dates, kick-off times)
-  • Contact information (addresses, phone numbers, email forms)
-  • Social media prompts (Follow Us, share buttons)
-  • Login/membership prompts (Login, Create account, Become a member)
-  • Copyright notices and legal text
-  End your output at the last meaningful paragraph of the article, before any of the above.
+- Stop at the end of the article's content. Do not continue into comments, related articles, or site navigation.
 - Do NOT add commentary, analysis, or your own words
 - Do NOT add "Related:" or topic suggestions at the end
 
@@ -510,8 +506,7 @@ Format rules (use exactly):
 - 3-6 paragraphs preserving key facts and structure
 - Use "•" for bullet points, never dashes or asterisks
 - Use ALL CAPS sparingly for key terms (not markdown bold)
-- After the main content, add a blank line then: "Related:"
-- List exactly 3 related topics the user might explore, numbered 1-3
+- If there are 2-3 genuinely useful follow-up topics, add a blank line then "Related:" and list them numbered 1-3. If no strong related topics exist, omit this section entirely.
   Example: "1. Event horizons and the Schwarzschild radius"
 
 No filler phrases. No markdown syntax."""
@@ -1295,12 +1290,13 @@ Format rules:
 - When a specific fact comes from a source, cite it inline as [1], [2], etc. matching the numbered snippets
 
 Voice rules:
-- Be specific. Use names, scores, dates, numbers from the sources.
-- Every section must add new information — never restate the TL;DR in the body.
+- Be direct. Lead with the most useful fact first.
+- No filler phrases. Every sentence must add new information — never restate the TL;DR.
+- Use specific language: names, scores, dates, numbers from the sources.
+- For simple current-events questions (who won, what was the score): 1-2 paragraphs is enough — do not force section headers on a one-sentence answer.
 - If an event is imminent, lead with who is involved and when.
 - Note if snippets appear outdated or contradictory; prefer the most recent source.
-- If sources are thin and all saying the same basic thing, say so in one paragraph rather than padding.
-- No filler phrases. No "Great question"."""
+- If sources are thin, say so in one paragraph rather than padding."""
 
 SEARCH_SYSTEM_RESEARCH = """You are a precise research assistant synthesizing explanatory sources.
 
