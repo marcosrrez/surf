@@ -31,7 +31,7 @@ Developers live in terminals. surf brings the answer to where you already are. I
 ## Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/surf ~/surf
+git clone https://github.com/marcosrrez/surf ~/surf
 cd ~/surf
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
