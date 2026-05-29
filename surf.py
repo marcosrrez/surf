@@ -107,6 +107,52 @@ except ImportError:
         return "\n".join(rows)
 
 CONFIG_PATH = os.path.expanduser("~/.config/surf/config")
+SESSION_FILE = os.path.expanduser("~/.config/surf/session.json")
+SESSION_TTL = 4 * 60 * 60  # 4 hours — one work session
+
+def load_session() -> list[dict]:
+    """Load session entries, returning empty list if expired or missing."""
+    try:
+        with open(SESSION_FILE) as f:
+            data = json.load(f)
+        if time.time() > data.get("expires_at", 0):
+            return []  # expired
+        return data.get("entries", [])
+    except Exception:
+        return []
+
+def save_session_entry(query: str, entry_type: str, summary: str) -> None:
+    """Append a new entry to the session, creating or refreshing as needed."""
+    entries = load_session()
+    # Remove duplicate queries
+    entries = [e for e in entries if e.get("query") != query]
+    entries.append({
+        "query": query,
+        "type": entry_type,
+        "summary": summary[:500],  # cap to avoid bloat
+        "timestamp": int(time.time()),
+    })
+    # Keep last 10 entries
+    entries = entries[-10:]
+    try:
+        os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
+        with open(SESSION_FILE, "w") as f:
+            json.dump({
+                "expires_at": int(time.time()) + SESSION_TTL,
+                "entries": entries,
+            }, f)
+    except Exception:
+        pass
+
+def format_session_context() -> str:
+    """Return session entries as a context string for Groq prompts."""
+    entries = load_session()
+    if not entries:
+        return ""
+    lines = ["Earlier in this session:"]
+    for e in entries[-5:]:  # last 5 only
+        lines.append(f"  [{e['type']}] {e['query']}: {e['summary']}")
+    return "\n".join(lines)
 
 def load_config() -> dict:
     """Load key=value pairs from ~/.config/surf/config"""
@@ -715,7 +761,37 @@ def print_related(related_lines: list[str]) -> None:
     print()
     print(f"\033[90m[ 1-{len(related_lines)} ] search topic   [ q ] quit\033[0m")
 
-def search_flow(query: str, interactive: bool = True) -> tuple[list[dict], str]:
+def _output_json(query: str, response: str, sources: list[str],
+                 url: str = "", intent: str = "") -> None:
+    """Print structured JSON to stdout and exit."""
+    # Extract TL;DR line
+    tldr = ""
+    body = response
+    if "▸ TL;DR" in response:
+        parts = response.split("▸ TL;DR", 1)
+        rest = parts[1].strip()
+        first_newline = rest.find("\n")
+        if first_newline > 0:
+            tldr = rest[:first_newline].strip()
+            body = rest[first_newline:].strip()
+        else:
+            tldr = rest.strip()
+            body = ""
+
+    # Strip ANSI color codes from body
+    import re as _re
+    body = _re.sub(r'\033\[[0-9;]*m', '', body)
+
+    print(json.dumps({
+        "query": query,
+        "url": url,
+        "intent": intent,
+        "tldr": tldr,
+        "answer": body,
+        "sources": sources,
+    }, ensure_ascii=False, indent=2))
+
+def search_flow(query: str, interactive: bool = True, json_output: bool = False) -> tuple[list[dict], str]:
     """
     Run the search flow: DDG → Groq → display results.
     Returns (results, groq_response_text).
@@ -762,6 +838,19 @@ def search_flow(query: str, interactive: bool = True) -> tuple[list[dict], str]:
     clear_status()
 
     response = stream_to_terminal(stream)
+
+    # Save to session memory
+    # Extract a brief summary: first 200 chars of response after TL;DR
+    summary = response.strip()
+    if "▸ TL;DR" in summary:
+        summary = summary.split("▸ TL;DR")[-1].strip()
+    save_session_entry(query, "search", summary[:300])
+
+    if json_output:
+        sources = [r["domain"] for r in results]
+        _output_json(query, response, sources, intent="search")
+        return results, response
+
     print_results(results)
 
     if interactive:
@@ -891,6 +980,10 @@ def _handle_followup(question: str, context: str = "") -> None:
 
     # Build prompt combining article context + web snippets
     prompt_parts = []
+    session_ctx = format_session_context()
+    if session_ctx and not context:
+        # No immediate article context — use session memory
+        prompt_parts.append(session_ctx)
     if context:
         prompt_parts.append(f"Article context (already read):\n{context[:2000]}")
     if search_results:
@@ -917,7 +1010,7 @@ def parse_related_topics(text: str) -> list[str]:
             topics.append(line)  # keeps "1. Topic name" format for display
     return topics[:3]
 
-def read_flow(url: str, interactive: bool = True, ai_summary: bool = True) -> str:
+def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_output: bool = False) -> str:
     """
     Run the read flow: fetch URL → extract text → Groq → display.
     Returns the Groq response text (or raw extracted text in raw mode).
@@ -1004,6 +1097,16 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True) -> st
         stream = stream_groq(prompt, READ_SYSTEM)
         clear_status()
         response = stream_to_terminal(stream)
+
+    # Save to session memory
+    summary = response.strip()
+    if "▸ TL;DR" in summary:
+        summary = summary.split("▸ TL;DR")[-1].strip()
+    save_session_entry(url, "url", summary[:300])
+
+    if json_output:
+        _output_json(url, response, [domain], url=url, intent="read")
+        return response
 
     related = parse_related_topics(response) if ai_summary else []
     if related:
@@ -1291,14 +1394,24 @@ def main():
         description="Search or read any URL — Kagi-style, in your terminal."
     )
     parser.add_argument("input", nargs="+", help="A search query or URL")
+    parser.add_argument("--json", action="store_true", dest="json_output",
+                        help="Output as JSON (for scripts and automation)")
     args = parser.parse_args()
+    json_output = args.json_output
 
     query = " ".join(args.input)
     _add_to_history(query)
 
     try:
+        session_entries = load_session()
+        if session_entries and len(session_entries) > 0:
+            recent = session_entries[-1]
+            age_min = int((time.time() - recent.get("timestamp", 0)) / 60)
+            if age_min < 60:
+                print(f"\033[90m↳ session: {len(session_entries)} earlier {'search' if len(session_entries) == 1 else 'searches'} ({age_min}m ago)\033[0m")
+
         if detect_input_type(query) == "url":
-            read_flow(query)
+            read_flow(query, interactive=not json_output, json_output=json_output)
             return
 
         with Spinner("understanding your intent..."):
@@ -1366,7 +1479,7 @@ def main():
             open_in_browser(intent["open_url"])
 
         else:
-            search_flow(query)
+            search_flow(query, interactive=not json_output, json_output=json_output)
 
     except KeyboardInterrupt:
         print("\n\033[90mbye\033[0m")
