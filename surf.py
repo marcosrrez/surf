@@ -447,6 +447,7 @@ Format rules (use exactly):
 
 Voice rules:
 - Be direct. No filler phrases like "Great question", "Certainly", or "Of course".
+- For simple factual questions (a name, a date, a definition): one short paragraph is enough — do not pad with restatements or obvious context.
 - For questions about future events, prices, or anything inherently unpredictable: say clearly that it cannot be known in advance, then explain what factors are relevant.
 - Never fabricate specific facts not present in the search snippets."""
 
@@ -1181,7 +1182,11 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
             if _is_casual_input(choice):
                 print(f"\033[90m(surf is a search tool — try asking a question or picking a result)\033[0m")
             else:
-                _handle_followup(choice, context=context)
+                new_results, new_response = _handle_followup(choice, context=context)
+                if new_results:
+                    print_results(new_results)
+                    results = new_results
+                context = new_response
         # empty input: loop again
 
 def _contextualize_query(question: str, context: str) -> str:
@@ -1213,12 +1218,12 @@ def _contextualize_query(question: str, context: str) -> str:
         return question
 
 
-def _handle_followup(question: str, context: str = "") -> None:
-    """Answer a follow-up question using web search + article context."""
-    # Generate a context-aware search query so "how much does he charge?"
-    # becomes "Marcos Gutierrez therapist fees marcosgutierrezcounseling.com"
+def _handle_followup(question: str, context: str = "") -> tuple[list[dict], str]:
+    """
+    Answer a follow-up question using web search + article context.
+    Returns (search_results, response) so callers can show the results list.
+    """
     search_query = _contextualize_query(question, context)
-    # Identify entity type from both context and the question itself
     entity_type = _identify_entity_type(context) or _identify_entity_type(question)
     if entity_type:
         print_status(f"↳ searching {entity_type} sources for: \"{search_query[:40]}\"...")
@@ -1230,22 +1235,17 @@ def _handle_followup(question: str, context: str = "") -> None:
         search_results = []
     search_results = _filter_results(search_results)
 
-    # Source intelligence: if results are thin or from unknown sources,
-    # check category-specific authoritative sources
     if entity_type and entity_type in _SOURCE_INTELLIGENCE:
         authoritative_domains = _SOURCE_INTELLIGENCE[entity_type]
-        # Check if we already have results from authoritative sources
         result_domains = {r.get("domain", "") for r in search_results}
         has_authoritative = any(
             any(auth in domain for auth in authoritative_domains)
             for domain in result_domains
         )
         if not has_authoritative or len(search_results) < 3:
-            # Search specifically on authoritative sources
             auth_query = search_query + " " + authoritative_domains[0].split(".")[0]
             try:
                 auth_results = _filter_results(ddg_search(auth_query, num_results=3))
-                # Merge unique results
                 seen = {r["domain"] for r in search_results}
                 for r in auth_results:
                     if r["domain"] not in seen:
@@ -1258,11 +1258,9 @@ def _handle_followup(question: str, context: str = "") -> None:
     domains = " · ".join(r["domain"].removeprefix("www.") for r in search_results[:3]) if search_results else ""
     print_header(question.capitalize(), domains)
 
-    # Build prompt combining article context + web snippets
     prompt_parts = []
     session_ctx = format_session_context()
     if session_ctx and not context:
-        # No immediate article context — use session memory
         prompt_parts.append(session_ctx)
     if context:
         prompt_parts.append(f"Article context (already read):\n{context[:2000]}")
@@ -1274,9 +1272,14 @@ def _handle_followup(question: str, context: str = "") -> None:
     prompt_parts.append(f"Question: {question}")
     prompt = "\n\n".join(prompt_parts)
 
-    # Use SEARCH_SYSTEM so it properly cites sources from web results
+    _t0 = time.time()
     stream = stream_groq(prompt, SEARCH_SYSTEM)
-    stream_to_terminal(stream)
+    response = stream_to_terminal(stream)
+    _elapsed = time.time() - _t0
+
+    print(f"\033[90m↳ {_elapsed:.1f}s\033[0m")
+    _print_linked_sources(search_results)
+    return search_results, response
 
 def parse_related_topics(text: str) -> list[str]:
     """Extract numbered lines from the 'Related:' section of Groq's response."""
@@ -1356,7 +1359,7 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
         pass
 
     domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-    print_header(title or url, domain)
+    print_header(title or url, _link(url, domain))
 
     # Show transparency line: what was actually read
     if sub_labels:
@@ -1391,14 +1394,13 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
         return response
 
     related = parse_related_topics(response) if ai_summary else []
+    domain_link = _link(url, domain)
+    print()
+    print_divider()
     if related:
-        print()
-        print_divider()
-        print(f"\033[90m[ 1-{len(related)} ] search related   [ o ] open in browser   [ ? ] follow-up   [ q ] quit\033[0m")
+        print(f"\033[90m  related: 1–{len(related)}   open {domain_link}: o   follow-up: ?   quit: q\033[0m")
     else:
-        print()
-        print_divider()
-        print(f"\033[90m[ o ] open in browser   [ ? ] follow-up   [ n ] new search   [ q ] quit\033[0m")
+        print(f"\033[90m  open {domain_link}: o   follow-up: ?   new search: n   quit: q\033[0m")
 
     if interactive:
         _handle_article_input(url, related, response)
@@ -1439,8 +1441,10 @@ def _handle_article_input(url: str, related: list[str], context: str) -> None:
             if _is_casual_input(choice):
                 print(f"\033[90m(surf is a search tool — try asking a question or picking a result)\033[0m")
             else:
-                # Follow-up question with article context
-                _handle_followup(choice, context=context)
+                new_results, new_response = _handle_followup(choice, context=context)
+                if new_results:
+                    print_results(new_results)
+                context = new_response
         # empty input: loop again
 
 CLASSIFIER_SYSTEM = """You are an intent classifier. Given a user query, return ONLY a JSON object — no explanation, no markdown, no code block. Just raw JSON.

@@ -488,7 +488,7 @@ def main():
         sym = PASS if qp >= 80 else (WARN if qp >= 60 else FAIL)
         print(f"  {sym} Q:{qp}% D:{dp}% ({result['elapsed_s']}s)")
         results.append(result)
-        time.sleep(0.3)
+        time.sleep(2.0)
 
     if args.report:
         print_report(results)
