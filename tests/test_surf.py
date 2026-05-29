@@ -581,3 +581,96 @@ class TestInlineCitations:
         # The URL should appear somewhere in stdout (as OSC 8 escape sequence)
         output = captured.getvalue()
         assert "reuters.com" in output
+
+
+from surf import (
+    _cosine_similarity, _snippets_are_diverse, _bm25_rank,
+    _vocabulary_independence_score, _score_source_independence,
+    _is_evaluative_query, _edit_distance,
+)
+
+
+class TestClassicalAlgorithms:
+    def test_cosine_similarity_identical(self):
+        assert _cosine_similarity("the quick brown fox", "the quick brown fox") == 1.0
+
+    def test_cosine_similarity_unrelated(self):
+        score = _cosine_similarity("quantum entanglement physics", "state farm insurance rates")
+        assert score < 0.2
+
+    def test_snippets_diverse_when_different(self):
+        results = [
+            {"snippet": "Arsenal won the Premier League with 25 wins", "title": ""},
+            {"snippet": "Interest rates rose 0.25% as Fed meets", "title": ""},
+            {"snippet": "Python 4.0 released with new syntax features", "title": ""},
+        ]
+        assert _snippets_are_diverse(results) is True
+
+    def test_snippets_not_diverse_when_repetitive(self):
+        # SEO farms all say the same thing
+        results = [
+            {"snippet": "State Farm is a leading insurance company trusted by millions", "title": ""},
+            {"snippet": "State Farm is a trusted leading insurance company for millions", "title": ""},
+            {"snippet": "Millions trust State Farm as a leading insurance company today", "title": ""},
+            {"snippet": "State Farm insurance is trusted by millions as a leading provider", "title": ""},
+        ]
+        assert _snippets_are_diverse(results) is False
+
+    def test_bm25_rank_puts_relevant_first(self):
+        results = [
+            {"snippet": "general cooking tips for beginners", "title": "Cooking"},
+            {"snippet": "pasta carbonara eggs guanciale pecorino recipe authentic", "title": "Carbonara"},
+            {"snippet": "Italian cuisine history and traditions overview", "title": "Italy"},
+        ]
+        ranked = _bm25_rank("how to make pasta carbonara", results)
+        assert "carbonara" in ranked[0]["snippet"].lower()
+
+    def test_vocabulary_independence_marketing(self):
+        score = _vocabulary_independence_score("Get a free quote today. Our award-winning agents are ready to help. Sign up now.")
+        assert score < 0.3
+
+    def test_vocabulary_independence_data(self):
+        score = _vocabulary_independence_score("AM Best rated A+. J.D. Power ranked #1. Complaint ratio 0.3 per 100k policies according to NAIC.")
+        assert score > 0.7
+
+    def test_edit_distance_exact(self):
+        assert _edit_distance("hello", "hello") == 0
+
+    def test_edit_distance_close(self):
+        assert _edit_distance("colour", "color") == 1
+
+    def test_score_source_independence_regulatory_boost(self):
+        result = {"url": "https://naic.org/complaints", "domain": "naic.org",
+                  "snippet": "complaint ratio per 100k policies AM Best rated", "title": ""}
+        score = _score_source_independence(result)
+        assert score > 0.7
+
+    def test_score_source_independence_affiliate_demote(self):
+        result = {"url": "https://bestinsurance-affiliate.com/state-farm", "domain": "bestinsurance-affiliate.com",
+                  "snippet": "get a free quote today sign up trusted award winning", "title": ""}
+        score = _score_source_independence(result)
+        assert score < 0.3
+
+
+class TestEvaluativeRouting:
+    def test_is_evaluative_contested(self):
+        assert _is_evaluative_query("is State Farm a good insurance company", "contested") is True
+
+    def test_is_evaluative_not_snippet(self):
+        assert _is_evaluative_query("who wrote Pride and Prejudice", "snippet") is False
+
+    def test_is_evaluative_non_evaluative_contested(self):
+        assert _is_evaluative_query("React vs Vue performance", "contested") is False
+
+    def test_filter_results_allows_reddit_evaluative(self):
+        from surf import _filter_results
+        results = [{"domain": "reddit.com", "url": "https://reddit.com/r/insurance", "snippet": "real user experiences", "title": "Reddit"}]
+        eval_ctx = {"is_evaluative": True, "source_signals": [], "avoid_signals": []}
+        filtered = _filter_results(results, evaluative_context=eval_ctx)
+        assert len(filtered) == 1
+
+    def test_filter_results_blocks_reddit_non_evaluative(self):
+        from surf import _filter_results
+        results = [{"domain": "reddit.com", "url": "https://reddit.com/r/python", "snippet": "python tips", "title": "Reddit"}]
+        filtered = _filter_results(results, evaluative_context=None)
+        assert len(filtered) == 0

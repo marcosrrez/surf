@@ -1020,6 +1020,103 @@ def _term_width() -> int:
 
 _BOLD_RE = re.compile(r'\*\*(.+?)\*\*')
 
+
+# ── Classical algorithms ────────────────────────────────────────────────────
+# These run between DDG recall and LLM synthesis: zero extra cost, improved
+# precision. Used as pre-filters and relevance sorters.
+
+def _cosine_similarity(text1: str, text2: str) -> float:
+    """Bag-of-words cosine similarity between two texts. No dependencies."""
+    from math import sqrt
+    stop = {"the", "a", "an", "is", "it", "in", "of", "to", "and", "for", "on", "at", "by"}
+    w1 = {w for w in text1.lower().split() if len(w) > 3 and w not in stop}
+    w2 = {w for w in text2.lower().split() if len(w) > 3 and w not in stop}
+    if not w1 or not w2:
+        return 0.0
+    if w1 == w2:
+        return 1.0  # identical vocabulary — exact 1.0, avoids float rounding
+    all_words = w1 | w2
+    v1 = [1 if w in w1 else 0 for w in all_words]
+    v2 = [1 if w in w2 else 0 for w in all_words]
+    dot = sum(a * b for a, b in zip(v1, v2))
+    mag1 = sqrt(sum(a * a for a in v1))
+    mag2 = sqrt(sum(b * b for b in v2))
+    return dot / (mag1 * mag2) if mag1 * mag2 > 0 else 0.0
+
+
+def _snippets_are_diverse(results: list[dict], threshold: float = 0.70) -> bool:
+    """
+    True if results are diverse enough to be worth synthesizing.
+    False if most snippets are near-copies of each other (SEO farm signal).
+    Uses pairwise cosine similarity — zero LLM cost.
+    """
+    if len(results) < 2:
+        return True
+    texts = [r.get("snippet", "") + " " + r.get("title", "") for r in results[:5]]
+    similar_pairs = 0
+    total_pairs = 0
+    for i in range(len(texts)):
+        for j in range(i + 1, len(texts)):
+            total_pairs += 1
+            if _cosine_similarity(texts[i], texts[j]) >= threshold:
+                similar_pairs += 1
+    # If more than half of pairs are near-identical, sources lack diversity
+    return similar_pairs / total_pairs < 0.5 if total_pairs > 0 else True
+
+
+def _bm25_rank(query: str, results: list[dict], k1: float = 1.5, b: float = 0.75) -> list[dict]:
+    """
+    Rerank results by BM25 score of snippet+title against query.
+    Returns results sorted by relevance — most relevant first.
+    Stable: ties preserve original order.
+    """
+    from math import log
+    stop = {"the", "a", "an", "is", "it", "in", "of", "to", "and", "for", "on", "at"}
+    q_terms = [w for w in query.lower().split() if len(w) > 2 and w not in stop]
+    if not q_terms or not results:
+        return results
+
+    # Build document corpus
+    docs = [r.get("snippet", "") + " " + r.get("title", "") for r in results]
+    doc_words = [d.lower().split() for d in docs]
+    avg_dl = sum(len(dw) for dw in doc_words) / len(doc_words)
+    N = len(docs)
+
+    def score(doc_w: list[str]) -> float:
+        dl = len(doc_w)
+        s = 0.0
+        for term in q_terms:
+            tf = doc_w.count(term)
+            if tf == 0:
+                continue
+            df = sum(1 for dw in doc_words if term in dw)
+            idf = log((N - df + 0.5) / (df + 0.5) + 1)
+            s += idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avg_dl))
+        return s
+
+    scored = [(score(dw), i, r) for i, (dw, r) in enumerate(zip(doc_words, results))]
+    scored.sort(key=lambda x: (-x[0], x[1]))  # desc score, stable
+    return [r for _, _, r in scored]
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein distance between two strings."""
+    if len(a) < len(b):
+        return _edit_distance(b, a)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        for j, cb in enumerate(b):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (0 if ca == cb else 1)))
+        prev = curr
+    return prev[-1]
+
+
+# ── End classical algorithms ────────────────────────────────────────────────
+
+
 def print_header(title: str, meta: str = "") -> None:
     """Print a Kagi-style header bar. Truncates long titles with … rather than wrapping."""
     width = _term_width()
@@ -1279,6 +1376,173 @@ SOURCE_HIERARCHY = {
     "legal":    ["law.cornell.edu", "oyez.org", "courtlistener.com", "justia.com"],
 }
 
+SEARCH_SYSTEM_EVALUATIVE = """You are a precise research assistant evaluating a company, product, or service based on independent third-party sources.
+
+Format rules:
+- First line: "▸ TL;DR  " followed by one honest verdict sentence — name the entity and the conclusion
+- Blank line
+- 2-4 sections with **bold headers** organized as: independent ratings/data, user complaints or praise, regulatory or legal record, company claims (clearly labeled)
+- Use "•" for bullets; cite sources inline as [1], [2], etc.
+- End after your last section — do not add a closing summary sentence
+
+Voice rules:
+- Lead with what INDEPENDENT sources say, not the entity's own marketing.
+- Label the source perspective explicitly: "AM Best rates..." vs "State Farm says..."
+- Distinguish quantitative data (complaint ratio, financial rating, survey score) from subjective opinion.
+- If a source appears to have affiliate or commercial relationships with the entity, note it.
+- Name weaknesses directly. If independent data shows problems, say so clearly.
+- If sources are thin or mostly company-owned, say so rather than padding.
+- No filler phrases."""
+
+
+# ── Evaluative routing ──────────────────────────────────────────────────────
+# Detects when a query is asking for evaluation/opinion of a named entity,
+# then routes to independence-scored sources and an evaluative system prompt.
+
+_EVALUATIVE_QUERY_SIGNALS = {
+    "good", "reliable", "trustworthy", "worth it", "reputable", "legit",
+    "legitimate", "scam", "honest", "complaints", "problems", "issues",
+    "bad", "recommend", "avoid", "safe", "how good", "is it worth",
+}
+
+_MARKETING_VOCAB = frozenset([
+    "get a quote", "learn more", "sign up today", "our agents", "we offer",
+    "our services", "contact us", "schedule a", "free quote", "get started",
+    "apply now", "join us", "our team", "our mission", "trusted by millions",
+    "industry leader", "award winning",
+])
+
+_DATA_VOCAB = frozenset([
+    "rated", "ranked", "rating", "complaint", "survey says", "study found",
+    "research shows", "according to", "data shows", "statistics", "per 100",
+    "percent of", "compared to average", "score of", "ranked #", "out of 100",
+    "am best", "j.d. power", "naic", "consumer reports",
+])
+
+_AFFILIATE_URL_SIGNALS = (
+    "affiliate", "sponsored", "partner", "refer", "bestinsurance",
+    "toptenreviews", "insurancequote", "comparethe", "top10", "best10",
+)
+_REGULATORY_DOMAIN_SIGNALS = (
+    ".gov", ".edu", "naic.org", "ftc.gov", "consumerfinance.gov",
+    "bbb.org", "trustpilot.com", "consumeraffairs.com", "glassdoor.com",
+    "consumerreports.org", "jdpower.com", "ambest.com",
+)
+_DATA_SNIPPET_SIGNALS = (
+    " rating", " score", "complaint", "ranked", "rated",
+    "% of", "per 100", "am best", "j.d. power", "moody", "s&p ",
+    "survey of", "study of", "according to",
+)
+_COMPANY_PROMO_SIGNALS = (
+    "get a quote", "our agents", "we offer", "sign up", "learn more about us",
+    "trusted by", "industry leader", "award-winning", "schedule a call",
+)
+
+
+def _is_evaluative_query(query: str, tier: str) -> bool:
+    """
+    True if query is asking for evaluation/opinion of a named entity.
+    Only meaningful for contested tier — factual data queries are handled differently.
+    """
+    if tier not in ("contested", "research"):
+        return False
+    q_words = set(query.lower().split())
+    return bool(q_words & _EVALUATIVE_QUERY_SIGNALS)
+
+
+def _vocabulary_independence_score(text: str) -> float:
+    """
+    Returns 0.0 (pure marketing) to 1.0 (data-rich and independent).
+    Purely lexical — zero LLM cost.
+    """
+    text_lower = text.lower()
+    marketing_hits = sum(1 for phrase in _MARKETING_VOCAB if phrase in text_lower)
+    data_hits = sum(1 for phrase in _DATA_VOCAB if phrase in text_lower)
+    if marketing_hits == 0 and data_hits == 0:
+        return 0.5  # neutral
+    total = marketing_hits + data_hits
+    return data_hits / total
+
+
+def _score_source_independence(result: dict, avoid_signals: list[str] | None = None,
+                                source_signals: list[str] | None = None) -> float:
+    """
+    Score 0.0 (biased/marketing) to 1.0 (independent/data-rich).
+    Combines structural URL/snippet signals with LLM-generated query-specific signals.
+    """
+    url = (result.get("url", "") + " " + result.get("domain", "")).lower()
+    snippet = result.get("snippet", "").lower()
+    combined = url + " " + snippet
+
+    score = 0.5  # neutral baseline
+
+    # Hard demote: affiliate/referral URL patterns
+    if any(s in url for s in _AFFILIATE_URL_SIGNALS):
+        score -= 0.35
+    # Demote: LLM-identified avoid signals
+    if avoid_signals:
+        if any(s.lower() in combined for s in avoid_signals):
+            score -= 0.25
+    # Demote: snippet reads like company self-promotion
+    if any(s in snippet for s in _COMPANY_PROMO_SIGNALS):
+        score -= 0.20
+    # Boost: regulatory or established rating domain
+    if any(s in combined for s in _REGULATORY_DOMAIN_SIGNALS):
+        score += 0.35
+    # Boost: snippet contains quantitative data signals
+    data_signals_found = sum(1 for s in _DATA_SNIPPET_SIGNALS if s in snippet)
+    score += min(0.20, data_signals_found * 0.07)
+    # Boost: LLM-identified source signals appear in content
+    if source_signals:
+        if any(s.lower() in combined for s in source_signals):
+            score += 0.20
+    # Boost: vocabulary independence score
+    vocab_score = _vocabulary_independence_score(snippet)
+    score += (vocab_score - 0.5) * 0.15  # small contribution, -0.075 to +0.075
+
+    return max(0.0, min(1.0, score))
+
+
+def _evaluate_query_intent(query: str) -> dict:
+    """
+    One fast Groq 8b call. Generates source profile for evaluative queries:
+    - source_signals: terms that appear in authoritative third-party content
+    - avoid_signals: terms indicating affiliate/bias
+    Falls back gracefully on any error.
+    """
+    prompt = (
+        f'Query: "{query}"\n\n'
+        f'What type of entity is being evaluated? What independent third parties '
+        f'measure or assess this type of entity — think regulatory agencies, '
+        f'professional rating organizations, investigative journalism, consumer '
+        f'protection bodies, not review aggregators with affiliate revenue.\n\n'
+        f'Return JSON only:\n'
+        f'{{"entity_type": "...", "source_signals": ["..."], "avoid_signals": ["..."]}}'
+    )
+    try:
+        chunks = list(stream_groq(
+            prompt,
+            "Return only a JSON object. No explanation, no markdown.",
+            model=CLASSIFIER_MODEL,
+            max_tokens=100,
+        ))
+        raw = "".join(chunks).strip()
+        if "```" in raw:
+            raw = raw.split("```")[1].lstrip("json").strip()
+        data = json.loads(raw)
+        return {
+            "is_evaluative": True,
+            "entity_type": data.get("entity_type", "")[:50],
+            "source_signals": data.get("source_signals", [])[:6],
+            "avoid_signals": data.get("avoid_signals", [])[:4],
+        }
+    except Exception:
+        return {"is_evaluative": True, "source_signals": [], "avoid_signals": []}
+
+
+# ── End evaluative routing ──────────────────────────────────────────────────
+
+
 SEARCH_SYSTEM_CURRENT = """You are a precise research assistant synthesizing today's journalism and analysis.
 
 Format rules:
@@ -1347,12 +1611,15 @@ def _clean_conversational_query(query: str) -> str:
     return query
 
 
-def _enrich_ddg_query(user_query: str, tier: str = "snippet") -> str:
+def _enrich_ddg_query(user_query: str, tier: str = "snippet", source_hint: str = "") -> str:
     """
     Improve DDG search relevance based on query type.
 
     Temporal queries: inject current year, use session context to generate
     a specific search string (e.g. "who will win" → "PSG Arsenal UCL final 2026").
+
+    Evaluative queries: if source_hint provided (from _evaluate_query_intent),
+    append it directly — no extra LLM call needed.
 
     Research/contested queries: transform journalist phrasing into analyst
     phrasing to surface quality sources (e.g. "how did Arsenal win the PL"
@@ -1390,6 +1657,14 @@ def _enrich_ddg_query(user_query: str, tier: str = "snippet") -> str:
                 return generated
         except Exception:
             pass
+
+    # Pass 4 (before Pass 3): evaluative source hint — append authoritative-source signals
+    # directly to the query to surface data-rich sources over SEO content.
+    # No extra LLM call — hint comes from _evaluate_query_intent called in search_flow.
+    if source_hint and tier in ("contested", "research"):
+        enriched_with_hint = f"{user_query} {source_hint}"
+        if len(enriched_with_hint) < 120:
+            return enriched_with_hint
 
     # Pass 3: research/contested enrichment — transform journalist phrasing
     # into analyst phrasing to surface quality sources over SEO farms
@@ -1443,11 +1718,15 @@ def _extract_specific_entities(query: str) -> list[str]:
 
 
 def _entity_in_results(entity: str, results: list[dict]) -> bool:
-    """True if the entity phrase appears in any result title, snippet, or domain."""
+    """True if entity phrase (or close match) appears in any result."""
     entity_lower = entity.lower()
     for r in results:
         text = (r.get("title", "") + " " + r.get("snippet", "") + " " + r.get("domain", "")).lower()
         if entity_lower in text:
+            return True
+        # Fuzzy: check if entity words appear as abbreviation (e.g. JBU for John Brown University)
+        entity_words = [w for w in entity_lower.split() if len(w) > 3]
+        if entity_words and all(w in text for w in entity_words):
             return True
     return False
 
@@ -1628,8 +1907,18 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     Returns (results, groq_response_text).
     """
     tier = _classify_tier(query)
-    clean_query = _clean_conversational_query(query)
-    ddg_query = _enrich_ddg_query(clean_query, tier=tier)
+
+    # Evaluative intent detection — only for contested/research tier
+    eval_context = None
+    if tier in ("contested", "research") and _is_evaluative_query(query, tier):
+        eval_context = _evaluate_query_intent(query)
+        source_hint = " ".join(eval_context.get("source_signals", [])[:3])
+        clean_query = _clean_conversational_query(query)
+        ddg_query = _enrich_ddg_query(clean_query, tier=tier, source_hint=source_hint)
+    else:
+        clean_query = _clean_conversational_query(query)
+        ddg_query = _enrich_ddg_query(clean_query, tier=tier)
+
     print_status(f"↳ searching: \"{ddg_query[:55]}\"...")
     try:
         results = ddg_search(ddg_query)
@@ -1675,7 +1964,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         print(f"\033[31mSearch failed: {e}\033[0m")
         return [], ""
     clear_status()
-    results = _filter_results(results)
+    results = _filter_results(results, evaluative_context=eval_context)
 
     # Entity match check: if query mentions a specific institution/location but
     # results are about a different entity, retry with quoted exact-match search
@@ -1694,12 +1983,20 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         ts = datetime.now().strftime("%B %d, %Y %H:%M")
         print(f"\033[90mFetched {ts}\033[0m\n")
 
+    # BM25 rerank: sort by relevance to query before deep reading
+    if len(results) > 1:
+        results = _bm25_rank(query, results)
+
     # Adaptive confidence gate — may escalate tier based on snippet quality
     tier = _confidence_gate(query, results, tier)
 
     # Self-evaluating source check: if research/current tier but sources are thin,
     # try one more targeted search from a different angle before synthesizing
-    if results and not _sources_are_substantive(query, results):
+    # Fast check: if snippets are all near-copies, sources are thin regardless of LLM opinion
+    if results and not _snippets_are_diverse(results):
+        # Skip the LLM call — we already know they're repetitive
+        pass  # will fall through to retry logic below
+    elif results and not _sources_are_substantive(query, results):
         retry_query = f"{ddg_query} analysis in-depth {time.strftime('%Y')}"
         try:
             print_status("↳ sources thin — searching deeper...")
@@ -1734,11 +2031,15 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
             source_count = len(deep_sources)
             print_status(f"↳ synthesizing {source_count} source{'s' if source_count != 1 else ''}...")
             prompt = base_prompt + f"\n\nFull article content from {source_count} source(s):\n{deep_content}"
-            system = {
-                "current":   SEARCH_SYSTEM_CURRENT,
-                "research":  SEARCH_SYSTEM_RESEARCH,
-                "contested": SEARCH_SYSTEM_CONTESTED,
-            }[tier]
+            # Select system prompt — evaluative queries get independence-focused voice
+            if eval_context and eval_context.get("is_evaluative"):
+                system = SEARCH_SYSTEM_EVALUATIVE
+            else:
+                system = {
+                    "current":   SEARCH_SYSTEM_CURRENT,
+                    "research":  SEARCH_SYSTEM_RESEARCH,
+                    "contested": SEARCH_SYSTEM_CONTESTED,
+                }[tier]
         else:
             # All reads failed — fall back to snippet path gracefully
             prompt = base_prompt
@@ -2358,9 +2659,36 @@ def _identify_entity_type(text: str) -> str | None:
             best_match = entity_type
     return best_match if best_score >= 2 else None
 
-def _filter_results(results: list[dict]) -> list[dict]:
-    """Remove low-quality domains from search results."""
-    return [r for r in results if r.get("domain", "") not in _SPAM_DOMAINS]
+def _filter_results(results: list[dict], evaluative_context: dict | None = None) -> list[dict]:
+    """
+    Filter and optionally rerank results.
+    - Always: remove spam domains
+    - Evaluative queries: independence-score and sort; conditionally allow Reddit
+    """
+    filtered = []
+    for r in results:
+        domain = r.get("domain", "")
+        # Reddit: allow for evaluative queries only
+        if "reddit.com" in domain:
+            if evaluative_context and evaluative_context.get("is_evaluative"):
+                filtered.append(r)  # allow — will compete on independence score
+            continue
+        if domain not in _SPAM_DOMAINS:
+            filtered.append(r)
+
+    if not evaluative_context or not evaluative_context.get("is_evaluative"):
+        return filtered
+
+    # For evaluative queries: score and sort by independence
+    avoid_signals = evaluative_context.get("avoid_signals", [])
+    source_signals = evaluative_context.get("source_signals", [])
+
+    scored = [
+        (_score_source_independence(r, avoid_signals, source_signals), r)
+        for r in filtered
+    ]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [r for _, r in scored]
 
 def _setup_readline() -> None:
     """Enable up-arrow history and Ctrl+R search for all input() calls."""
