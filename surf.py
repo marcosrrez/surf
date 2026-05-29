@@ -1695,6 +1695,41 @@ Voice rules:
 - No filler phrases."""
 
 
+_NAMED_SOURCE_RE = re.compile(
+    r'\b(?:from|at|on|via|using|check|see)\s+([A-Za-z0-9][A-Za-z0-9\-\.]{2,}(?:\s*,\s*[A-Za-z0-9][A-Za-z0-9\-\.]{2,})*)',
+    re.IGNORECASE,
+)
+
+# Well-known sources the user might name → their canonical domain for site: targeting
+_KNOWN_SOURCE_DOMAINS = {
+    "swe-bench": "swebench.com",
+    "swebench": "swebench.com",
+    "arc-agi": "arcprize.org",
+    "arc-agi-2": "arcprize.org",
+    "arxiv": "arxiv.org",
+    "github": "github.com",
+    "pubmed": "pubmed.ncbi.nlm.nih.gov",
+    "wikipedia": "en.wikipedia.org",
+    "reddit": "reddit.com",
+    "hacker news": "news.ycombinator.com",
+    "hn": "news.ycombinator.com",
+}
+
+
+def _extract_named_sources(query: str) -> list[str]:
+    """
+    Detect when the user explicitly names sources: 'results from SWE-bench, ARC-AGI-2'
+    Returns list of site: constraints to add to the DDG query.
+    """
+    q_lower = query.lower()
+    # Check known source names
+    constraints = []
+    for name, domain in _KNOWN_SOURCE_DOMAINS.items():
+        if name in q_lower:
+            constraints.append(f"site:{domain}")
+    return constraints[:2]  # cap at 2 site constraints
+
+
 def _clean_conversational_query(query: str) -> str:
     """
     Extract the searchable question from conversational statement+question format.
@@ -1727,6 +1762,23 @@ def _enrich_ddg_query(user_query: str, tier: str = "snippet", source_hint: str =
     """
     year = time.strftime("%Y")
     q_lower = user_query.lower()
+
+    # Pass 0: named source targeting (zero cost)
+    # "results from SWE-bench" → add site:swebench.com to query
+    named_sites = list(dict.fromkeys(_extract_named_sources(user_query)))  # dedup, preserve order
+    if named_sites:
+        # Remove everything from the first source-reference word onward, add site: constraints
+        # "results from SWE-bench, ARC-AGI-2" → "results"
+        clean = re.sub(
+            r'\s*\b(from|at|via|using|check|see|on)\b.*$',
+            '',
+            user_query,
+            flags=re.IGNORECASE,
+        ).strip().rstrip(',: ')
+        if not clean or len(clean.split()) < 2:
+            clean = user_query  # fallback: keep original if cleanup removes too much
+        site_str = " OR ".join(named_sites)
+        return f"{clean} {site_str}".strip()
 
     # Pass 1: temporal year injection (zero cost)
     is_temporal = any(s in q_lower for s in _TEMPORAL_SIGNALS)
