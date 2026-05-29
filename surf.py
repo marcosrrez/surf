@@ -122,6 +122,15 @@ CONFIG_PATH = os.path.expanduser("~/.config/surf/config")
 SESSION_FILE = os.path.expanduser("~/.config/surf/session.json")
 SESSION_TTL = 4 * 60 * 60  # 4 hours — one work session
 
+def _truncate_at_sentence(text: str, max_chars: int) -> str:
+    """Truncate at the last sentence boundary before max_chars."""
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    last_period = max(truncated.rfind(". "), truncated.rfind(".\n"))
+    return truncated[:last_period + 1] if last_period > max_chars // 2 else truncated
+
+
 def load_session() -> list[dict]:
     """Load session entries, returning empty list if expired or missing."""
     try:
@@ -141,7 +150,7 @@ def save_session_entry(query: str, entry_type: str, summary: str) -> None:
     entries.append({
         "query": query,
         "type": entry_type,
-        "summary": summary[:500],  # cap to avoid bloat
+        "summary": _truncate_at_sentence(summary, 500),
         "timestamp": int(time.time()),
     })
     # Keep last 10 entries
@@ -503,18 +512,6 @@ Format rules (use exactly):
   Example: "1. Event horizons and the Schwarzschild radius"
 
 No filler phrases. No markdown syntax."""
-
-FOLLOWUP_SYSTEM = """You are a precise research assistant answering follow-up questions.
-
-Rules:
-- Answer ONLY from the provided context — do not add information from outside it
-- If the context contains statistics or data relevant to the question, CITE THEM SPECIFICALLY with numbers
-- For contested questions, acknowledge the debate and present evidence from multiple perspectives in the context
-- Do NOT invent, cite, or reference any external sources or URLs — you have not fetched them
-- If the context does not contain enough information to answer well, say so clearly
-- Start with "▸ " followed by a direct one-sentence answer
-- Keep the response focused and under 200 words
-- Do NOT add a "Sources:" line"""
 
 def build_search_prompt(query: str, snippets: list[dict]) -> str:
     """Build Groq prompt for a search query with DDG snippets."""
@@ -1461,8 +1458,9 @@ def _deep_research(
 
     combined: list[str] = []
     sources_read: list[dict] = []
+    citation_idx = len(sources_to_read[:3])  # offset to avoid colliding with snippet [1]-[5]
 
-    for r in sources_to_read[:3]:
+    for i, r in enumerate(sources_to_read[:3]):
         url = r.get("url", "")
         domain = r.get("domain", "").removeprefix("www.")
         if not url or not url.startswith("http"):
@@ -1478,7 +1476,8 @@ def _deep_research(
             else:
                 _, content = extract_text(html, max_words=1500, return_title=True)
             if content and len(content.split()) > 100:
-                combined.append(f"[Source: {domain}]\n{content[:2000]}")
+                # Label with [1][2][3] so inline citations in the answer match
+                combined.append(f"[{i + 1}] {domain}\n{content[:2000]}")
                 sources_read.append(r)
         except Exception:
             continue
@@ -1636,7 +1635,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     summary = response.strip()
     if "▸ TL;DR" in summary:
         summary = summary.split("▸ TL;DR")[-1].strip()
-    save_session_entry(query, "search", summary[:300])
+    save_session_entry(query, "search", _truncate_at_sentence(summary, 300))
 
     if json_output:
         sources = [r["domain"] for r in results]
@@ -1785,11 +1784,31 @@ def _handle_followup(question: str, context: str = "") -> tuple[list[dict], str]
             snippets += f"[{i}] {r['title']} ({r['domain']})\n{r['snippet']}\n\n"
         prompt_parts.append(f"Web search results for '{question}':\n{snippets}")
     prompt_parts.append(f"Question: {question}")
-    prompt = "\n\n".join(prompt_parts)
+    base_prompt = "\n\n".join(prompt_parts)
+
+    # Apply the same tier routing as search_flow — follow-ups deserve deep reads too
+    tier = _classify_tier(question)
+    tier = _confidence_gate(question, search_results, tier)
 
     _t0 = time.time()
-    stream = stream_ai(prompt, SEARCH_SYSTEM)
-    response = stream_to_terminal(stream)
+    if tier in ("current", "research", "contested") and search_results:
+        deep_content, deep_sources = _deep_research(question, tier, search_results, search_query)
+        if deep_content:
+            prompt = base_prompt + f"\n\nFull article content:\n{deep_content}"
+            system = {
+                "current":   SEARCH_SYSTEM_CURRENT,
+                "research":  SEARCH_SYSTEM_RESEARCH,
+                "contested": SEARCH_SYSTEM_CONTESTED,
+            }[tier]
+            if deep_sources:
+                search_results = deep_sources + [r for r in search_results if r not in deep_sources][:2]
+        else:
+            prompt, system = base_prompt, SEARCH_SYSTEM
+    else:
+        prompt, system = base_prompt, SEARCH_SYSTEM
+
+    stream = stream_ai(prompt, system)
+    response = stream_to_terminal(stream, results=search_results)
     _elapsed = time.time() - _t0
 
     print(f"\033[90m↳ {_elapsed:.1f}s\033[0m")
@@ -1902,7 +1921,7 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
     summary = response.strip()
     if "▸ TL;DR" in summary:
         summary = summary.split("▸ TL;DR")[-1].strip()
-    save_session_entry(url, "url", summary[:300])
+    save_session_entry(url, "url", _truncate_at_sentence(summary, 300))
 
     if json_output:
         _output_json(url, response, [domain], url=url, intent="read")
