@@ -453,6 +453,37 @@ class TestDeepResearch:
         assert sources == []
 
 
+from surf import _get_ollama_model, stream_ollama
+
+class TestOllama:
+    def test_get_ollama_model_returns_none_when_not_running(self):
+        with patch("surf.requests.get", side_effect=Exception("connection refused")):
+            assert _get_ollama_model() is None
+
+    def test_get_ollama_model_returns_preferred_when_available(self):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "models": [{"name": "gemma2:2b"}, {"name": "llama3.2:3b"}]
+        }
+        with patch("surf.requests.get", return_value=mock_response):
+            result = _get_ollama_model()
+        assert result == "gemma2:2b"
+
+    def test_stream_ollama_yields_guidance_when_no_model(self):
+        with patch("surf._get_ollama_model", return_value=None):
+            chunks = list(stream_ollama("prompt", "system"))
+        assert len(chunks) == 1
+        assert "ollama" in chunks[0].lower() or "local" in chunks[0].lower()
+
+    def test_stream_ollama_yields_connection_error_message(self):
+        import requests as _requests
+        with patch("surf._get_ollama_model", return_value="gemma2:2b"), \
+             patch("surf.requests.post", side_effect=_requests.exceptions.ConnectionError("refused")):
+            chunks = list(stream_ollama("prompt", "system"))
+        assert any("ollama" in c.lower() or "not running" in c.lower() for c in chunks)
+
+
 from surf import search_flow
 from unittest.mock import patch
 

@@ -908,11 +908,87 @@ def stream_gemini(prompt: str, system: str, max_tokens: int = 2048):
                 yield "\033[33m↳ Gemini auth failed — check GEMINI_API_KEY\033[0m"
                 return
             else:
-                yield f"\033[33m↳ Gemini error ({code}).\033[0m"
+                sys.stdout.write(f"\r\033[90m↳ using local model\033[0m\n")
+                sys.stdout.flush()
+                yield from stream_ollama(prompt, system, max_tokens)
                 return
         except Exception:
-            yield "\033[33m↳ Gemini unavailable.\033[0m"
+            sys.stdout.write(f"\r\033[90m↳ using local model\033[0m\n")
+            sys.stdout.flush()
+            yield from stream_ollama(prompt, system, max_tokens)
             return
+
+
+OLLAMA_BASE = "http://localhost:11434"
+OLLAMA_PREFERRED_MODELS = ["gemma2:2b", "phi3:mini", "llama3.2:3b", "gemma:2b", "qwen2.5:3b"]
+
+
+def _get_ollama_model() -> str | None:
+    """Return best available Ollama model, or None if Ollama isn't running."""
+    try:
+        r = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=2)
+        if r.status_code != 200:
+            return None
+        available = [m["name"] for m in r.json().get("models", [])]
+        if not available:
+            return None
+        for preferred in OLLAMA_PREFERRED_MODELS:
+            for name in available:
+                if preferred.split(":")[0] in name:
+                    return name
+        return available[0]
+    except Exception:
+        return None
+
+
+def stream_ollama(prompt: str, system: str, max_tokens: int = 2048):
+    """Stream via local Ollama model. Final fallback — zero cost, fully private."""
+    model = _get_ollama_model()
+    if not model:
+        yield "\033[33m↳ no local model available (install Ollama + run: ollama pull gemma2:2b)\033[0m"
+        return
+
+    model_display = model.split(":")[0]
+    sys.stdout.write(f"\r\033[90m↳ using local {model_display}\033[0m\n")
+    sys.stdout.flush()
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": True,
+        "max_tokens": max_tokens,
+    }
+    try:
+        r = requests.post(
+            f"{OLLAMA_BASE}/v1/chat/completions",
+            json=payload,
+            stream=True,
+            timeout=60,
+        )
+        r.raise_for_status()
+        for line in r.iter_lines():
+            if not line:
+                continue
+            decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+            if not decoded.startswith("data: "):
+                continue
+            data = decoded[6:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+                content = chunk["choices"][0]["delta"].get("content", "")
+                if content:
+                    yield content
+            except (json.JSONDecodeError, KeyError, IndexError):
+                continue
+    except requests.exceptions.ConnectionError:
+        yield "\033[33m↳ Ollama not running (run: ollama serve)\033[0m"
+    except Exception:
+        yield "\033[33m↳ local model unavailable\033[0m"
 
 
 class Spinner:
