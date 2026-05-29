@@ -234,12 +234,15 @@ class TestSearchFlow:
         fake_response = "▸ TL;DR  Black holes are dense.\n\nMore detail."
 
         with patch("surf.ddg_search", return_value=fake_results), \
-             patch("surf.stream_groq", return_value=iter(["▸ TL;DR  Black holes are dense."])), \
+             patch("surf.stream_ai", return_value=iter(["▸ TL;DR  Black holes are dense."])), \
              patch("surf.print_header"), \
              patch("surf.print_status"), \
              patch("surf.clear_status"), \
              patch("surf.stream_to_terminal", return_value=fake_response), \
-             patch("surf.print_results"):
+             patch("surf.print_results"), \
+             patch("surf.save_session_entry"), \
+             patch("surf.format_session_context", return_value=""), \
+             patch("surf._print_linked_sources"):
             results, response = search_flow("black holes", interactive=False)
 
         assert results == fake_results
@@ -263,12 +266,15 @@ class TestReadFlow:
         fake_response = "▸ TL;DR  Black holes are dense.\n\nContent.\n\nRelated:\n1. Neutron stars\n2. Event horizons\n3. Hawking radiation"
 
         with patch("surf.fetch_page", return_value=fake_html), \
-             patch("surf.stream_groq", return_value=iter([fake_response])), \
+             patch("surf.stream_ai", return_value=iter([fake_response])), \
              patch("surf.print_header"), \
              patch("surf.print_status"), \
              patch("surf.clear_status"), \
              patch("surf.stream_to_terminal", return_value=fake_response), \
-             patch("surf.print_related"):
+             patch("surf.print_related"), \
+             patch("surf.save_session_entry"), \
+             patch("surf._is_spa_shell", return_value=False), \
+             patch("surf._fetch_sub_pages", return_value=("", [])):
             result = read_flow("https://nasa.gov/black-holes", interactive=False)
 
         assert "TL;DR" in result
