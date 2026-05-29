@@ -30,6 +30,12 @@ except ImportError:
     _HAS_PROMPT_TOOLKIT = False
 
 try:
+    import anthropic as _anthropic
+    _HAS_ANTHROPIC = True
+except ImportError:
+    _HAS_ANTHROPIC = False
+
+try:
     from ddgs import DDGS
     _HAS_DDGS = True
 except ImportError:
@@ -587,6 +593,118 @@ def ddg_search(query: str, num_results: int = 5) -> list[dict]:
 GROQ_MODEL = "llama-3.3-70b-versatile"
 CLASSIFIER_MODEL = "llama-3.1-8b-instant"
 
+# ─── Claude (primary provider) ───────────────────────────────────────────────
+
+CLAUDE_MODEL = "claude-haiku-4-5"
+CLAUDE_MONTHLY_BUDGET = 1.00            # USD hard cap per calendar month
+_CLAUDE_INPUT_COST  = 1.00 / 1_000_000  # $1.00/MTok
+_CLAUDE_OUTPUT_COST = 5.00 / 1_000_000  # $5.00/MTok
+_CLAUDE_CACHE_WRITE = 1.25 / 1_000_000  # $1.25/MTok (cache creation)
+_CLAUDE_CACHE_READ  = 0.10 / 1_000_000  # $0.10/MTok (cache hit)
+CLAUDE_USAGE_FILE = os.path.expanduser("~/.config/surf/claude_usage.json")
+
+
+def _claude_usage_load() -> dict:
+    try:
+        with open(CLAUDE_USAGE_FILE) as f:
+            data = json.load(f)
+        month = time.strftime("%Y-%m")
+        if data.get("month") != month:
+            return {"month": month, "cost_usd": 0.0, "calls": 0}
+        return data
+    except Exception:
+        return {"month": time.strftime("%Y-%m"), "cost_usd": 0.0, "calls": 0}
+
+
+def _claude_usage_save(data: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(CLAUDE_USAGE_FILE), exist_ok=True)
+        with open(CLAUDE_USAGE_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def _claude_budget_ok() -> bool:
+    return _claude_usage_load().get("cost_usd", 0.0) < CLAUDE_MONTHLY_BUDGET
+
+
+def _claude_record(usage) -> float:
+    cost = (
+        getattr(usage, "input_tokens", 0)               * _CLAUDE_INPUT_COST +
+        getattr(usage, "output_tokens", 0)              * _CLAUDE_OUTPUT_COST +
+        getattr(usage, "cache_creation_input_tokens", 0) * _CLAUDE_CACHE_WRITE +
+        getattr(usage, "cache_read_input_tokens", 0)    * _CLAUDE_CACHE_READ
+    )
+    data = _claude_usage_load()
+    data["cost_usd"] = round(data.get("cost_usd", 0.0) + cost, 6)
+    data["calls"]    = data.get("calls", 0) + 1
+    _claude_usage_save(data)
+    return cost
+
+
+def claude_monthly_spend() -> str:
+    """Return a human-readable spend string, e.g. '$0.34/$1.00'."""
+    d = _claude_usage_load()
+    return f"${d.get('cost_usd', 0.0):.2f}/${CLAUDE_MONTHLY_BUDGET:.2f}"
+
+
+def stream_claude(prompt: str, system: str, max_tokens: int = 2048):
+    """Stream Claude Haiku — primary provider. Falls to Groq on failure or budget exhaustion."""
+    if not _HAS_ANTHROPIC:
+        yield from stream_groq(prompt, system, max_tokens)
+        return
+
+    config = load_config()
+    api_key = config.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
+    if not api_key:
+        yield from stream_groq(prompt, system, max_tokens)
+        return
+
+    if not _claude_budget_ok():
+        data = _claude_usage_load()
+        sys.stdout.write(
+            f"\r\033[90m↳ Claude budget used ({claude_monthly_spend()}) — using Groq\033[0m\n"
+        )
+        sys.stdout.flush()
+        yield from stream_groq(prompt, system, max_tokens)
+        return
+
+    try:
+        client = _anthropic.Anthropic(api_key=api_key)
+        with client.messages.stream(
+            model=CLAUDE_MODEL,
+            max_tokens=max_tokens,
+            system=[{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+            _claude_record(stream.get_final_message().usage)
+
+    except _anthropic.AuthenticationError:
+        sys.stdout.write("\r\033[33m↳ Claude auth failed — using Groq\033[0m\n")
+        sys.stdout.flush()
+        yield from stream_groq(prompt, system, max_tokens)
+    except _anthropic.RateLimitError:
+        sys.stdout.write("\r\033[90m↳ Claude rate limit — using Groq\033[0m\n")
+        sys.stdout.flush()
+        yield from stream_groq(prompt, system, max_tokens)
+    except Exception:
+        sys.stdout.write("\r\033[90m↳ using Groq\033[0m\n")
+        sys.stdout.flush()
+        yield from stream_groq(prompt, system, max_tokens)
+
+
+def stream_ai(prompt: str, system: str, max_tokens: int = 2048):
+    """Top-level AI stream. Claude primary, Groq → Cerebras → Gemini as fallbacks."""
+    yield from stream_claude(prompt, system, max_tokens)
+
+
 def stream_groq(prompt: str, system: str, model: str = GROQ_MODEL, max_tokens: int = 2048):
     """
     Stream a Groq completion. Yields text chunks as they arrive.
@@ -1081,10 +1199,10 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         ts = datetime.now().strftime("%B %d, %Y %H:%M")
         print(f"\033[90mFetched {ts}\033[0m\n")
 
-    print_status("↳ asking Groq...")
+    print_status("↳ thinking...")
     prompt = build_search_prompt(query, results)
     _t0 = time.time()
-    stream = stream_groq(prompt, SEARCH_SYSTEM)
+    stream = stream_ai(prompt, SEARCH_SYSTEM)
     clear_status()
 
     response = stream_to_terminal(stream)
@@ -1112,7 +1230,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
                     )
                     clear_status()
                     print(f"\n\033[90m↳ verifying from {results[0].get('domain', 'source')}...\033[0m")
-                    verify_stream = stream_groq(verify_prompt, SEARCH_SYSTEM)
+                    verify_stream = stream_ai(verify_prompt, SEARCH_SYSTEM)
                     response = stream_to_terminal(verify_stream)
             except Exception:
                 clear_status()
@@ -1129,7 +1247,8 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         _output_json(query, response, sources, intent="search")
         return results, response
 
-    print(f"\033[90m↳ {_elapsed:.1f}s\033[0m")
+    spend = f" · claude {claude_monthly_spend()}" if (_HAS_ANTHROPIC and _claude_budget_ok()) else ""
+    print(f"\033[90m↳ {_elapsed:.1f}s{spend}\033[0m")
     _print_linked_sources(results)
     print_results(results)
 
@@ -1273,7 +1392,7 @@ def _handle_followup(question: str, context: str = "") -> tuple[list[dict], str]
     prompt = "\n\n".join(prompt_parts)
 
     _t0 = time.time()
-    stream = stream_groq(prompt, SEARCH_SYSTEM)
+    stream = stream_ai(prompt, SEARCH_SYSTEM)
     response = stream_to_terminal(stream)
     _elapsed = time.time() - _t0
 
@@ -1372,14 +1491,14 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
         # Full article mode — Groq formats everything, no summarizing
         print_status("↳ formatting full article...")
         prompt = build_read_prompt(title, text)
-        stream = stream_groq(prompt, FULL_ARTICLE_SYSTEM, max_tokens=6000)
+        stream = stream_ai(prompt, FULL_ARTICLE_SYSTEM, max_tokens=6000)
         clear_status()
         response = stream_to_terminal(stream)
     else:
         # Summary mode — concise AI digest
         print_status("↳ summarizing...")
         prompt = build_read_prompt(title, text)
-        stream = stream_groq(prompt, READ_SYSTEM)
+        stream = stream_ai(prompt, READ_SYSTEM)
         clear_status()
         response = stream_to_terminal(stream)
 
@@ -1710,7 +1829,7 @@ def main():
 
         if intent["intent"] == "instant":
             print_header(query.capitalize())
-            stream = stream_groq(f"Answer this directly and concisely: {query}", SEARCH_SYSTEM)
+            stream = stream_ai(f"Answer this directly and concisely: {query}", SEARCH_SYSTEM)
             stream_to_terminal(stream)
 
         elif intent["intent"] == "transactional" and intent.get("open_url"):
@@ -1729,9 +1848,9 @@ def main():
 
             # Stream a Groq summary of the route/options
             if results:
-                print_status("↳ summarizing options...")
+                print_status("↳ thinking...")
                 prompt = build_search_prompt(query, results)
-                stream = stream_groq(prompt, SEARCH_SYSTEM)
+                stream = stream_ai(prompt, SEARCH_SYSTEM)
                 clear_status()
                 stream_to_terminal(stream)
 
