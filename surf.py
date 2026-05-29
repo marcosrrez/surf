@@ -1256,16 +1256,48 @@ def _link(url: str, text: str) -> str:
     return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
 
 
+def _elapsed_color(seconds: float) -> str:
+    """ANSI color for elapsed time: green ≤3s, amber ≤8s, gray otherwise."""
+    if seconds <= 3.0:
+        return "\033[32m"   # green — fast
+    if seconds <= 8.0:
+        return "\033[33m"   # amber — acceptable
+    return "\033[90m"       # gray — slow
+
+
+def _shorten_domain(domain: str, max_len: int = 28) -> str:
+    """Shorten a long domain to fit cleanly: keep meaningful parts, add … if needed."""
+    domain = domain.removeprefix("www.")
+    if len(domain) <= max_len:
+        return domain
+    # Keep first segment + TLD: sagerclassicalacademy.dreamhosters.com → sagerclassical….com
+    parts = domain.split(".")
+    tld = "." + parts[-1] if len(parts) > 1 else ""
+    head = domain[: max_len - len(tld) - 1]
+    return f"{head}…{tld}"
+
+
 def _print_linked_sources(results: list[dict]) -> None:
-    """Print a clickable Sources line using OSC 8 hyperlinks."""
+    """Print a clickable Sources line, width-aware so it never wraps mid-domain."""
     if not results:
         return
+    width = _term_width()
+    prefix = "Sources: "
+    separator = " · "
     parts = []
+    used = len(prefix)
+
     for r in results[:5]:
         url = r.get("url", "")
-        domain = r["domain"].removeprefix("www.")
-        parts.append(_link(url, domain) if url else domain)
-    print(f"\033[90mSources: {' · '.join(parts)}\033[0m")
+        raw_domain = r.get("domain", "").removeprefix("www.")
+        display = _shorten_domain(raw_domain)
+        item_len = len(display) + (len(separator) if parts else 0)
+        if parts and used + item_len > width:
+            break  # stop before wrapping
+        parts.append(_link(url, display) if url else display)
+        used += item_len
+
+    print(f"\033[90m{prefix}{separator.join(parts)}\033[0m")
 
 
 def print_results(results: list[dict]) -> None:
@@ -1273,7 +1305,7 @@ def print_results(results: list[dict]) -> None:
     print()
     print_divider()
     for i, r in enumerate(results, 1):
-        domain_display = r['domain'].removeprefix('www.')
+        domain_display = _shorten_domain(r['domain'])
         url = r.get('url', '')
         print(f" \033[33m{i}\033[0m  {_link(url, r['title'])}")
         print(f"     \033[90m{_link(url, domain_display)}\033[0m")
@@ -1982,7 +2014,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         print("\033[90mNo results found.\033[0m")
         return [], ""
 
-    domains = " · ".join(r["domain"].removeprefix("www.") for r in results[:3])
+    domains = " · ".join(_shorten_domain(r["domain"]) for r in results[:3])
     print_header(query.capitalize(), f"{domains}  ({len(results)} results)")
 
     news_words = {"news", "latest", "today", "war", "conflict", "update", "breaking", "live"}
@@ -2117,7 +2149,8 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         return results, response
 
     spend = f" · claude {claude_monthly_spend()}" if (_HAS_ANTHROPIC and _claude_budget_ok()) else ""
-    print(f"\033[90m↳ {_elapsed:.1f}s{spend}\033[0m")
+    _ec = _elapsed_color(_elapsed)
+    print(f"{_ec}↳ {_elapsed:.1f}s\033[0m{spend}")
     _print_linked_sources(results)
     print_results(results)
 
@@ -2243,7 +2276,7 @@ def _handle_followup(question: str, context: str = "") -> tuple[list[dict], str]
                 pass
     clear_status()
 
-    domains = " · ".join(r["domain"].removeprefix("www.") for r in search_results[:3]) if search_results else ""
+    domains = " · ".join(_shorten_domain(r["domain"]) for r in search_results[:3]) if search_results else ""
     print_header(question.capitalize(), domains)
 
     prompt_parts = []
@@ -2288,7 +2321,8 @@ def _handle_followup(question: str, context: str = "") -> tuple[list[dict], str]
     _elapsed = time.time() - _t0
 
     spend = f" · claude {claude_monthly_spend()}" if (_HAS_ANTHROPIC and _claude_budget_ok()) else ""
-    print(f"\033[90m↳ {_elapsed:.1f}s{spend}\033[0m")
+    _ec = _elapsed_color(_elapsed)
+    print(f"{_ec}↳ {_elapsed:.1f}s\033[0m{spend}")
     _print_linked_sources(search_results)
     return search_results, response
 
@@ -2787,7 +2821,7 @@ def main():
             except Exception:
                 results = []
 
-            domains = " · ".join(r["domain"].removeprefix("www.") for r in results[:3])
+            domains = " · ".join(_shorten_domain(r["domain"]) for r in results[:3])
             print_header(query.capitalize(), domains if domains else "")
 
             if intent.get("tip"):
