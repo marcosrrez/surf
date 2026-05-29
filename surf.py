@@ -1333,6 +1333,69 @@ def _confidence_gate(query: str, results: list[dict], tier: str) -> str:
     return tier
 
 
+def _deep_research(
+    query: str,
+    tier: str,
+    results: list[dict],
+    enriched_query: str = "",
+) -> tuple[str, list[dict]]:
+    """
+    Fetch real article content for deep-tier searches.
+    Shows '↳ reading domain.com...' status per source.
+    Returns (combined_content, sources_read). Returns ("", []) if all reads fail.
+    """
+    sources_to_read = list(results[:3])
+
+    # For current/contested: if no authoritative sources in results, add a targeted search
+    entity_type = _identify_entity_type(query)
+    if tier in ("current", "contested") and entity_type in SOURCE_HIERARCHY:
+        result_domains = {r.get("domain", "") for r in results}
+        has_authority = any(
+            any(auth in d for auth in SOURCE_HIERARCHY[entity_type])
+            for d in result_domains
+        )
+        if not has_authority and enriched_query:
+            try:
+                auth_domains = SOURCE_HIERARCHY[entity_type]
+                site_query = enriched_query + " " + " ".join(
+                    f"site:{d}" for d in auth_domains[:3]
+                )
+                targeted = _filter_results(ddg_search(site_query, num_results=3))
+                if targeted:
+                    sources_to_read = targeted[:2] + sources_to_read[:1]
+            except Exception:
+                pass
+
+    combined: list[str] = []
+    sources_read: list[dict] = []
+
+    for r in sources_to_read[:3]:
+        url = r.get("url", "")
+        domain = r.get("domain", "").removeprefix("www.")
+        if not url or not url.startswith("http"):
+            continue
+
+        sys.stdout.write(f"\r\033[90m↳ reading {domain}...\033[0m" + " " * 20)
+        sys.stdout.flush()
+
+        try:
+            html = fetch_page(url)
+            if _is_spa_shell(html):
+                content = _fetch_with_jina(url)
+            else:
+                _, content = extract_text(html, max_words=1500, return_title=True)
+            if content and len(content.split()) > 100:
+                combined.append(f"[Source: {domain}]\n{content[:2000]}")
+                sources_read.append(r)
+        except Exception:
+            continue
+
+    sys.stdout.write("\r" + " " * 60 + "\r")
+    sys.stdout.flush()
+
+    return "\n\n---\n\n".join(combined), sources_read
+
+
 def search_flow(query: str, interactive: bool = True, json_output: bool = False) -> tuple[list[dict], str]:
     """
     Run the search flow: DDG → Groq → display results.

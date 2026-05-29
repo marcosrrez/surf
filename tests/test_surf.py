@@ -399,3 +399,49 @@ class TestConfidenceGate:
 
     def test_empty_results_returns_tier_unchanged(self):
         assert _confidence_gate("anything", [], "snippet") == "snippet"
+
+
+from surf import _deep_research
+
+class TestDeepResearch:
+    def _make_results(self, domains_and_urls):
+        return [{"domain": d, "url": u, "title": "T", "snippet": "S"}
+                for d, u in domains_and_urls]
+
+    def test_returns_empty_if_all_fetches_fail(self):
+        results = self._make_results([("espn.com", "https://espn.com/article")])
+        with patch("surf.fetch_page", side_effect=Exception("timeout")):
+            content, sources = _deep_research("who will win", "current", results)
+        assert content == ""
+        assert sources == []
+
+    def test_returns_content_from_successful_fetch(self):
+        results = self._make_results([("espn.com", "https://espn.com/article")])
+        fake_html = "<html><body><p>" + "PSG vs Arsenal analysis. " * 50 + "</p></body></html>"
+        with patch("surf.fetch_page", return_value=fake_html), \
+             patch("surf._is_spa_shell", return_value=False):
+            content, sources = _deep_research("who will win the UCL", "current", results)
+        assert len(content) > 100
+        assert len(sources) == 1
+        assert sources[0]["domain"] == "espn.com"
+
+    def test_caps_at_three_sources(self):
+        results = self._make_results([
+            ("espn.com", "https://espn.com/1"),
+            ("bbc.com", "https://bbc.com/2"),
+            ("skysports.com", "https://skysports.com/3"),
+            ("theathletic.com", "https://theathletic.com/4"),  # 4th — should be skipped
+        ])
+        fake_html = "<html><body><p>" + "article content " * 60 + "</p></body></html>"
+        with patch("surf.fetch_page", return_value=fake_html), \
+             patch("surf._is_spa_shell", return_value=False):
+            content, sources = _deep_research("sports query", "current", results)
+        assert len(sources) <= 3
+
+    def test_skips_short_content(self):
+        results = self._make_results([("bad.com", "https://bad.com/article")])
+        fake_html = "<html><body><p>Short.</p></body></html>"
+        with patch("surf.fetch_page", return_value=fake_html), \
+             patch("surf._is_spa_shell", return_value=False):
+            content, sources = _deep_research("query", "current", results)
+        assert sources == []
