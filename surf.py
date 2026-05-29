@@ -598,6 +598,51 @@ _CLAUDE_OUTPUT_COST = 5.00 / 1_000_000  # $5.00/MTok
 _CLAUDE_CACHE_WRITE = 1.25 / 1_000_000  # $1.25/MTok (cache creation)
 _CLAUDE_CACHE_READ  = 0.10 / 1_000_000  # $0.10/MTok (cache hit)
 CLAUDE_USAGE_FILE = os.path.expanduser("~/.config/surf/claude_usage.json")
+FEATURE_USAGE_FILE = os.path.expanduser("~/.config/surf/feature_usage.json")
+
+# Tips written in plain English explaining value, not syntax.
+# Shown one per session for features the user hasn't tried yet.
+# Disappear once the feature has been used.
+FEATURE_TIPS = {
+    "reader":   "tip: press \033[33m1\033[90m to read any result directly in your terminal — no browser needed",
+    "summary":  "tip: press \033[33ms1\033[90m for a quick AI summary of the top result",
+    "browser":  "tip: press \033[33mo1\033[90m to open a source in your browser, or cmd+click its link",
+    "followup": "tip: just type a follow-up question — surf remembers the context of this search",
+}
+_session_tip_shown: bool = False  # one tip per session maximum
+
+
+def _load_feature_usage() -> dict:
+    try:
+        with open(FEATURE_USAGE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {k: 0 for k in FEATURE_TIPS}
+
+
+def record_feature_use(feature: str) -> None:
+    """Increment usage count for a feature. Called when the user actually uses it."""
+    data = _load_feature_usage()
+    data[feature] = data.get(feature, 0) + 1
+    try:
+        os.makedirs(os.path.dirname(FEATURE_USAGE_FILE), exist_ok=True)
+        with open(FEATURE_USAGE_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def _get_contextual_tip() -> str | None:
+    """Return the first tip for a feature the user hasn't tried. One per session."""
+    global _session_tip_shown
+    if _session_tip_shown:
+        return None
+    usage = _load_feature_usage()
+    for feature, tip in FEATURE_TIPS.items():
+        if usage.get(feature, 0) == 0:
+            _session_tip_shown = True
+            return tip
+    return None
 
 
 def _claude_usage_load() -> dict:
@@ -1311,8 +1356,10 @@ def print_results(results: list[dict]) -> None:
         print(f"     \033[90m{_link(url, domain_display)}\033[0m")
     print()
     n = len(results)
-    print(f"\033[90m  reader: 1–{n}   summary: s1–s{n}   browser: o1–o{n}\033[0m")
-    print(f"\033[90m  new: n   quit: q\033[0m")
+    print(f"\033[90m  read in terminal: 1–{n}   open in browser: o1–o{n}   summary: s1–s{n}\033[0m")
+    tip = _get_contextual_tip()
+    if tip:
+        print(f"\033[90m  {tip}\033[0m")
 
 def print_related(related_lines: list[str]) -> None:
     """Print related topics extracted from Groq's 'Related:' section."""
@@ -2163,7 +2210,7 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
     """Wait for user to pick a result or ask a follow-up question."""
     while True:
         try:
-            choice = surf_input()
+            choice = surf_input("ask a follow-up or type a new search")
         except (KeyboardInterrupt, EOFError):
             break
 
@@ -2180,21 +2227,22 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
         elif cl.startswith("o") and cl[1:].isdigit():
             idx = int(cl[1:]) - 1
             if 0 <= idx < len(results):
+                record_feature_use("browser")
                 open_in_browser(results[idx]["url"])
             else:
                 print(f"\033[90mPick o1-o{len(results)}\033[0m")
         elif cl.startswith("s") and cl[1:].isdigit():
-            # AI summary
             idx = int(cl[1:]) - 1
             if 0 <= idx < len(results):
+                record_feature_use("summary")
                 read_flow(results[idx]["url"], interactive=True, ai_summary=True)
                 break
             else:
                 print(f"\033[90mPick s1-s{len(results)}\033[0m")
         elif cl.isdigit():
-            # Raw read
             idx = int(cl) - 1
             if 0 <= idx < len(results):
+                record_feature_use("reader")
                 read_flow(results[idx]["url"], interactive=True, ai_summary=False)
                 break
             else:
@@ -2203,6 +2251,7 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
             if _is_casual_input(choice):
                 print(f"\033[90m(surf is a search tool — try asking a question or picking a result)\033[0m")
             else:
+                record_feature_use("followup")
                 new_results, new_response = _handle_followup(choice, context=context)
                 if new_results:
                     print_results(new_results)
@@ -2456,7 +2505,7 @@ def _handle_article_input(url: str, related: list[str], context: str) -> None:
     """Interactive prompt after reading an article."""
     while True:
         try:
-            choice = surf_input()
+            choice = surf_input("ask a follow-up or open a related topic")
         except (KeyboardInterrupt, EOFError):
             break
 
@@ -2604,15 +2653,25 @@ def surf_input(placeholder: str = "") -> str:
     Falls back to plain input() if prompt_toolkit is unavailable.
     """
     if not _HAS_PROMPT_TOOLKIT:
-        return input(f"\n{placeholder}› ").strip()
+        return input("› ").strip()
     try:
         completer = _DDGCompleter() if _HAS_PROMPT_TOOLKIT else None
+        kwargs: dict = {}
+        if placeholder:
+            try:
+                from prompt_toolkit.formatted_text import HTML as _HTML
+                kwargs["placeholder"] = _HTML(
+                    f'<ansibrightblack>{placeholder}</ansibrightblack>'
+                )
+            except Exception:
+                pass
         return _ptk_prompt(
             "› ",
             history=FileHistory(HISTORY_FILE),
             auto_suggest=AutoSuggestFromHistory(),
             completer=completer,
             complete_while_typing=False,
+            **kwargs,
         ).strip()
     except (KeyboardInterrupt, EOFError):
         raise KeyboardInterrupt
