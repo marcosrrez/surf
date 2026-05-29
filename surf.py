@@ -209,6 +209,58 @@ def extract_text(html: str, max_words: int = 6000, return_title: bool = False):
         return title, text
     return text
 
+_VALUABLE_PAGE_KEYWORDS = {
+    "contact", "rate", "fee", "price", "cost", "about", "service",
+    "faq", "info", "team", "staff", "appointment", "book", "schedule",
+}
+
+def _fetch_sub_pages(html: str, base_url: str, max_pages: int = 3) -> str:
+    """
+    Extract internal links from the page, fetch sub-pages that look valuable
+    (contact, rates, fees, about, services), and return their combined text.
+    """
+    from urllib.parse import urljoin, urlparse
+    soup = BeautifulSoup(html, "html.parser")
+    base_parsed = urlparse(base_url)
+    base_domain = base_parsed.netloc
+
+    # Find internal links that look valuable
+    candidate_links = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if not href or href.startswith("#") or href.startswith("mailto:"):
+            continue
+        full_url = urljoin(base_url, href)
+        parsed = urlparse(full_url)
+        if parsed.netloc != base_domain:
+            continue
+        path = parsed.path.lower()
+        link_text = a.get_text(strip=True).lower()
+        if any(kw in path or kw in link_text for kw in _VALUABLE_PAGE_KEYWORDS):
+            candidate_links.append((link_text or path, full_url))
+
+    # Deduplicate by URL
+    seen = set()
+    unique_links = []
+    for text, url in candidate_links:
+        if url not in seen and url != base_url:
+            seen.add(url)
+            unique_links.append((text, url))
+
+    # Fetch up to max_pages
+    extra_texts = []
+    for link_text, page_url in unique_links[:max_pages]:
+        try:
+            page_html = fetch_page(page_url)
+            _, page_text = extract_text(page_html, max_words=800, return_title=True)
+            if page_text.strip():
+                extra_texts.append(f"\n\n--- {link_text} ({page_url}) ---\n{page_text.strip()}")
+        except Exception:
+            continue
+
+    return "".join(extra_texts)
+
+
 SEARCH_SYSTEM = """You are a precise research assistant answering questions using search result snippets.
 
 Format rules (use exactly):
@@ -654,16 +706,47 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
                 _handle_followup(choice, context=context)
         # empty input: loop again
 
+def _contextualize_query(question: str, context: str) -> str:
+    """
+    Use the fast classifier model to generate a targeted DDG search query
+    from a follow-up question + article context.
+    Returns the query string, or the original question if generation fails.
+    """
+    if not context:
+        return question
+    prompt = (
+        f"Article context (first 800 chars):\n{context[:800]}\n\n"
+        f"Follow-up question: {question}\n\n"
+        f"Generate a specific web search query (max 10 words) that would find "
+        f"the answer to this question given the context. "
+        f"Include specific names, places, or identifiers from the context. "
+        f"Output ONLY the search query, no quotes, no explanation."
+    )
+    try:
+        chunks = list(stream_groq(
+            prompt,
+            "You are a search query generator. Output only a search query string, nothing else. Maximum 10 words.",
+            model=CLASSIFIER_MODEL,
+            max_tokens=30,
+        ))
+        query = "".join(chunks).strip().strip('"').strip("'")
+        return query if query else question
+    except Exception:
+        return question
+
+
 def _handle_followup(question: str, context: str = "") -> None:
     """Answer a follow-up question using web search + article context."""
-    # Search DDG for fresh perspectives on the question
-    print_status(f"↳ searching: \"{question[:50]}\"...")
+    # Generate a context-aware search query so "how much does he charge?"
+    # becomes "Marcos Gutierrez therapist fees marcosgutierrezcounseling.com"
+    search_query = _contextualize_query(question, context)
+    print_status(f"↳ searching: \"{search_query[:55]}\"...")
     try:
-        search_results = ddg_search(question)
+        search_results = ddg_search(search_query)
     except Exception:
         search_results = []
-    clear_status()
     search_results = _filter_results(search_results)
+    clear_status()
 
     domains = " · ".join(r["domain"].removeprefix("www.") for r in search_results[:3]) if search_results else ""
     print_header(question.capitalize(), domains)
@@ -715,6 +798,14 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True) -> st
         return ""
 
     title, text = extract_text(html, return_title=True)
+
+    # Fetch relevant sub-pages (contact, rates, about) and append their content
+    try:
+        sub_page_text = _fetch_sub_pages(html, url)
+        if sub_page_text:
+            text = text + sub_page_text
+    except Exception:
+        pass
 
     domain = url.replace("https://", "").replace("http://", "").split("/")[0]
     print_header(title or url, domain)
