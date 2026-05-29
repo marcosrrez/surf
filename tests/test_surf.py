@@ -156,6 +156,14 @@ class TestSystemPrompts:
     def test_search_system_mentions_tldr(self):
         assert "TL;DR" in SEARCH_SYSTEM
 
+    def test_research_system_has_section_headers(self):
+        from surf import SEARCH_SYSTEM_RESEARCH
+        assert "bold header" in SEARCH_SYSTEM_RESEARCH.lower() or "**" in SEARCH_SYSTEM_RESEARCH
+
+    def test_current_system_has_section_headers(self):
+        from surf import SEARCH_SYSTEM_CURRENT
+        assert "bold header" in SEARCH_SYSTEM_CURRENT.lower() or "**" in SEARCH_SYSTEM_CURRENT
+
     def test_read_system_mentions_related(self):
         assert "Related" in READ_SYSTEM
 

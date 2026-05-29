@@ -1284,8 +1284,8 @@ SEARCH_SYSTEM_CURRENT = """You are a precise research assistant synthesizing tod
 Format rules:
 - First line: "▸ TL;DR  " followed by one concrete, specific sentence — include names, numbers, dates
 - Blank line
-- 2-4 paragraphs using the actual content from the sources provided
-- Use **bold** for key names and facts
+- 2-4 sections, each with a **bold header** on its own line followed by 1-2 paragraphs
+- Section headers should reflect what's actually in the content (e.g., **What's happening**, **Why it matters**, **What's next**)
 - Use "•" for bullet points, never dashes
 - When a specific fact comes from a source, cite it inline as [1], [2], etc. matching the numbered snippets
 
@@ -1300,8 +1300,8 @@ SEARCH_SYSTEM_RESEARCH = """You are a precise research assistant synthesizing ex
 Format rules:
 - First line: "▸ TL;DR  " followed by one clear, direct sentence
 - Blank line
-- 3-5 paragraphs building from fundamentals to implications
-- Use **bold** for key concepts
+- 3-5 sections, each with a **bold header** on its own line followed by 1-2 paragraphs
+- Section headers should be meaningful (e.g., **How it works**, **Why it matters**, **Key implications**)
 - Use "•" for bullet points where appropriate
 - When a specific fact comes from a source, cite it inline as [1], [2], etc. matching the numbered snippets
 
