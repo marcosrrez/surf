@@ -623,10 +623,30 @@ def stream_groq(prompt: str, system: str, model: str = GROQ_MODEL, max_tokens: i
 CEREBRAS_MODEL = "gpt-oss-120b"
 CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
 
+_CEREBRAS_THINKING_RE = re.compile(
+    r'^(We need to|Let me|Let\'s|I need to|I\'ll|I will|First,|To answer|'
+    r'Looking at|Based on the|The user|The question)',
+    re.IGNORECASE,
+)
+
+def _strip_cerebras_thinking(text: str) -> str:
+    """Remove reasoning preamble from gpt-oss-120b output before the actual answer."""
+    if "▸ TL;DR" in text:
+        # Everything before ▸ TL;DR is thinking — drop it
+        return text[text.index("▸"):]
+    # If no TL;DR, check for thinking-pattern opening lines and drop them
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and not _CEREBRAS_THINKING_RE.match(stripped):
+            return "\n".join(lines[i:])
+    return text
+
+
 def stream_cerebras(prompt: str, system: str, max_tokens: int = 2048):
     """
     Stream a Cerebras completion. Used as fallback when Groq is rate-limited.
-    Cerebras uses the same Llama 3.3 70B model with an OpenAI-compatible API.
+    Thinking tokens from gpt-oss-120b are stripped before output.
     """
     config = load_config()
     api_key = config.get("CEREBRAS_API_KEY", os.environ.get("CEREBRAS_API_KEY", ""))
@@ -658,6 +678,8 @@ def stream_cerebras(prompt: str, system: str, max_tokens: int = 2048):
         )
         r.raise_for_status()
 
+        # Buffer full response so we can strip thinking preamble before yielding
+        full_response = []
         for line in r.iter_lines():
             if not line:
                 continue
@@ -671,9 +693,11 @@ def stream_cerebras(prompt: str, system: str, max_tokens: int = 2048):
                 chunk = json.loads(data)
                 content = chunk["choices"][0]["delta"].get("content", "")
                 if content:
-                    yield content
+                    full_response.append(content)
             except (json.JSONDecodeError, KeyError, IndexError):
                 continue
+        cleaned = _strip_cerebras_thinking("".join(full_response))
+        yield cleaned
     except requests.exceptions.HTTPError as e:
         code = e.response.status_code if e.response is not None else 0
         if code == 429:
@@ -694,8 +718,43 @@ def stream_cerebras(prompt: str, system: str, max_tokens: int = 2048):
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:streamGenerateContent"
 
+def _gemini_request(api_key: str, payload: dict, timeout: int = 30):
+    """Make one Gemini streaming request. Returns response object."""
+    return requests.post(
+        GEMINI_ENDPOINT,
+        params={"key": api_key, "alt": "sse"},
+        headers={"Content-Type": "application/json"},
+        json=payload,
+        stream=True,
+        verify=SSL_CERT,
+        timeout=timeout,
+    )
+
+
+def _gemini_iter_chunks(r) -> list[str]:
+    """Iterate SSE lines from a Gemini streaming response, yield text chunks."""
+    for line in r.iter_lines():
+        if not line:
+            continue
+        decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+        if not decoded.startswith("data: "):
+            continue
+        data = decoded[6:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data)
+            parts = chunk.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            for part in parts:
+                text = part.get("text", "")
+                if text:
+                    yield text
+        except (json.JSONDecodeError, KeyError, IndexError):
+            continue
+
+
 def stream_gemini(prompt: str, system: str, max_tokens: int = 2048):
-    """Stream a Gemini completion. Tertiary fallback after Cerebras."""
+    """Stream a Gemini completion. Tertiary fallback after Cerebras. Retries once on 429."""
     config = load_config()
     api_key = config.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
     if not api_key:
@@ -707,45 +766,31 @@ def stream_gemini(prompt: str, system: str, max_tokens: int = 2048):
         "systemInstruction": {"parts": [{"text": system}]},
         "generationConfig": {"maxOutputTokens": max_tokens},
     }
-    try:
-        r = requests.post(
-            GEMINI_ENDPOINT,
-            params={"key": api_key, "alt": "sse"},
-            headers={"Content-Type": "application/json"},
-            json=payload,
-            stream=True,
-            verify=SSL_CERT,
-            timeout=30,
-        )
-        r.raise_for_status()
-        for line in r.iter_lines():
-            if not line:
+    for attempt in range(2):
+        try:
+            r = _gemini_request(api_key, payload)
+            r.raise_for_status()
+            yield from _gemini_iter_chunks(r)
+            return
+        except requests.exceptions.HTTPError as e:
+            code = e.response.status_code if e.response is not None else 0
+            if code == 429 and attempt == 0:
+                # Back off and retry once
+                sys.stdout.write("\r\033[90m↳ Gemini rate limit — retrying in 5s...\033[0m")
+                sys.stdout.flush()
+                time.sleep(5)
+                sys.stdout.write("\r" + " " * 50 + "\r")
+                sys.stdout.flush()
                 continue
-            decoded = line.decode("utf-8") if isinstance(line, bytes) else line
-            if not decoded.startswith("data: "):
-                continue
-            data = decoded[6:].strip()
-            if data == "[DONE]":
-                break
-            try:
-                chunk = json.loads(data)
-                parts = chunk.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                for part in parts:
-                    text = part.get("text", "")
-                    if text:
-                        yield text
-            except (json.JSONDecodeError, KeyError, IndexError):
-                continue
-    except requests.exceptions.HTTPError as e:
-        code = e.response.status_code if e.response is not None else 0
-        if code == 429:
-            yield "\033[33m↳ Gemini rate limit hit. Try again shortly.\033[0m"
-        elif code in (401, 403):
-            yield "\033[33m↳ Gemini auth failed — check GEMINI_API_KEY\033[0m"
-        else:
-            yield f"\033[33m↳ Gemini error ({code}).\033[0m"
-    except Exception:
-        yield "\033[33m↳ Gemini unavailable.\033[0m"
+            elif code in (401, 403):
+                yield "\033[33m↳ Gemini auth failed — check GEMINI_API_KEY\033[0m"
+                return
+            else:
+                yield f"\033[33m↳ Gemini error ({code}).\033[0m"
+                return
+        except Exception:
+            yield "\033[33m↳ Gemini unavailable.\033[0m"
+            return
 
 
 class Spinner:
@@ -1535,7 +1580,10 @@ def _needs_multi_search(query: str) -> bool:
 _SPAM_DOMAINS = {
     "roblox.com", "y8.com", "grindsuccess.com", "quora.com",
     "pinterest.com", "facebook.com", "instagram.com", "twitter.com",
-    "tiktok.com", "reddit.com",  # these rarely have the actual article content
+    "tiktok.com", "reddit.com",
+    # Generic "news analysis" spam farms observed in results
+    "desirs-volupte.com", "austrianfood.net", "thedailyjagran.com",
+    "wanttoknowit.com", "quickapedia.com", "feeddi.com",
 }
 
 # Authoritative sources by content category

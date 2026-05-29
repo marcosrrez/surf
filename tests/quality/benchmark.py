@@ -194,15 +194,13 @@ def score_delight(query_def: dict, response: str) -> dict:
     # 2. Format cleanliness (0-1)
     has_sources = "sources:" in response_lower
     has_bad_bullets = bool(re.search(r'^\s*[-–]\s+\w', response, re.MULTILINE))
-    has_md_artifacts = "**" in response
+    # ** is rendered as bold in the terminal — not a format defect
     has_filler = any(f in response_lower for f in FILLER_PHRASES)
     format_issues = []
     if not has_sources and query_def.get("must_have_tldr", True):
         format_issues.append("no Sources line")
     if has_bad_bullets:
         format_issues.append("uses - for bullets")
-    if has_md_artifacts:
-        format_issues.append("** visible")
     if has_filler:
         filler_found = [f for f in FILLER_PHRASES if f in response_lower]
         format_issues.append(f"filler: {filler_found[0]!r}")
