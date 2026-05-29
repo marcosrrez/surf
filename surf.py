@@ -880,7 +880,7 @@ def stream_gemini(prompt: str, system: str, max_tokens: int = 2048):
     config = load_config()
     api_key = config.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
     if not api_key:
-        yield "\033[33m↳ Monthly budget reached. Add GROQ_API_KEY or GEMINI_API_KEY to ~/.config/surf/config for unlimited free queries.\033[0m"
+        yield from stream_ollama(prompt, system, max_tokens)
         return
 
     payload = {
