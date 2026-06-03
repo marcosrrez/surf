@@ -1858,21 +1858,45 @@ def _enrich_ddg_query(user_query: str, tier: str = "snippet", source_hint: str =
     if is_temporal and year not in user_query:
         enriched = f"{user_query} {year}"
 
+    # Pass 1b: vague prediction query + session entity extraction (zero cost, zero LLM)
+    # "who will win UCL" with session mentioning "PSG vs Arsenal" →
+    # pre-populate enriched with those entities so Pass 2 starts from a better base.
+    if is_temporal and ("who will win" in q_lower or "who wins" in q_lower or "will win" in q_lower):
+        session_ctx_quick = format_session_context()
+        if session_ctx_quick:
+            # Look for "X vs Y" match patterns in session context
+            vs_match = re.search(
+                r'\b([A-Z][a-zA-Z\s]{2,20})\s+(?:vs?\.?|versus)\s+([A-Z][a-zA-Z\s]{2,20})\b',
+                session_ctx_quick,
+            )
+            if vs_match:
+                team_a = vs_match.group(1).strip()
+                team_b = vs_match.group(2).strip()
+                enriched = f"{team_a} {team_b} {year}"
+
     # Pass 2: session-context-aware enrichment for temporal queries
+    # Larger window (1200 chars) so specific entities from prior searches aren't cut off.
+    # Prompt explicitly forces session entities into the query — this fixes cases like
+    # "who will win UCL" where session has "PSG vs Arsenal final tomorrow" but the
+    # enricher was generating generic prediction queries instead.
     session_ctx = format_session_context()
     if session_ctx and is_temporal:
         prompt = (
             f"Today is {time.strftime('%B %d, %Y')}.\n\n"
             f"The user asked: \"{user_query}\"\n\n"
-            f"What they've already searched this session:\n{session_ctx[:600]}\n\n"
-            f"Generate a precise web search query (max 8 words) that will find "
-            f"today's relevant results — include specific names, the year, and "
-            f"any known context. Output ONLY the search query, no quotes, no explanation."
+            f"What they've already searched this session:\n{session_ctx[:1200]}\n\n"
+            f"Generate a precise web search query (max 8 words) for today's results.\n"
+            f"CRITICAL: If the session mentions specific teams, people, match dates, or events "
+            f"related to this question, those MUST appear in your query. "
+            f"A query like 'PSG Arsenal UCL final 2026 predictions' is far better than "
+            f"'UEFA Champions League winner prediction'. "
+            f"Output ONLY the search query, no quotes, no explanation."
         )
         try:
             chunks = list(stream_groq(
                 prompt,
-                "You are a search query optimizer. Output only a concise search query. Maximum 8 words.",
+                "You are a search query optimizer. Output only a concise search query. "
+                "Always include specific names and events from context. Maximum 8 words.",
                 model=CLASSIFIER_MODEL,
                 max_tokens=20,
             ))
