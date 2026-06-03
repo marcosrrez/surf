@@ -652,6 +652,17 @@ CLASSIFIER_MODEL = "llama-3.1-8b-instant"
 # ─── Claude (primary provider) ───────────────────────────────────────────────
 
 CLAUDE_MODEL = "claude-haiku-4-5"
+CLAUDE_SONNET_MODEL = "claude-sonnet-4-6"
+
+def _get_synthesis_model() -> str:
+    """
+    Return the Claude model for synthesis.
+    Config: SYNTHESIS_MODEL=sonnet uses claude-sonnet-4-6 for research/current tier.
+    Default and all other values: claude-haiku-4-5.
+    """
+    val = load_config().get("SYNTHESIS_MODEL", "haiku").lower().strip()
+    return CLAUDE_SONNET_MODEL if val == "sonnet" else CLAUDE_MODEL
+
 CLAUDE_MONTHLY_BUDGET = 1.00            # USD hard cap per calendar month
 _CLAUDE_INPUT_COST  = 1.00 / 1_000_000  # $1.00/MTok
 _CLAUDE_OUTPUT_COST = 5.00 / 1_000_000  # $5.00/MTok
@@ -771,7 +782,7 @@ def claude_monthly_spend() -> str:
     return f"${d.get('cost_usd', 0.0):.2f}/${CLAUDE_MONTHLY_BUDGET:.2f}"
 
 
-def stream_claude(prompt: str, system: str, max_tokens: int = 2048):
+def stream_claude(prompt: str, system: str, max_tokens: int = 2048, tier: str = "snippet"):
     """Stream Claude Haiku — primary provider. Falls to Groq on failure or budget exhaustion."""
     if not _HAS_ANTHROPIC:
         yield from stream_groq(prompt, system, max_tokens)
@@ -795,7 +806,7 @@ def stream_claude(prompt: str, system: str, max_tokens: int = 2048):
     try:
         client = _anthropic.Anthropic(api_key=api_key)
         with client.messages.stream(
-            model=CLAUDE_MODEL,
+            model=_get_synthesis_model() if tier in ("research", "current") else CLAUDE_MODEL,
             max_tokens=max_tokens,
             system=[{
                 "type": "text",
@@ -822,9 +833,9 @@ def stream_claude(prompt: str, system: str, max_tokens: int = 2048):
         yield from stream_groq(prompt, system, max_tokens)
 
 
-def stream_ai(prompt: str, system: str, max_tokens: int = 2048):
+def stream_ai(prompt: str, system: str, max_tokens: int = 2048, tier: str = "snippet"):
     """Top-level AI stream. Claude primary, Groq → Cerebras → Gemini as fallbacks."""
-    yield from stream_claude(prompt, system, max_tokens)
+    yield from stream_claude(prompt, system, max_tokens, tier=tier)
 
 
 def stream_groq(prompt: str, system: str, model: str = GROQ_MODEL, max_tokens: int = 2048):
@@ -2343,7 +2354,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
             deep_sources = []
 
         clear_status()
-        stream = stream_ai(prompt, system)
+        stream = stream_ai(prompt, system, tier=tier)
         # Deep path: pass results so [1][2][3] citations render as clickable links
         response = stream_to_terminal(stream, results=results)
 
@@ -2355,7 +2366,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         system = SEARCH_SYSTEM
         print_status("↳ thinking...")
         clear_status()
-        stream = stream_ai(base_prompt, system)
+        stream = stream_ai(base_prompt, system, tier=tier)
         response = stream_to_terminal(stream, results=None)
 
     _elapsed = time.time() - _t0
@@ -2382,7 +2393,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
                     )
                     clear_status()
                     print(f"\n\033[90m↳ verifying from {results[0].get('domain', 'source')}...\033[0m")
-                    verify_stream = stream_ai(verify_prompt, system)
+                    verify_stream = stream_ai(verify_prompt, system, tier=tier)
                     response = stream_to_terminal(verify_stream, results=results)
             except Exception:
                 clear_status()

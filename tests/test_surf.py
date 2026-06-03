@@ -622,7 +622,7 @@ class TestSearchFlowTiers:
         from surf import SEARCH_SYSTEM_CURRENT, SEARCH_SYSTEM
         captured_system = []
 
-        def capture_stream(prompt, system, max_tokens=2048):
+        def capture_stream(prompt, system, max_tokens=2048, **kwargs):
             captured_system.append(system)
             return iter(["▸ TL;DR  answer."])
 
@@ -764,3 +764,33 @@ class TestEvaluativeRouting:
         results = [{"domain": "reddit.com", "url": "https://reddit.com/r/python", "snippet": "python tips", "title": "Reddit"}]
         filtered = _filter_results(results, evaluative_context=None)
         assert len(filtered) == 0
+
+
+class TestSynthesisModel:
+    def test_get_synthesis_model_returns_haiku_by_default(self):
+        from surf import _get_synthesis_model, CLAUDE_MODEL
+        with patch("surf.load_config", return_value={}):
+            assert _get_synthesis_model() == CLAUDE_MODEL
+
+    def test_get_synthesis_model_returns_sonnet_when_configured(self):
+        from surf import _get_synthesis_model, CLAUDE_SONNET_MODEL
+        with patch("surf.load_config", return_value={"SYNTHESIS_MODEL": "sonnet"}):
+            assert _get_synthesis_model() == CLAUDE_SONNET_MODEL
+
+    def test_get_synthesis_model_ignores_unknown_values(self):
+        from surf import _get_synthesis_model, CLAUDE_MODEL
+        with patch("surf.load_config", return_value={"SYNTHESIS_MODEL": "gpt5"}):
+            assert _get_synthesis_model() == CLAUDE_MODEL
+
+    def test_stream_claude_accepts_tier_kwarg(self):
+        # stream_claude must accept tier without error — just verify signature
+        import inspect
+        from surf import stream_claude
+        sig = inspect.signature(stream_claude)
+        assert "tier" in sig.parameters
+
+    def test_stream_ai_accepts_tier_kwarg(self):
+        import inspect
+        from surf import stream_ai
+        sig = inspect.signature(stream_ai)
+        assert "tier" in sig.parameters
