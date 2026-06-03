@@ -683,6 +683,8 @@ FEATURE_TIPS = {
     # Power features — shown after core features are mastered
     "session":  "tip: session memory means 'who replaced her?' works without repeating what you were researching",
     "automation": "tip: \033[33msurf 'query' --json | jq .tldr\033[90m  pipes cleanly into scripts and cron jobs",
+    "preferences": "tip: type \033[33mprefer: concise answers with data\033[90m after any search to tune surf to how you think",
+    "preferences_view": "tip: \033[33msurf prefer\033[90m shows your research profile — edit it anytime in Obsidian",
 }
 _session_tip_shown: bool = False  # one tip per session maximum
 
@@ -728,6 +730,8 @@ def _get_contextual_tip() -> str | None:
             continue  # not yet — teach basics first
         if feature == "automation" and searches < 10:
             continue  # show after they've used surf enough to care
+        if feature in ("preferences", "preferences_view") and searches < 15:
+            continue  # show after automation — these are the deepest power features
         if usage.get(feature, 0) == 0:
             _session_tip_shown = True
             return tip
@@ -2503,7 +2507,9 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
             print(f"  \033[33m↵\033[0m        ask a follow-up — surf remembers this session")
             print()
             print("\033[90m  surf 'query' --json | jq .tldr   pipes into scripts")
-            print(f"  surf --usage                       shows Claude monthly spend\033[0m")
+            print(f"  surf --usage                       shows Claude monthly spend")
+            print(f"  surf prefer                        view your research profile")
+            print(f"  prefer: [anything]                 tune surf to how you think\033[0m")
             print()
         elif cl == "n":
             query = surf_input("New search: ")
