@@ -2100,14 +2100,44 @@ def _deep_research(
     Fetch real article content for deep-tier searches.
     Shows '↳ reading domain.com...' status per source.
     Returns (combined_content, sources_read). Returns ("", []) if all reads fail.
-    """
-    sources_to_read = list(results[:3])
 
-    # For current/contested: if no authoritative sources in results, add a targeted search
+    Source caps: research tier → up to 5; current/contested → up to 3.
+    Quality gate: skip articles under 150 words (was 100).
+    """
+    # Second-angle DDG search before building sources_to_read.
+    # Surfaces sources the first query missed — especially valuable for research
+    # queries that benefit from an expert/analytical angle.
+    second_angle_results: list[dict] = []
+    if enriched_query and tier in ("research", "current", "contested"):
+        angle_suffix = {
+            "research":  "expert analysis",
+            "current":   "latest update",
+            "contested": "counterargument criticism",
+        }[tier]
+        try:
+            raw_angle = ddg_search(f"{enriched_query} {angle_suffix}", num_results=4)
+            second_angle_results = _filter_results(raw_angle)
+        except Exception:
+            pass
+
+    # Merge: primary results first, angle results second, dedup by domain
+    seen_domains: set[str] = set()
+    merged: list[dict] = []
+    for r in list(results) + second_angle_results:
+        d = r.get("domain", "")
+        if d not in seen_domains:
+            seen_domains.add(d)
+            merged.append(r)
+
+    # Source cap: research gets up to 5; all other deep tiers stay at 3
+    source_cap = 5 if tier == "research" else 3
+    sources_to_read = merged[:source_cap]
+
+    # Authoritative domain fallback (unchanged from before)
     if entity_type is None:
         entity_type = _identify_entity_type(query)
     if tier in ("current", "contested") and entity_type in SOURCE_HIERARCHY:
-        result_domains = {r.get("domain", "") for r in results}
+        result_domains = {r.get("domain", "") for r in merged}
         has_authority = any(
             any(auth in d for auth in SOURCE_HIERARCHY[entity_type])
             for d in result_domains
@@ -2124,11 +2154,11 @@ def _deep_research(
             except Exception:
                 pass
 
+    # Read sources
     combined: list[str] = []
     sources_read: list[dict] = []
-    citation_idx = len(sources_to_read[:3])  # offset to avoid colliding with snippet [1]-[5]
 
-    for i, r in enumerate(sources_to_read[:3]):
+    for i, r in enumerate(sources_to_read[:source_cap]):
         url = r.get("url", "")
         domain = r.get("domain", "").removeprefix("www.")
         if not url or not url.startswith("http"):
@@ -2143,8 +2173,8 @@ def _deep_research(
                 content = _fetch_with_jina(url)
             else:
                 _, content = extract_text(html, max_words=1500, return_title=True)
-            if content and len(content.split()) > 100:
-                # Label with [1][2][3] so inline citations in the answer match
+            # Quality gate: 150 words (raised from 100)
+            if content and len(content.split()) > 150:
                 combined.append(f"[{i + 1}] {domain}\n{content[:2000]}")
                 sources_read.append(r)
         except Exception:

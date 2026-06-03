@@ -461,6 +461,96 @@ class TestDeepResearch:
         assert sources == []
 
 
+class TestDeepResearchExpanded:
+    """Tests for expanded _deep_research (5-source cap, second angle, 150-word gate)."""
+
+    def _make_results(self, n: int) -> list[dict]:
+        domains = ["espn.com", "bbc.com", "theathletic.com", "skysports.com",
+                   "reuters.com", "apnews.com"]
+        return [{"domain": d, "url": f"https://{d}/article", "title": "T", "snippet": "S"}
+                for d in domains[:n]]
+
+    def _rich_html(self, words: int = 200) -> str:
+        return "<html><body><p>" + "article content word " * words + "</p></body></html>"
+
+    def test_research_tier_caps_at_five_sources(self):
+        initial = self._make_results(6)
+        with patch("surf.fetch_page", return_value=self._rich_html(200)), \
+             patch("surf._is_spa_shell", return_value=False), \
+             patch("surf.ddg_search", return_value=self._make_results(3)):
+            content, sources = _deep_research(
+                "how does mRNA vaccine work", "research", initial,
+                enriched_query="mRNA vaccine mechanism",
+            )
+        assert len(sources) <= 5
+
+    def test_current_contested_still_caps_at_three(self):
+        initial = self._make_results(5)
+        with patch("surf.fetch_page", return_value=self._rich_html(200)), \
+             patch("surf._is_spa_shell", return_value=False), \
+             patch("surf.ddg_search", return_value=self._make_results(3)):
+            content, sources = _deep_research(
+                "who will win the UCL", "current", initial,
+                enriched_query="UCL 2026 final prediction",
+            )
+        assert len(sources) <= 3
+
+    def test_second_angle_search_called_for_research_tier(self):
+        initial = self._make_results(2)
+        rich_html = self._rich_html(200)
+        with patch("surf.fetch_page", return_value=rich_html), \
+             patch("surf._is_spa_shell", return_value=False), \
+             patch("surf.ddg_search", return_value=self._make_results(3)) as mock_ddg:
+            _deep_research(
+                "how does mRNA vaccine work", "research", initial,
+                enriched_query="mRNA vaccine mechanism",
+            )
+        mock_ddg.assert_called()
+        call_args = [str(c) for c in mock_ddg.call_args_list]
+        assert any("expert analysis" in a for a in call_args)
+
+    def test_second_angle_uses_counterargument_for_contested(self):
+        initial = self._make_results(2)
+        with patch("surf.fetch_page", return_value=self._rich_html(200)), \
+             patch("surf._is_spa_shell", return_value=False), \
+             patch("surf.ddg_search", return_value=self._make_results(2)) as mock_ddg:
+            _deep_research(
+                "React vs Vue 2026", "contested", initial,
+                enriched_query="React vs Vue developer experience",
+            )
+        call_args = [str(c) for c in mock_ddg.call_args_list]
+        assert any("counterargument" in a or "criticism" in a for a in call_args)
+
+    def test_short_articles_under_150_words_are_skipped(self):
+        short_html = "<html><body><p>" + "word " * 100 + "</p></body></html>"
+        initial = self._make_results(3)
+        with patch("surf.fetch_page", return_value=short_html), \
+             patch("surf._is_spa_shell", return_value=False), \
+             patch("surf.ddg_search", return_value=[]):
+            content, sources = _deep_research(
+                "how does a vaccine work", "research", initial,
+                enriched_query="vaccine mechanism",
+            )
+        assert sources == []
+
+    def test_dedup_by_domain_across_both_angles(self):
+        initial = [{"domain": "espn.com", "url": "https://espn.com/1", "title": "T", "snippet": "S"}]
+        angle_results = [
+            {"domain": "espn.com", "url": "https://espn.com/2", "title": "T", "snippet": "S"},
+            {"domain": "bbc.com",  "url": "https://bbc.com/1",  "title": "T", "snippet": "S"},
+        ]
+        rich_html = self._rich_html(200)
+        with patch("surf.fetch_page", return_value=rich_html), \
+             patch("surf._is_spa_shell", return_value=False), \
+             patch("surf.ddg_search", return_value=angle_results):
+            content, sources = _deep_research(
+                "how does mRNA vaccine work", "research", initial,
+                enriched_query="mRNA vaccine",
+            )
+        domains = [s["domain"] for s in sources]
+        assert len(domains) == len(set(domains)), "Duplicate domains in sources"
+
+
 from surf import _get_ollama_model, stream_ollama
 
 class TestOllama:
