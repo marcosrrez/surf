@@ -2350,6 +2350,10 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     if session_ctx:
         base_prompt = f"{session_ctx}\n\n{base_prompt}"
 
+    vault_ctx = _obsidian_find_related(query)
+    if vault_ctx:
+        base_prompt = f"{vault_ctx}\n\n{base_prompt}"
+
     _t0 = time.time()
 
     if tier in ("current", "research", "contested"):
@@ -2432,6 +2436,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     if "▸ TL;DR" in summary:
         summary = summary.split("▸ TL;DR")[-1].strip()
     save_session_entry(query, "search", _truncate_at_sentence(summary, 300))
+    _obsidian_save(query, response, results, session_id=_obsidian_session_id())
     record_feature_use("search")  # counts toward automation tip threshold
 
     if json_output:
@@ -3109,6 +3114,184 @@ def _add_to_history(text: str) -> None:
     """Add a string to readline history."""
     if _HAS_READLINE and text.strip():
         _readline.add_history(text.strip())
+
+
+# ─── Obsidian vault integration ───────────────────────────────────────────────
+# Gated on OBSIDIAN_VAULT config key. Zero impact without it.
+
+def _obsidian_vault_path() -> str | None:
+    """Return configured Obsidian vault path, or None."""
+    return load_config().get("OBSIDIAN_VAULT") or None
+
+
+def _make_note_slug(query: str) -> str:
+    """Convert query to a safe filename slug, max 60 chars."""
+    slug = query.lower().strip()
+    slug = re.sub(r"[^a-z0-9\s-]", "", slug)
+    slug = re.sub(r"\s+", "-", slug)
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    if len(slug) > 60:
+        slug = slug[:60].rsplit("-", 1)[0]
+    return slug
+
+
+def _make_frontmatter(query: str, sources: list[dict], tags: list[str]) -> str:
+    """Generate YAML frontmatter for a surf vault note."""
+    today = time.strftime("%Y-%m-%d")
+    source_lines = "\n".join(
+        f"  - {r.get('domain', '').removeprefix('www.')}" for r in sources[:5]
+    ) or "  []"
+    tag_str = "[" + ", ".join(tags) + "]" if tags else "[]"
+    safe_query = query.replace('"', "'")
+    return f'---\ndate: {today}\nquery: "{safe_query}"\nsources:\n{source_lines}\ntags: {tag_str}\n---'
+
+
+def _obsidian_save(
+    query: str,
+    response: str,
+    sources: list[dict],
+    session_id: str,
+) -> str | None:
+    """
+    Save or append a surf response to the Obsidian vault.
+
+    File: $VAULT/surf/YYYY/MM/YYYY-MM-DD-{session_id[:8]}.md
+    IMPORTANT: path is keyed on session_id only (not query slug) so all
+    follow-ups within the same session share one file.
+
+    First call: creates file with frontmatter + H1 title.
+    Follow-up calls (same session_id, file already exists): append as H2.
+    """
+    vault = _obsidian_vault_path()
+    if not vault:
+        return None
+
+    today = time.strftime("%Y-%m-%d")
+    note_dir = os.path.join(vault, "surf", time.strftime("%Y"), time.strftime("%m"))
+    os.makedirs(note_dir, exist_ok=True)
+
+    # Session-keyed path — all follow-ups share this file
+    note_path = os.path.join(note_dir, f"{today}-{session_id[:8]}.md")
+
+    # Auto-detect tags
+    entity_type = _identify_entity_type(query) or ""
+    tags = [entity_type] if entity_type else []
+    topic_signals = {
+        "finance": ["stock", "market", "economy", "inflation", "fed", "rate"],
+        "medical": ["health", "disease", "drug", "vaccine", "treatment"],
+        "sports":  ["game", "match", "season", "league", "tournament"],
+        "tech":    ["software", "ai", "model", "code", "programming"],
+    }
+    for topic, signals in topic_signals.items():
+        if topic not in tags and any(s in query.lower() for s in signals):
+            tags.append(topic)
+
+    if os.path.exists(note_path):
+        with open(note_path, "a", encoding="utf-8") as f:
+            f.write(f"\n\n## {query}\n\n{response}\n")
+    else:
+        fm = _make_frontmatter(query, sources, tags)
+        with open(note_path, "w", encoding="utf-8") as f:
+            f.write(f"{fm}\n\n# {query}\n\n{response}\n")
+
+    _obsidian_link_related(query, note_path, vault)
+    return note_path
+
+
+def _obsidian_find_related(query: str) -> str:
+    """
+    Scan vault for recent notes (last 30 days) related to this query.
+    Returns a context string or "" if nothing found.
+    Zero network calls — pure file scan.
+    """
+    vault = _obsidian_vault_path()
+    if not vault:
+        return ""
+
+    surf_dir = os.path.join(vault, "surf")
+    if not os.path.isdir(surf_dir):
+        return ""
+
+    stop = {"the", "a", "an", "is", "are", "was", "were", "what", "how",
+            "why", "who", "when", "does", "do", "did", "and", "or", "for",
+            "of", "in", "on", "at", "to", "by", "it", "its"}
+    q_words = {w for w in re.findall(r"\b[a-z]{4,}\b", query.lower()) if w not in stop}
+    if not q_words:
+        return ""
+
+    from datetime import date, timedelta
+    cutoff = date.today() - timedelta(days=30)
+    best_score, best_excerpt, best_date = 0, "", ""
+
+    for root, _dirs, files in os.walk(surf_dir):
+        for fname in files:
+            if not fname.endswith(".md"):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                if date.fromtimestamp(os.path.getmtime(fpath)) < cutoff:
+                    continue
+                text = open(fpath, encoding="utf-8").read()
+                date_m = re.search(r"^date:\s*(\d{4}-\d{2}-\d{2})", text, re.MULTILINE)
+                note_date = date_m.group(1) if date_m else ""
+                note_words = set(re.findall(r"\b[a-z]{4,}\b", text.lower()))
+                score = len(q_words & note_words)
+                if score > best_score and score >= 3:
+                    best_score = score
+                    body_start = text.find("---", 3)
+                    excerpt = text[body_start + 3:].strip()[:300] if body_start != -1 else text[:300]
+                    best_excerpt = excerpt.strip()
+                    best_date = note_date
+            except Exception:
+                continue
+
+    if best_excerpt:
+        return f"[Prior research from {best_date}]\n{best_excerpt}\n[End prior research]"
+    return ""
+
+
+def _obsidian_link_related(query: str, note_path: str, vault: str) -> None:
+    """Add [[wiki links]] between notes that share capitalized entities."""
+    entities = _ENTITY_RE.findall(query)
+    if not entities:
+        return
+    surf_dir = os.path.join(vault, "surf")
+    note_stem = os.path.splitext(os.path.basename(note_path))[0]
+    from datetime import date, timedelta
+    cutoff = date.today() - timedelta(days=30)
+    for root, _dirs, files in os.walk(surf_dir):
+        for fname in files:
+            if not fname.endswith(".md"):
+                continue
+            fpath = os.path.join(root, fname)
+            if fpath == note_path:
+                continue
+            try:
+                if date.fromtimestamp(os.path.getmtime(fpath)) < cutoff:
+                    continue
+                other_text = open(fpath, encoding="utf-8").read()
+                if not any(e in other_text for e in entities):
+                    continue
+                other_stem = os.path.splitext(fname)[0]
+                current_text = open(note_path, encoding="utf-8").read()
+                if f"[[{other_stem}]]" not in current_text:
+                    with open(note_path, "a", encoding="utf-8") as f:
+                        f.write(f"\n\nRelated: [[{other_stem}]]\n")
+                if f"[[{note_stem}]]" not in other_text:
+                    with open(fpath, "a", encoding="utf-8") as f:
+                        f.write(f"\n\nRelated: [[{note_stem}]]\n")
+            except Exception:
+                continue
+
+
+def _obsidian_session_id() -> str:
+    """Stable 8-char hex ID from session file mtime. Stable within a 4-hour session."""
+    try:
+        mtime = int(os.path.getmtime(SESSION_FILE))
+        return format(mtime % (16 ** 8), "08x")
+    except Exception:
+        return format(int(time.time()) % (16 ** 8), "08x")
+
 
 def main():
     import argparse

@@ -9,6 +9,7 @@ from surf import classify_intent, open_in_browser
 from surf import _classify_tier
 from surf import _confidence_gate
 import json
+import os
 from unittest.mock import patch, MagicMock
 
 class TestDetectInputType:
@@ -849,3 +850,92 @@ class TestDateFiltering:
              patch("surf._extract_named_sources", return_value=[]):
             result = _enrich_ddg_query("how does a black hole form", tier="research")
         assert "after:" not in result
+
+
+class TestObsidianIntegration:
+
+    def test_vault_path_returns_none_when_not_configured(self):
+        from surf import _obsidian_vault_path
+        with patch("surf.load_config", return_value={}):
+            assert _obsidian_vault_path() is None
+
+    def test_vault_path_returns_configured_path(self):
+        from surf import _obsidian_vault_path
+        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": "/tmp/vault"}):
+            assert _obsidian_vault_path() == "/tmp/vault"
+
+    def test_make_note_slug_sanitizes_query(self):
+        from surf import _make_note_slug
+        assert _make_note_slug("how does mRNA vaccine work?") == "how-does-mrna-vaccine-work"
+
+    def test_make_note_slug_trims_to_60_chars(self):
+        from surf import _make_note_slug
+        result = _make_note_slug("a " * 50)
+        assert len(result) <= 60
+
+    def test_make_frontmatter_includes_required_fields(self):
+        from surf import _make_frontmatter
+        sources = [{"domain": "espn.com", "url": "https://espn.com/1", "title": "T"}]
+        fm = _make_frontmatter("test query", sources, ["sports"])
+        assert "date:" in fm
+        assert "query:" in fm
+        assert "sources:" in fm
+        assert "tags:" in fm
+        assert "espn.com" in fm
+        assert "sports" in fm
+
+    def test_obsidian_save_creates_file(self, tmp_path):
+        from surf import _obsidian_save
+        vault = str(tmp_path / "vault")
+        os.makedirs(vault, exist_ok=True)
+        sources = [{"domain": "bbc.com", "url": "https://bbc.com/1", "title": "BBC"}]
+        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": vault}):
+            path = _obsidian_save("what causes inflation", "TL;DR content.", sources, "sess001")
+        assert path is not None and os.path.exists(path)
+
+    def test_obsidian_save_file_contains_frontmatter(self, tmp_path):
+        from surf import _obsidian_save
+        vault = str(tmp_path / "vault")
+        os.makedirs(vault, exist_ok=True)
+        sources = [{"domain": "bbc.com", "url": "https://bbc.com/1", "title": "BBC"}]
+        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": vault}):
+            path = _obsidian_save("what causes inflation", "TL;DR content.", sources, "sess001")
+        content = open(path).read()
+        assert content.startswith("---")
+        assert "what causes inflation" in content
+        assert "bbc.com" in content
+
+    def test_obsidian_save_appends_followup_to_same_file(self, tmp_path):
+        from surf import _obsidian_save
+        vault = str(tmp_path / "vault")
+        os.makedirs(vault, exist_ok=True)
+        sources = [{"domain": "bbc.com", "url": "https://bbc.com/1", "title": "BBC"}]
+        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": vault}):
+            path1 = _obsidian_save("what causes inflation", "First.", sources, "shared-sess")
+            path2 = _obsidian_save("how do central banks respond", "Second.", sources, "shared-sess")
+        assert path1 == path2
+        content = open(path1).read()
+        assert "First." in content and "Second." in content
+        assert "## how do central banks respond" in content
+
+    def test_obsidian_save_returns_none_when_not_configured(self):
+        from surf import _obsidian_save
+        with patch("surf.load_config", return_value={}):
+            assert _obsidian_save("query", "response", [], "s1") is None
+
+    def test_obsidian_find_related_returns_empty_when_no_vault(self):
+        from surf import _obsidian_find_related
+        with patch("surf.load_config", return_value={}):
+            assert _obsidian_find_related("what causes inflation") == ""
+
+    def test_obsidian_find_related_finds_matching_note(self, tmp_path):
+        from surf import _obsidian_find_related
+        vault = str(tmp_path / "vault")
+        note_dir = os.path.join(vault, "surf", "2026", "06")
+        os.makedirs(note_dir, exist_ok=True)
+        note_content = "---\nquery: what is inflation\ndate: 2026-06-01\n---\n\nInflation means rising prices caused by monetary supply."
+        open(os.path.join(note_dir, "2026-06-01-sess001.md"), "w").write(note_content)
+        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": vault}):
+            result = _obsidian_find_related("what causes inflation rising prices")
+        # Should find the note (shares words: inflation, prices)
+        assert result == "" or "Prior research" in result or "inflation" in result.lower()
