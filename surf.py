@@ -1512,6 +1512,28 @@ _TEMPORAL_SIGNALS = {
     "right now", "at the moment", "upcoming", "next", "soon",
 }
 
+_BREAKING_SIGNALS = {
+    "breaking", "today", "live", "just announced", "just released",
+    "just happened", "right now", "this morning", "this evening",
+}
+
+
+def _date_filter_for_query(query: str) -> "str | None":
+    """
+    Return an after:YYYY-MM-DD cutoff date for temporal queries, or None.
+    Breaking/today/live → 7 days. Other temporal → 30 days. Non-temporal → None.
+    """
+    from datetime import date, timedelta
+    q_lower = query.lower()
+    is_breaking = any(s in q_lower for s in _BREAKING_SIGNALS)
+    is_temporal = any(s in q_lower for s in _TEMPORAL_SIGNALS)
+    if not is_temporal and not is_breaking:
+        return None
+    days_back = 7 if is_breaking else 30
+    cutoff = date.today() - timedelta(days=days_back)
+    return cutoff.strftime("%Y-%m-%d")
+
+
 # SEARCH_TIER_SIGNALS["current"] intentionally overlaps with _TEMPORAL_SIGNALS.
 # _TEMPORAL_SIGNALS drives year-injection in _enrich_ddg_query (operational).
 # SEARCH_TIER_SIGNALS["current"] drives tier classification (routing).
@@ -1868,6 +1890,12 @@ def _enrich_ddg_query(user_query: str, tier: str = "snippet", source_hint: str =
     enriched = user_query
     if is_temporal and year not in user_query:
         enriched = f"{user_query} {year}"
+
+    # Append after:YYYY-MM-DD for temporal queries to force fresh DDG results.
+    # Only on the Pass-1 base query; LLM-rewritten queries (Pass 2/3) skip this.
+    _date_filter = _date_filter_for_query(user_query)
+    if _date_filter and "after:" not in enriched:
+        enriched = f"{enriched} after:{_date_filter}"
 
     # Pass 1b: vague prediction query + session entity extraction (zero cost, zero LLM)
     # "who will win UCL" with session mentioning "PSG vs Arsenal" →

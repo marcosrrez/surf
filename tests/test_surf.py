@@ -794,3 +794,58 @@ class TestSynthesisModel:
         from surf import stream_ai
         sig = inspect.signature(stream_ai)
         assert "tier" in sig.parameters
+
+
+class TestDateFiltering:
+    def test_returns_none_for_stable_fact_query(self):
+        from surf import _date_filter_for_query
+        assert _date_filter_for_query("who wrote Pride and Prejudice") is None
+
+    def test_returns_none_for_historical_query(self):
+        from surf import _date_filter_for_query
+        assert _date_filter_for_query("what caused World War 1") is None
+
+    def test_returns_date_string_for_temporal_query(self):
+        from surf import _date_filter_for_query
+        result = _date_filter_for_query("latest news on Iran")
+        assert result is not None
+        parts = result.split("-")
+        assert len(parts) == 3 and len(parts[0]) == 4
+
+    def test_breaking_news_uses_7_day_window(self):
+        from surf import _date_filter_for_query
+        from datetime import date
+        result = _date_filter_for_query("breaking news UK election")
+        assert result is not None
+        delta = (date.today() - date.fromisoformat(result)).days
+        assert 6 <= delta <= 8, f"Expected ~7 days, got {delta}"
+
+    def test_today_signal_uses_7_day_window(self):
+        from surf import _date_filter_for_query
+        from datetime import date
+        result = _date_filter_for_query("what happened today in sports")
+        assert result is not None
+        delta = (date.today() - date.fromisoformat(result)).days
+        assert 6 <= delta <= 8
+
+    def test_general_temporal_uses_30_day_window(self):
+        from surf import _date_filter_for_query
+        from datetime import date
+        result = _date_filter_for_query("latest AI model releases")
+        assert result is not None
+        delta = (date.today() - date.fromisoformat(result)).days
+        assert 28 <= delta <= 32, f"Expected ~30 days, got {delta}"
+
+    def test_enrich_ddg_query_appends_after_for_temporal(self):
+        from surf import _enrich_ddg_query
+        with patch("surf.format_session_context", return_value=""), \
+             patch("surf._extract_named_sources", return_value=[]):
+            result = _enrich_ddg_query("latest AI news", tier="current")
+        assert "after:" in result
+
+    def test_enrich_ddg_query_no_after_for_stable_query(self):
+        from surf import _enrich_ddg_query
+        with patch("surf.format_session_context", return_value=""), \
+             patch("surf._extract_named_sources", return_value=[]):
+            result = _enrich_ddg_query("how does a black hole form", tier="research")
+        assert "after:" not in result
