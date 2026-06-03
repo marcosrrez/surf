@@ -2353,6 +2353,10 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     vault_ctx = _obsidian_find_related(query)
     if vault_ctx:
         base_prompt = f"{vault_ctx}\n\n{base_prompt}"
+        # Metadata zone: show vault is being used — users should always know this
+        _vd = re.search(r'\[Prior research from ([^\]]+)\]', vault_ctx)
+        _vault_label = f" from {_vd.group(1)}" if _vd else ""
+        print(f"{C_META}{GLYPH_META} drawing from vault note{_vault_label}{C_RESET}")
 
     _t0 = time.time()
 
@@ -3293,6 +3297,226 @@ def _obsidian_session_id() -> str:
         return format(int(time.time()) % (16 ** 8), "08x")
 
 
+def _detect_obsidian_vaults() -> list[str]:
+    """Scan common macOS/Linux locations for Obsidian vaults (.obsidian folder)."""
+    candidates = [
+        os.path.expanduser("~/Documents"),
+        os.path.expanduser("~/"),
+        os.path.expanduser("~/Library/Mobile Documents/iCloud~md~obsidian/Documents"),
+    ]
+    vaults = []
+    for base in candidates:
+        if not os.path.isdir(base):
+            continue
+        try:
+            for item in os.listdir(base):
+                full = os.path.join(base, item)
+                if os.path.isdir(full) and os.path.isdir(os.path.join(full, ".obsidian")):
+                    vaults.append(full)
+        except PermissionError:
+            continue
+    return vaults[:5]
+
+
+def _setup_prompt(label: str, current: str, secret: bool = False) -> str:
+    """Print a labeled prompt with current value shown. Returns new value or current."""
+    display = ("*" * 12 + current[-4:]) if (secret and current) else (current or "not set")
+    color = C_SPEED_FAST if current else C_META
+    print(f"  {C_BOLD}{label}{C_RESET}")
+    print(f"  Current: {color}{display}{C_RESET}")
+    try:
+        new = input(f"  New value (Enter to keep): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        new = ""
+    return new if new else current
+
+
+def _run_setup() -> None:
+    """Interactive configuration wizard. Run with: surf setup"""
+    config_path = os.path.expanduser("~/.config/surf/config")
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+
+    # Load current config
+    cfg: dict[str, str] = {}
+    try:
+        with open(config_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, _, v = line.partition("=")
+                    cfg[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass
+
+    print()
+    print(f"{C_BRAND}━━ surf setup ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
+    print(f"{C_META}Configure surf interactively. Press Enter to keep the current value.{C_RESET}")
+    print()
+
+    # ── Section 1: API Keys ───────────────────────────────────────────────────
+    print(f"{C_BOLD}1. API Keys{C_RESET}")
+    print(f"{C_META}  Claude is the primary provider. Others are free fallbacks.{C_RESET}")
+    print(f"{C_META}  Get Claude key: claude.ai/settings → API Keys{C_RESET}")
+    print()
+
+    cfg["ANTHROPIC_API_KEY"] = _setup_prompt(
+        "Claude API key (primary — $1/month for ~2500 searches)",
+        cfg.get("ANTHROPIC_API_KEY", ""), secret=True
+    )
+    print()
+    cfg["GROQ_API_KEY"] = _setup_prompt(
+        "Groq API key (free fallback — console.groq.com)",
+        cfg.get("GROQ_API_KEY", ""), secret=True
+    )
+    print()
+    cfg["GEMINI_API_KEY"] = _setup_prompt(
+        "Gemini API key (free fallback — aistudio.google.com)",
+        cfg.get("GEMINI_API_KEY", ""), secret=True
+    )
+    print()
+    cfg["CEREBRAS_API_KEY"] = _setup_prompt(
+        "Cerebras API key (free fallback — inference.cerebras.ai)",
+        cfg.get("CEREBRAS_API_KEY", ""), secret=True
+    )
+    print()
+
+    # ── Section 2: Research preferences ───────────────────────────────────────
+    print(f"{C_BOLD}2. Research preferences{C_RESET}")
+    print()
+
+    current_model = cfg.get("SYNTHESIS_MODEL", "haiku")
+    print(f"  {C_BOLD}Synthesis model{C_RESET}")
+    print(f"  Current: {C_INTERACTIVE}{current_model}{C_RESET}")
+    print(f"  {C_META}haiku  = fast, cheap ($0.0004/query) — default{C_RESET}")
+    print(f"  {C_META}sonnet = deeper analysis, 4x cost — recommended for research{C_RESET}")
+    try:
+        choice = input("  Choose haiku or sonnet (Enter to keep): ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        choice = ""
+    if choice in ("haiku", "sonnet"):
+        cfg["SYNTHESIS_MODEL"] = choice
+    print()
+
+    # ── Section 3: Obsidian vault ─────────────────────────────────────────────
+    print(f"{C_BOLD}3. Obsidian vault{C_RESET}")
+    print(f"{C_META}  Save every search as a linked markdown note in your Obsidian vault.{C_RESET}")
+    print(f"{C_META}  Your research stays local — private, searchable, wiki-linked.{C_RESET}")
+    print()
+
+    detected = _detect_obsidian_vaults()
+    current_vault = cfg.get("OBSIDIAN_VAULT", "")
+
+    if detected:
+        print(f"  {C_SPEED_FAST}Detected Obsidian vaults:{C_RESET}")
+        for i, v in enumerate(detected, 1):
+            print(f"    {C_INTERACTIVE}{i}{C_RESET}  {v}")
+        print(f"    {C_INTERACTIVE}n{C_RESET}  Enter path manually")
+        print(f"    {C_INTERACTIVE}0{C_RESET}  Skip / disable")
+        print()
+        try:
+            vchoice = input("  Choose vault (Enter to keep current): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            vchoice = ""
+        if vchoice.isdigit() and 1 <= int(vchoice) <= len(detected):
+            cfg["OBSIDIAN_VAULT"] = detected[int(vchoice) - 1]
+        elif vchoice == "0":
+            cfg.pop("OBSIDIAN_VAULT", None)
+        elif vchoice.lower() == "n":
+            try:
+                manual = input("  Vault path: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                manual = ""
+            if manual and os.path.isdir(manual):
+                cfg["OBSIDIAN_VAULT"] = manual
+            elif manual:
+                print(f"  {C_META}Path not found — skipping{C_RESET}")
+        elif not vchoice and current_vault:
+            pass  # keep current
+    else:
+        print(f"  {C_META}No Obsidian vaults detected on this machine.{C_RESET}")
+        print(f"  {C_META}Install Obsidian (obsidian.md) and create a vault first.{C_RESET}")
+        print(f"  {C_META}Or enter a path to any folder to save markdown files there.{C_RESET}")
+        print()
+        if current_vault:
+            print(f"  Current: {C_INTERACTIVE}{current_vault}{C_RESET}")
+        try:
+            manual = input("  Vault path (Enter to skip): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            manual = ""
+        if manual:
+            if os.path.isdir(manual):
+                cfg["OBSIDIAN_VAULT"] = manual
+            else:
+                try:
+                    os.makedirs(manual, exist_ok=True)
+                    cfg["OBSIDIAN_VAULT"] = manual
+                    print(f"  {C_SPEED_FAST}Created vault folder at {manual}{C_RESET}")
+                except Exception:
+                    print(f"  {C_META}Could not create folder — skipping{C_RESET}")
+    print()
+
+    # ── Section 4: Claude budget ───────────────────────────────────────────────
+    print(f"{C_BOLD}4. Claude monthly budget{C_RESET}")
+    print(f"{C_META}  Default is $1.00/month. Increase for heavier use.{C_RESET}")
+    print()
+    current_budget = str(CLAUDE_MONTHLY_BUDGET)
+    print(f"  {C_BOLD}Monthly budget (USD){C_RESET}")
+    print(f"  Current: {C_INTERACTIVE}${current_budget}{C_RESET}")
+    try:
+        new_budget = input("  New budget (Enter to keep): ").strip().lstrip("$")
+    except (KeyboardInterrupt, EOFError):
+        new_budget = ""
+    if new_budget:
+        try:
+            float(new_budget)  # validate
+            cfg["CLAUDE_MONTHLY_BUDGET"] = new_budget
+        except ValueError:
+            print(f"  {C_META}Invalid amount — keeping ${current_budget}{C_RESET}")
+    print()
+
+    # ── Write config ──────────────────────────────────────────────────────────
+    lines = ["# surf configuration — generated by surf setup\n"]
+    key_order = [
+        "ANTHROPIC_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "CEREBRAS_API_KEY",
+        "SYNTHESIS_MODEL", "OBSIDIAN_VAULT", "CLAUDE_MONTHLY_BUDGET",
+    ]
+    written = set()
+    for key in key_order:
+        if key in cfg and cfg[key]:
+            lines.append(f"{key}={cfg[key]}\n")
+            written.add(key)
+    # Write any keys not in the standard order
+    for key, val in cfg.items():
+        if key not in written and val:
+            lines.append(f"{key}={val}\n")
+
+    with open(config_path, "w") as f:
+        f.writelines(lines)
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    print(f"{C_BRAND}━━ Configuration saved to {config_path} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
+    print()
+
+    def _status(key: str, label: str) -> None:
+        val = cfg.get(key, "")
+        if val:
+            display = ("*" * 8 + val[-4:]) if "KEY" in key or "API" in key.upper() else val
+            print(f"  {C_SPEED_FAST}✓{C_RESET}  {label}: {C_META}{display}{C_RESET}")
+        else:
+            print(f"  {C_META}–{C_RESET}  {label}: {C_META}not set{C_RESET}")
+
+    _status("ANTHROPIC_API_KEY", "Claude API key")
+    _status("GROQ_API_KEY", "Groq API key")
+    _status("GEMINI_API_KEY", "Gemini API key")
+    _status("CEREBRAS_API_KEY", "Cerebras API key")
+    print()
+    _status("SYNTHESIS_MODEL", "Synthesis model")
+    _status("OBSIDIAN_VAULT", "Obsidian vault")
+    print()
+    print(f"  Run {C_INTERACTIVE}surf what is a black hole{C_RESET} to try it out.")
+    print()
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(
@@ -3304,8 +3528,15 @@ def main():
                         help="Output as JSON (for scripts and automation)")
     parser.add_argument("--usage", action="store_true",
                         help="Show Claude monthly spend and exit")
+    parser.add_argument("setup", nargs="?", const="setup",
+                        help="Interactive configuration wizard")
     args = parser.parse_args()
     json_output = args.json_output
+
+    # surf setup — interactive configuration wizard
+    if (args.input and args.input[0] == "setup") or getattr(args, "setup", None) == "setup":
+        _run_setup()
+        return
 
     if args.usage:
         data = _claude_usage_load()
