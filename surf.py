@@ -2358,6 +2358,11 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
         _vault_label = f" from {_vd.group(1)}" if _vd else ""
         print(f"{C_META}{GLYPH_META} drawing from vault note{_vault_label}{C_RESET}")
 
+    # Preferences: user's research profile — always injected, highest priority context
+    prefs = _read_preferences()
+    if prefs:
+        base_prompt = f"[User preferences]\n{prefs}\n[End preferences]\n\n{base_prompt}"
+
     _t0 = time.time()
 
     if tier in ("current", "research", "contested"):
@@ -2528,6 +2533,8 @@ def _handle_results_input(results: list[dict], context: str = "") -> None:
                 break
             else:
                 print(f"\033[90mPick 1-{len(results)}\033[0m")
+        elif choice.lower().startswith("prefer:"):
+            _handle_inline_preference(choice[7:].strip())
         elif choice.strip():
             if _is_casual_input(choice):
                 print(f"\033[90m(surf is a search tool — try asking a question or picking a result)\033[0m")
@@ -2837,6 +2844,8 @@ def _handle_article_input(url: str, related: list[str], context: str) -> None:
                 break
             else:
                 print(f"\033[90mPick 1-{len(related)} or type a follow-up question\033[0m")
+        elif choice.lower().startswith("prefer:"):
+            _handle_inline_preference(choice[7:].strip())
         elif choice.strip():
             if _is_casual_input(choice):
                 print(f"\033[90m(surf is a search tool — try asking a question or picking a result)\033[0m")
@@ -3202,6 +3211,83 @@ def _obsidian_save(
     return note_path
 
 
+# ─── Preferences ──────────────────────────────────────────────────────────────
+
+def _preferences_path() -> str | None:
+    """Return path to preferences.md — in vault if configured, else local fallback."""
+    vault = _obsidian_vault_path()
+    if vault:
+        return os.path.join(vault, "surf", "preferences.md")
+    config_dir = os.path.dirname(os.path.expanduser("~/.config/surf/config"))
+    return os.path.join(config_dir, "preferences.md")
+
+
+def _read_preferences() -> str:
+    """Read user's preferences.md. Returns empty string if not set up yet."""
+    path = _preferences_path()
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        return open(path, encoding="utf-8").read().strip()
+    except Exception:
+        return ""
+
+
+def _write_preferences(text: str, append: bool = False) -> str | None:
+    """Write or append to preferences.md. Creates parent dirs. Returns path or None."""
+    path = _preferences_path()
+    if not path:
+        return None
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    mode = "a" if append else "w"
+    with open(path, mode, encoding="utf-8") as f:
+        f.write(text if not append else f"\n{text}\n")
+    return path
+
+
+def _display_preferences() -> None:
+    """Show current preferences.md contents in the terminal."""
+    path = _preferences_path()
+    prefs = _read_preferences()
+    print()
+    print(f"{C_BRAND}━━ Your preferences ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
+    print()
+    if prefs:
+        print(f"{C_META}  {path}{C_RESET}")
+        print()
+        for line in prefs.splitlines():
+            if line.startswith("#"):
+                print(f"  {C_BOLD}{line.lstrip('#').strip()}{C_RESET}")
+            elif line.startswith("- ") or line.startswith("• "):
+                print(f"  {C_INTERACTIVE}•{C_RESET}  {line[2:]}")
+            elif line.strip():
+                print(f"  {C_META}{line}{C_RESET}")
+        print()
+    else:
+        print(f"  {C_META}No preferences set yet.{C_RESET}")
+        print(f"  {C_META}Run 'surf setup' to create a research profile.{C_RESET}")
+        print(f"  {C_META}Or type 'prefer: your preference' after any search.{C_RESET}")
+        print()
+    print(f"{C_META}  edit: {path or '(run surf setup first)'}{C_RESET}")
+    print(f"{C_META}  add:  surf prefer: [anything]{C_RESET}")
+    print()
+
+
+def _handle_inline_preference(text: str) -> None:
+    """
+    Append a preference fragment to preferences.md. Called when user types
+    'prefer: some text' from any search prompt.
+    """
+    if not text.strip():
+        return
+    path = _write_preferences(f"- {text.strip()}", append=True)
+    if path:
+        print(f"{C_SPEED_FAST}{GLYPH_META} saved to preferences.md{C_RESET}  "
+              f"{C_META}\"{text.strip()}\" will apply to future searches{C_RESET}")
+    else:
+        print(f"{C_META}{GLYPH_META} no preferences file configured — run 'surf setup' first{C_RESET}")
+
+
 def _obsidian_find_related(query: str) -> str:
     """
     Scan vault for recent notes (last 30 days) related to this query.
@@ -3335,6 +3421,277 @@ def _detect_obsidian_vaults() -> list[str]:
     return vaults[:5]
 
 
+def _has_any_api_key() -> bool:
+    """True if any AI provider key is configured."""
+    cfg = load_config()
+    return any(cfg.get(k) for k in [
+        "ANTHROPIC_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY",
+        "CEREBRAS_API_KEY", "OLLAMA_BASE",
+    ]) or any(os.environ.get(k) for k in [
+        "ANTHROPIC_API_KEY", "GROQ_API_KEY",
+    ])
+
+
+def _mark_first_run_complete() -> None:
+    """Write a marker so we don't repeat the first-run interstitial."""
+    marker = os.path.expanduser("~/.config/surf/.onboarded")
+    try:
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        open(marker, "w").write("1")
+    except Exception:
+        pass
+
+
+def _is_first_run() -> bool:
+    """True if this is the first time surf has been used."""
+    marker = os.path.expanduser("~/.config/surf/.onboarded")
+    config_exists = os.path.exists(os.path.expanduser("~/.config/surf/config"))
+    return not os.path.exists(marker) and not config_exists
+
+
+def _save_config_key(key: str, value: str) -> None:
+    """Add or update a single key in ~/.config/surf/config."""
+    config_path = os.path.expanduser("~/.config/surf/config")
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+
+    lines = []
+    try:
+        with open(config_path) as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        pass
+
+    # Update existing line or append
+    found = False
+    new_lines = []
+    for line in lines:
+        if line.strip().startswith(f"{key}="):
+            new_lines.append(f"{key}={value}\n")
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(f"{key}={value}\n")
+
+    with open(config_path, "w") as f:
+        f.writelines(new_lines)
+
+
+def _generate_demo_query(work: str) -> str:
+    """Generate a contextual first-search question from the user's work description."""
+    if not work:
+        return ""
+    work_lower = work.lower()
+    if any(w in work_lower for w in ["software", "developer", "engineer", "coding", "programmer", "ai", "ml"]):
+        return "what are the most important AI coding tools in 2026"
+    if any(w in work_lower for w in ["health", "doctor", "physician", "medical", "clinical", "nurse"]):
+        return "what are the most effective treatments for burnout in healthcare workers"
+    if any(w in work_lower for w in ["investor", "finance", "trading", "fund", "capital"]):
+        return "what sectors are outperforming in 2026 and why"
+    if any(w in work_lower for w in ["journalist", "writer", "reporter", "media", "editor"]):
+        return "what are the biggest underreported stories right now"
+    if any(w in work_lower for w in ["research", "academic", "professor", "phd", "scientist"]):
+        return "what research methodologies are being disrupted by AI"
+    if any(w in work_lower for w in ["lawyer", "legal", "attorney", "law"]):
+        return "how is AI changing legal research and contract review"
+    return "what are the most important developments in AI this week"
+
+
+def _generate_preferences_from_answers(answers: dict) -> None:
+    """Use Claude to turn three free-text answers into preferences.md. Streams output."""
+    prompt = (
+        f"The user is setting up surf, a terminal AI search tool.\n"
+        f"Convert their answers into a preferences.md file.\n\n"
+        f"Work: {answers.get('work', 'not specified')}\n"
+        f"Answer style: {answers.get('style', 'not specified')}\n"
+        f"Source preferences: {answers.get('sources', 'not specified')}\n\n"
+        f"Write a preferences.md with these sections (only include sections with real content):\n"
+        f"# surf preferences\n"
+        f"## About me\n"
+        f"## Answer style\n"
+        f"## Preferred sources\n"
+        f"## Excluded sources\n"
+        f"## Notes\n\n"
+        f"Be concise. Under 200 words. First person. Only include what the user actually said."
+    )
+    prefs_system = "You write clean, concise preferences files. Use markdown. Be direct. No filler."
+    try:
+        chunks = list(stream_ai(prompt, prefs_system, max_tokens=400))
+        prefs_text = "".join(chunks)
+        # Print it so user can see what was written
+        for line in prefs_text.splitlines():
+            if line.startswith("#"):
+                print(f"  {C_BOLD}{line}{C_RESET}")
+            else:
+                print(f"  {C_META}{line}{C_RESET}")
+        print()
+        path = _write_preferences(prefs_text)
+        if path:
+            print(f"{C_SPEED_FAST}{GLYPH_META} saved to {path}{C_RESET}")
+            print(f"{C_META}  edit anytime in Obsidian or with your text editor{C_RESET}\n")
+    except Exception:
+        print(f"{C_META}{GLYPH_META} could not generate preferences — skipping.{C_RESET}\n")
+
+
+def _run_preferences_conversation() -> None:
+    """
+    Three-question preferences setup. Claude writes preferences.md from the answers.
+    Ends with a demo search so setup closes with surf working, not just configured.
+    """
+    print()
+    print(f"{C_BRAND}━━ Claude API key ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
+    print()
+    print(f"  {C_META}1. open → {_link('https://console.anthropic.com/settings/keys', 'console.anthropic.com/settings/keys')} (cmd+click){C_RESET}")
+    print(f"  {C_META}2. click \"Create Key\", name it \"surf\", copy it{C_RESET}")
+    print(f"  {C_META}3. paste it here{C_RESET}")
+    print()
+    print(f"  {C_META}cost: ~$0.0004/search · free $5 credit on signup · hard cap: $1/month{C_RESET}")
+    print()
+
+    try:
+        key = surf_input("sk-ant-...").strip()
+    except (KeyboardInterrupt, EOFError):
+        key = ""
+
+    if key and key.startswith("sk-ant"):
+        print(f"\n{C_SPEED_FAST}{GLYPH_META} Claude connected ✓{C_RESET}  {C_META}haiku-4.5 · $0.0004/query{C_RESET}\n")
+        _save_config_key("ANTHROPIC_API_KEY", key)
+    elif key:
+        print(f"\n{C_META}{GLYPH_META} key format looks off — saved anyway. It'll error gracefully if invalid.{C_RESET}\n")
+        _save_config_key("ANTHROPIC_API_KEY", key)
+    else:
+        print(f"\n{C_META}{GLYPH_META} skipping Claude key. you can add it later via 'surf setup'.{C_RESET}\n")
+
+    # Preferences conversation
+    vspace(SPACE_SM)
+    print(f"{C_BRAND}━━ Let's tune surf to how you think ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
+    print()
+    print(f"  {C_META}Three questions. Enter to skip any.{C_RESET}")
+    print()
+
+    answers = {}
+
+    print(f"{C_META}{GLYPH_META}{C_RESET} What kind of work do you do?")
+    print(f"  {C_META}(e.g. \"software engineer\", \"healthcare researcher\", \"investor\"){C_RESET}")
+    try:
+        answers["work"] = surf_input("your role and domain").strip()
+    except (KeyboardInterrupt, EOFError):
+        answers["work"] = ""
+    print()
+
+    print(f"{C_META}{GLYPH_META}{C_RESET} What do you want from surf's answers?")
+    print(f"  {C_META}(e.g. \"concise with data\", \"deep explanations\", \"code examples when relevant\"){C_RESET}")
+    try:
+        answers["style"] = surf_input("answer style").strip()
+    except (KeyboardInterrupt, EOFError):
+        answers["style"] = ""
+    print()
+
+    print(f"{C_META}{GLYPH_META}{C_RESET} Any sources you love or avoid?")
+    print(f"  {C_META}(e.g. \"prefer arxiv and HN, avoid Medium and Forbes\"){C_RESET}")
+    try:
+        answers["sources"] = surf_input("source preferences").strip()
+    except (KeyboardInterrupt, EOFError):
+        answers["sources"] = ""
+    print()
+
+    # Generate preferences.md from answers
+    if any(answers.values()):
+        print(f"{C_META}{GLYPH_META} writing preferences.md...{C_RESET}\n")
+        _generate_preferences_from_answers(answers)
+    else:
+        print(f"{C_META}{GLYPH_META} skipping preferences — add them anytime with 'prefer: ...' after any search.{C_RESET}\n")
+
+    # Vault setup (brief)
+    if not _obsidian_vault_path():
+        detected = _detect_obsidian_vaults()
+        if detected:
+            vspace(SPACE_SM)
+            print(f"{C_META}{GLYPH_META}{C_RESET} Save research to Obsidian?")
+            print(f"  {C_SPEED_FAST}✓{C_RESET}  Detected: {C_INTERACTIVE}{detected[0]}{C_RESET}")
+            print(f"\n  {C_INTERACTIVE}y{C_RESET}  yes — save every search as a linked note")
+            print(f"  {C_INTERACTIVE}s{C_RESET}  skip")
+            print()
+            try:
+                vc = surf_input("y or s").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                vc = "s"
+            if vc == "y":
+                _save_config_key("OBSIDIAN_VAULT", detected[0])
+                print(f"\n{C_SPEED_FAST}{GLYPH_META} vault configured: {detected[0]}{C_RESET}\n")
+
+    _mark_first_run_complete()
+
+    # First-win: demo search based on what they told us
+    vspace(SPACE_SM)
+    demo_query = _generate_demo_query(answers.get("work", ""))
+    print(f"{C_BRAND}━━ Let's try it ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
+    print()
+    if demo_query:
+        print(f"  {C_META}Based on your profile, a question surf thinks you'd care about:{C_RESET}")
+        print(f"\n  {C_INTERACTIVE}→{C_RESET}  {demo_query}\n")
+        print(f"  {C_INTERACTIVE}y{C_RESET}  search this")
+        print(f"  {C_INTERACTIVE}Enter{C_RESET}  or type your own first search")
+        print()
+        try:
+            first = surf_input(demo_query).strip()
+        except (KeyboardInterrupt, EOFError):
+            first = ""
+        query_to_run = demo_query if first.lower() == "y" else (first or demo_query)
+    else:
+        print(f"  {C_META}What do you want to search first?{C_RESET}\n")
+        try:
+            query_to_run = surf_input("your first search").strip()
+        except (KeyboardInterrupt, EOFError):
+            query_to_run = ""
+
+    if query_to_run:
+        print()
+        search_flow(query_to_run, interactive=True)
+
+
+def _first_run_interstitial(query: str) -> None:
+    """
+    First-ever surf run: search first (on Groq), then offer Claude setup.
+    The user sees value before being asked for anything.
+    """
+    print(f"\n{C_META}{GLYPH_META} first time? let's do this search, then take 90 seconds to set up.{C_RESET}\n")
+
+    # Run the actual search — Groq fallback works without config
+    results, response = search_flow(query, interactive=False)
+
+    if not results:
+        # Search failed — go straight to setup
+        _run_preferences_conversation()
+        return
+
+    # Offer the Claude upgrade
+    vspace(SPACE_SM)
+    print(f"{C_META}{GLYPH_META} that was surf on Groq (free, public). add a Claude key for:{C_RESET}\n")
+    print(f"  {C_INTERACTIVE}•{C_RESET}  {C_META}private synthesis  (your queries don't train any model){C_RESET}")
+    print(f"  {C_INTERACTIVE}•{C_RESET}  {C_META}deeper research    (reads full articles, not just snippets){C_RESET}")
+    print(f"  {C_INTERACTIVE}•{C_RESET}  {C_META}Obsidian vault     (every search becomes a linked note){C_RESET}")
+    print()
+    print(f"  {C_INTERACTIVE}a{C_RESET}  add Claude key now — 60 seconds")
+    print(f"  {C_INTERACTIVE}s{C_RESET}  skip — keep using Groq")
+    print(f"  {C_INTERACTIVE}q{C_RESET}  quit")
+    print()
+
+    try:
+        choice = surf_input("a to set up Claude, s to skip").lower().strip()
+    except (KeyboardInterrupt, EOFError):
+        choice = "q"
+
+    if choice == "q":
+        return
+    if choice == "a":
+        _run_preferences_conversation()
+    else:
+        # Mark as seen so we don't show again
+        _mark_first_run_complete()
+        print(f"\n{C_META}{GLYPH_META} using Groq. run 'surf setup' anytime to add Claude.{C_RESET}\n")
+
+
 def _setup_prompt(label: str, current: str, secret: bool = False) -> str:
     """Print a labeled prompt with current value shown. Returns new value or current."""
     display = ("*" * 12 + current[-4:]) if (secret and current) else (current or "not set")
@@ -3350,6 +3707,12 @@ def _setup_prompt(label: str, current: str, secret: bool = False) -> str:
 
 def _run_setup() -> None:
     """Interactive configuration wizard. Run with: surf setup"""
+    # If called via 'surf setup' without --full, run the conversation flow
+    # The full form wizard is still available via 'surf setup --full'
+    if "--full" not in sys.argv:
+        _run_preferences_conversation()
+        return
+
     config_path = os.path.expanduser("~/.config/surf/config")
     os.makedirs(os.path.dirname(config_path), exist_ok=True)
 
@@ -3542,6 +3905,8 @@ def main():
                         help="Output as JSON (for scripts and automation)")
     parser.add_argument("--usage", action="store_true",
                         help="Show Claude monthly spend and exit")
+    parser.add_argument("--full", action="store_true",
+                        help="Full configuration wizard (advanced)")
     parser.add_argument("setup", nargs="?", const="setup",
                         help="Interactive configuration wizard")
     args = parser.parse_args()
@@ -3550,6 +3915,23 @@ def main():
     # surf setup — interactive configuration wizard
     if (args.input and args.input[0] == "setup") or getattr(args, "setup", None) == "setup":
         _run_setup()
+        return
+
+    # surf prefer — show or add preferences inline
+    if args.input and args.input[0].lower() == "prefer":
+        remainder = " ".join(args.input[1:]).strip()
+        if remainder:
+            # surf prefer some text — treat as inline preference
+            _handle_inline_preference(remainder)
+        else:
+            # surf prefer — display current preferences
+            _display_preferences()
+        return
+
+    # First-run: detect new users and route through the interstitial
+    if _is_first_run() and args.input and not args.usage:
+        query = " ".join(args.input)
+        _first_run_interstitial(query)
         return
 
     if args.usage:

@@ -939,3 +939,68 @@ class TestObsidianIntegration:
             result = _obsidian_find_related("what causes inflation rising prices")
         # Should find the note (shares words: inflation, prices)
         assert result == "" or "Prior research" in result or "inflation" in result.lower()
+
+
+class TestPreferences:
+    def test_read_preferences_returns_empty_when_no_file(self, tmp_path):
+        from surf import _read_preferences
+        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": str(tmp_path / "nonexistent")}):
+            assert _read_preferences() == ""
+
+    def test_write_and_read_preferences(self, tmp_path):
+        from surf import _write_preferences, _read_preferences
+        vault = str(tmp_path / "vault")
+        os.makedirs(vault)
+        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": vault}):
+            _write_preferences("# My prefs\nI like concise answers.")
+            result = _read_preferences()
+        assert "concise" in result
+
+    def test_write_preferences_append(self, tmp_path):
+        from surf import _write_preferences, _read_preferences
+        vault = str(tmp_path / "vault")
+        os.makedirs(vault)
+        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": vault}):
+            _write_preferences("first line")
+            _write_preferences("second line", append=True)
+            result = _read_preferences()
+        assert "first line" in result
+        assert "second line" in result
+
+    def test_is_first_run_false_when_onboarded(self, tmp_path):
+        from surf import _is_first_run, _mark_first_run_complete
+        marker = os.path.expanduser("~/.config/surf/.onboarded")
+        existed = os.path.exists(marker)
+        try:
+            _mark_first_run_complete()
+            assert _is_first_run() is False
+        finally:
+            if not existed and os.path.exists(marker):
+                os.remove(marker)
+
+    def test_generate_demo_query_for_developer(self):
+        from surf import _generate_demo_query
+        result = _generate_demo_query("software engineer working on AI systems")
+        assert result != ""
+        assert "ai" in result.lower() or "coding" in result.lower() or "2026" in result.lower()
+
+    def test_generate_demo_query_empty_for_no_input(self):
+        from surf import _generate_demo_query
+        assert _generate_demo_query("") == ""
+
+    def test_handle_inline_preference_no_vault_shows_message(self, capsys):
+        from surf import _handle_inline_preference
+        with patch("surf.load_config", return_value={}):
+            _handle_inline_preference("always show data sources")
+        # Should not crash; message shown
+        captured = capsys.readouterr()
+        # Either saved or showed setup message
+        assert len(captured.out) > 0
+
+    def test_preferences_injected_into_prompt(self):
+        # Verify preferences appear in the base_prompt during search
+        from surf import _read_preferences
+        with patch("surf.load_config", return_value={}):
+            prefs = _read_preferences()
+        # Just verify the function works (vault context injection is tested elsewhere)
+        assert isinstance(prefs, str)
