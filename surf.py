@@ -3297,6 +3297,23 @@ def _obsidian_session_id() -> str:
         return format(int(time.time()) % (16 ** 8), "08x")
 
 
+_SETUP_BANNER = f"""\
+{C_ANSWER_MARK}
+    ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~{C_RESET}
+{C_ANSWER_MARK}   ~{C_RESET}                                                       {C_ANSWER_MARK}~{C_RESET}
+{C_ANSWER_MARK}   ~{C_RESET}   {C_BRAND}{C_BOLD} ____  _   _ ____  ___ {C_RESET}                            {C_ANSWER_MARK}~{C_RESET}
+{C_ANSWER_MARK}   ~{C_RESET}   {C_BRAND}{C_BOLD}/ ___|| | | |  _ \\|  _|{C_RESET}                            {C_ANSWER_MARK}~{C_RESET}
+{C_ANSWER_MARK}   ~{C_RESET}   {C_BRAND}{C_BOLD}\\___ \\| | | | |_) | |_ {C_RESET}                            {C_ANSWER_MARK}~{C_RESET}
+{C_ANSWER_MARK}   ~{C_RESET}   {C_BRAND}{C_BOLD} ___) | |_| |  _ <|  __|{C_RESET}                           {C_ANSWER_MARK}~{C_RESET}
+{C_ANSWER_MARK}   ~{C_RESET}   {C_BRAND}{C_BOLD}|____/ \\___/|_| \\_\\_|  {C_RESET}                            {C_ANSWER_MARK}~{C_RESET}
+{C_ANSWER_MARK}   ~{C_RESET}                                                       {C_ANSWER_MARK}~{C_RESET}
+{C_ANSWER_MARK}   ~{C_RESET}   {C_META}AI-powered search for your terminal{C_RESET}              {C_ANSWER_MARK}~{C_RESET}
+{C_ANSWER_MARK}   ~{C_RESET}   {C_META}setup wizard  ·  press Enter to skip any step{C_RESET}    {C_ANSWER_MARK}~{C_RESET}
+{C_ANSWER_MARK}   ~{C_RESET}                                                       {C_ANSWER_MARK}~{C_RESET}
+{C_ANSWER_MARK}    ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~{C_RESET}
+"""
+
+
 def _detect_obsidian_vaults() -> list[str]:
     """Scan common macOS/Linux locations for Obsidian vaults (.obsidian folder)."""
     candidates = [
@@ -3348,10 +3365,7 @@ def _run_setup() -> None:
     except FileNotFoundError:
         pass
 
-    print()
-    print(f"{C_BRAND}━━ surf setup ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
-    print(f"{C_META}Configure surf interactively. Press Enter to keep the current value.{C_RESET}")
-    print()
+    print(_SETUP_BANNER)
 
     # ── Section 1: API Keys ───────────────────────────────────────────────────
     print(f"{C_BOLD}1. API Keys{C_RESET}")
