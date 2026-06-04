@@ -437,7 +437,11 @@ class TestDeepResearch:
     def test_returns_content_from_successful_fetch(self):
         results = self._make_results([("espn.com", "https://espn.com/article")])
         fake_html = "<html><body><p>" + "PSG vs Arsenal analysis. " * 50 + "</p></body></html>"
-        with patch("surf.fetch_page", return_value=fake_html), \
+        mock_response = MagicMock()
+        mock_response.text = fake_html
+        mock_response.raise_for_status = MagicMock()
+        # _deep_research now calls requests.get directly with an 8s timeout
+        with patch("surf.requests.get", return_value=mock_response), \
              patch("surf._is_spa_shell", return_value=False):
             content, sources = _deep_research("who will win the UCL", "current", results)
         assert len(content) > 100
