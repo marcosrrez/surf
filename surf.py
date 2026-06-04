@@ -2201,29 +2201,53 @@ def _deep_research(
     combined: list[str] = []
     sources_read: list[dict] = []
 
+    # Tight per-source timeout for deep reads — a slow source isn't worth the wait
+    READ_TIMEOUT = 8  # seconds; overrides the global 25s fetch_page timeout
+
     for i, r in enumerate(sources_to_read[:source_cap]):
         url = r.get("url", "")
         domain = r.get("domain", "").removeprefix("www.")
         if not url or not url.startswith("http"):
             continue
 
+        # Skip homepages — they're navigation indexes, not articles
+        from urllib.parse import urlparse as _up
+        _parsed = _up(url)
+        if _parsed.path in ("", "/", "//"):
+            sys.stdout.write(f"\r\033[90m↳ skipping {domain} (homepage) — not an article\033[0m" + " " * 10)
+            sys.stdout.flush()
+            continue
+
+        # Show progress with elapsed time so users know surf is working, not frozen
+        _t_source = time.time()
         sys.stdout.write(f"\r\033[90m↳ reading {domain}...\033[0m" + " " * 20)
         sys.stdout.flush()
 
         try:
-            html = fetch_page(url)
+            # Use tight timeout — override the global fetch_page timeout
+            r_req = requests.get(url, headers=HEADERS, verify=SSL_CERT, timeout=READ_TIMEOUT)
+            r_req.raise_for_status()
+            html = r_req.text
+
             if _is_spa_shell(html):
                 content = _fetch_with_jina(url)
             else:
                 _, content = extract_text(html, max_words=1500, return_title=True)
-            # Quality gate: 150 words (raised from 100)
+
+            _elapsed_source = time.time() - _t_source
+            sys.stdout.write(f"\r\033[90m↳ read {domain} ({_elapsed_source:.1f}s)\033[0m" + " " * 20)
+            sys.stdout.flush()
+
+            # Quality gate: 150 words — skip thin/boilerplate pages
             if content and len(content.split()) > 150:
                 combined.append(f"[{i + 1}] {domain}\n{content[:2000]}")
                 sources_read.append(r)
         except Exception:
+            sys.stdout.write(f"\r\033[90m↳ {domain} timed out — skipping\033[0m" + " " * 20)
+            sys.stdout.flush()
             continue
 
-    sys.stdout.write("\r" + " " * 60 + "\r")
+    sys.stdout.write("\r" + " " * 70 + "\r")
     sys.stdout.flush()
 
     return "\n\n---\n\n".join(combined), sources_read
@@ -2696,12 +2720,26 @@ def parse_related_topics(text: str) -> list[str]:
             topics.append(line)  # keeps "1. Topic name" format for display
     return topics[:3]
 
+def _is_homepage_url(url: str) -> bool:
+    """True if the URL points to a site root/homepage rather than a specific article."""
+    from urllib.parse import urlparse as _up2
+    p = _up2(url)
+    return p.path in ("", "/", "//") or (p.path.rstrip("/") == "" and not p.query)
+
+
 def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_output: bool = False) -> str:
     """
     Run the read flow: fetch URL → extract text → Groq → display.
     Returns the Groq response text (or raw extracted text in raw mode).
     """
     domain_display = url.replace("https://", "").replace("http://", "").split("/")[0]
+
+    # Detect homepage URLs early — switch to headlines mode to avoid dumping navigation
+    if _is_homepage_url(url):
+        print(f"\n{C_META}{GLYPH_META} {domain_display} is a homepage — showing top headlines instead of full content.{C_RESET}")
+        print(f"{C_META}  use {C_INTERACTIVE}o{C_META} to open the site in your browser for full navigation.{C_RESET}\n")
+        # Continue with read — but ai_summary=True so it summarizes instead of full-article mode
+        ai_summary = True
     try:
         with Spinner(f"reading {domain_display}..."):
             html = fetch_page(url)
@@ -2748,16 +2786,22 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
                 schema_lines.append(f"  {label}: {schema[key]}")
         text = "\n".join(schema_lines) + "\n\n" + text
 
-    # Fetch relevant sub-pages (contact, rates, about) and append their content
+    # Fetch relevant sub-pages — only for non-news pages where sub-content adds value
+    # Skip for homepages and news sites (sub-pages are "about", "books", etc. — useless for news)
     sub_labels = []
+    _news_domains = {"apnews.com", "bbc.com", "reuters.com", "cnn.com", "nytimes.com",
+                     "foxnews.com", "cbsnews.com", "nbcnews.com", "npr.org", "theguardian.com",
+                     "washingtonpost.com", "usatoday.com", "abcnews.go.com"}
+    _skip_subpages = _is_homepage_url(url) or domain_display in _news_domains
     try:
         is_spa = _is_spa_shell(html)
         if is_spa:
             print_status(f"↳ {domain_display} is JS-rendered — using Jina reader...")
-            time.sleep(0.3)  # brief pause so user can read
-        sub_page_text, sub_labels = _fetch_sub_pages(html, url, max_pages=4)
-        if sub_page_text:
-            text = text + sub_page_text
+            time.sleep(0.3)
+        if not _skip_subpages:
+            sub_page_text, sub_labels = _fetch_sub_pages(html, url, max_pages=3)
+            if sub_page_text:
+                text = text + sub_page_text
     except Exception:
         pass
 
