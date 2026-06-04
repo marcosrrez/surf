@@ -3389,21 +3389,28 @@ def _obsidian_session_id() -> str:
         return format(int(time.time()) % (16 ** 8), "08x")
 
 
-_SETUP_BANNER = f"""\
-{C_ANSWER_MARK}
-    ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~{C_RESET}
-{C_ANSWER_MARK}   ~{C_RESET}                                                       {C_ANSWER_MARK}~{C_RESET}
-{C_ANSWER_MARK}   ~{C_RESET}   {C_BRAND}{C_BOLD} ____  _   _ ____  ___ {C_RESET}                            {C_ANSWER_MARK}~{C_RESET}
-{C_ANSWER_MARK}   ~{C_RESET}   {C_BRAND}{C_BOLD}/ ___|| | | |  _ \\|  _|{C_RESET}                            {C_ANSWER_MARK}~{C_RESET}
-{C_ANSWER_MARK}   ~{C_RESET}   {C_BRAND}{C_BOLD}\\___ \\| | | | |_) | |_ {C_RESET}                            {C_ANSWER_MARK}~{C_RESET}
-{C_ANSWER_MARK}   ~{C_RESET}   {C_BRAND}{C_BOLD} ___) | |_| |  _ <|  __|{C_RESET}                           {C_ANSWER_MARK}~{C_RESET}
-{C_ANSWER_MARK}   ~{C_RESET}   {C_BRAND}{C_BOLD}|____/ \\___/|_| \\_\\_|  {C_RESET}                            {C_ANSWER_MARK}~{C_RESET}
-{C_ANSWER_MARK}   ~{C_RESET}                                                       {C_ANSWER_MARK}~{C_RESET}
-{C_ANSWER_MARK}   ~{C_RESET}   {C_META}AI-powered search for your terminal{C_RESET}              {C_ANSWER_MARK}~{C_RESET}
-{C_ANSWER_MARK}   ~{C_RESET}   {C_META}setup wizard  ·  press Enter to skip any step{C_RESET}    {C_ANSWER_MARK}~{C_RESET}
-{C_ANSWER_MARK}   ~{C_RESET}                                                       {C_ANSWER_MARK}~{C_RESET}
-{C_ANSWER_MARK}    ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~{C_RESET}
-"""
+# Banner uses bright variants for visibility on dark terminals.
+# \033[96m = bright cyan (waves), \033[1;95m = bold bright magenta (SURF), \033[97m = bright white (tagline)
+_W = "\033[96m"   # bright cyan waves
+_S = "\033[1;95m" # bold bright magenta — SURF letters
+_T = "\033[97m"   # bright white — tagline
+_R = C_RESET
+
+_SETUP_BANNER = (
+    f"\n"
+    f"{_W}  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~{_R}\n"
+    f"{_W}  ~{_R}                                                          {_W}~{_R}\n"
+    f"{_W}  ~{_R}   {_S} ____  _   _ ____  ___  {_R}                         {_W}~{_R}\n"
+    f"{_W}  ~{_R}   {_S}/ ___|| | | |  _ \\|  _| {_R}                         {_W}~{_R}\n"
+    f"{_W}  ~{_R}   {_S}\\___ \\| | | | |_) | |_  {_R}                         {_W}~{_R}\n"
+    f"{_W}  ~{_R}   {_S} ___) | |_| |  _ <|  __|{_R}                         {_W}~{_R}\n"
+    f"{_W}  ~{_R}   {_S}|____/ \\___/|_| \\_\\_|   {_R}                         {_W}~{_R}\n"
+    f"{_W}  ~{_R}                                                          {_W}~{_R}\n"
+    f"{_W}  ~{_R}   {_T}AI-powered search for your terminal{_R}                {_W}~{_R}\n"
+    f"{_W}  ~{_R}   {_T}setup wizard  ·  q to exit anytime{_R}                 {_W}~{_R}\n"
+    f"{_W}  ~{_R}                                                          {_W}~{_R}\n"
+    f"{_W}  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~{_R}\n"
+)
 
 
 def _detect_obsidian_vaults() -> list[str]:

@@ -169,30 +169,34 @@ class TestSystemPrompts:
         assert "Related" in READ_SYSTEM
 
 class TestDdgSearch:
+    def _mock_ddgs_results(self):
+        return [{"href": "https://nasa.gov/blackholes", "title": "NASA Black Holes",
+                 "body": "Objects with strong gravity."}]
+
     def test_returns_list_of_dicts(self):
-        mock_html = """<html><body><table>
-        <tr><td><a class="result-link" href="https://nasa.gov">NASA Black Holes</a></td></tr>
-        <tr><td class="result-snippet">Objects with strong gravity.</td></tr>
-        </table></body></html>"""
-        mock_response = MagicMock()
-        mock_response.text = mock_html
-        mock_response.raise_for_status = MagicMock()
-        with patch("surf.requests.post", return_value=mock_response):
+        # Mock at the DDGS library level to avoid real network calls
+        mock_ddgs = MagicMock()
+        mock_ddgs.__enter__ = MagicMock(return_value=mock_ddgs)
+        mock_ddgs.__exit__ = MagicMock(return_value=False)
+        mock_ddgs.text.return_value = self._mock_ddgs_results()
+        with patch("surf.DDGS", return_value=mock_ddgs), \
+             patch("surf._HAS_DDGS", True):
             results = ddg_search("black holes")
         assert isinstance(results, list)
 
     def test_result_has_required_keys(self):
-        mock_html = """<html><body><table>
-        <tr><td><a class="result-link" href="https://nasa.gov/blackholes">NASA</a></td></tr>
-        <tr><td class="result-snippet">Strong gravity objects.</td></tr>
-        </table></body></html>"""
-        mock_response = MagicMock()
-        mock_response.text = mock_html
-        mock_response.raise_for_status = MagicMock()
-        with patch("surf.requests.post", return_value=mock_response):
+        mock_ddgs = MagicMock()
+        mock_ddgs.__enter__ = MagicMock(return_value=mock_ddgs)
+        mock_ddgs.__exit__ = MagicMock(return_value=False)
+        mock_ddgs.text.return_value = self._mock_ddgs_results()
+        with patch("surf.DDGS", return_value=mock_ddgs), \
+             patch("surf._HAS_DDGS", True):
             results = ddg_search("black holes")
         if results:
             assert "title" in results[0]
+            assert "url" in results[0]
+            assert "domain" in results[0]
+            assert "snippet" in results[0]
             assert "url" in results[0]
             assert "domain" in results[0]
             assert "snippet" in results[0]
@@ -1004,3 +1008,106 @@ class TestPreferences:
             prefs = _read_preferences()
         # Just verify the function works (vault context injection is tested elsewhere)
         assert isinstance(prefs, str)
+
+
+class TestPreferencesIntegration:
+    """Tests that verify preferences actually affect synthesis behavior."""
+
+    def _search_mocks(self, extra=None):
+        """Return a dict of common mocks for search_flow tests."""
+        fake_results = [{"title": "T", "url": "https://example.com",
+                         "domain": "example.com", "snippet": "Content."}]
+        mocks = dict(
+            ddg_search=MagicMock(return_value=fake_results),
+            _classify_tier=MagicMock(return_value="snippet"),
+            _confidence_gate=MagicMock(return_value="snippet"),
+            stream_to_terminal=MagicMock(return_value="▸ TL;DR  Answer."),
+            print_header=MagicMock(), print_status=MagicMock(),
+            clear_status=MagicMock(), _print_linked_sources=MagicMock(),
+            print_results=MagicMock(), save_session_entry=MagicMock(),
+            format_session_context=MagicMock(return_value=""),
+            _obsidian_find_related=MagicMock(return_value=""),
+            _obsidian_save=MagicMock(return_value=None),
+            _obsidian_session_id=MagicMock(return_value="test1234"),
+            _enrich_ddg_query=MagicMock(return_value="query"),
+            _fix_entity_mismatch=MagicMock(side_effect=lambda q, r, d, **kw: (r, d)),
+            _bm25_rank=MagicMock(side_effect=lambda q, r: r),
+            _snippets_are_diverse=MagicMock(return_value=True),
+            _sources_are_substantive=MagicMock(return_value=True),
+            _filter_results=MagicMock(side_effect=lambda r, **kw: r),
+        )
+        if extra:
+            mocks.update(extra)
+        return mocks
+
+    def test_preferences_prepended_to_search_prompt(self):
+        """When preferences exist, they appear in the prompt sent to the AI."""
+        from surf import search_flow
+        captured_prompts = []
+
+        def capture_stream(prompt, system, max_tokens=2048, tier="snippet"):
+            captured_prompts.append(prompt)
+            return iter(["▸ TL;DR  Test answer."])
+
+        mocks = self._search_mocks({
+            "_read_preferences": MagicMock(return_value="I prefer concise technical answers."),
+            "stream_ai": MagicMock(side_effect=capture_stream),
+            "stream_to_terminal": MagicMock(return_value="▸ TL;DR  Test answer."),
+        })
+        from unittest.mock import patch as _patch
+        with _patch.multiple("surf", **mocks):
+            search_flow("what is a black hole", interactive=False)
+
+        assert len(captured_prompts) > 0
+        assert "concise technical answers" in captured_prompts[0]
+
+    def test_obsidian_save_called_during_search(self, tmp_path):
+        """search_flow calls _obsidian_save after synthesis."""
+        from surf import search_flow
+        save_calls = []
+
+        def record_save(*args, **kwargs):
+            save_calls.append(args)
+            return str(tmp_path / "note.md")
+
+        mocks = self._search_mocks({
+            "_read_preferences": MagicMock(return_value=""),
+            "stream_ai": MagicMock(return_value=iter(["▸ TL;DR  Answer."])),
+            "_obsidian_save": MagicMock(side_effect=record_save),
+        })
+        from unittest.mock import patch as _patch
+        with _patch.multiple("surf", **mocks):
+            search_flow("test query", interactive=False)
+
+        assert len(save_calls) > 0
+        assert save_calls[0][0] == "test query"
+
+
+class TestBannerAndSetup:
+    def test_setup_banner_uses_bright_colors(self):
+        from surf import _SETUP_BANNER
+        # Bright cyan [96m for waves
+        assert "\033[96m" in _SETUP_BANNER
+        # Bold bright magenta [1;95m for SURF text
+        assert "\033[1;95m" in _SETUP_BANNER
+        # Bright white [97m for tagline
+        assert "\033[97m" in _SETUP_BANNER
+
+    def test_setup_banner_contains_surf_text(self):
+        from surf import _SETUP_BANNER
+        # SURF ASCII art key characters
+        assert "____" in _SETUP_BANNER
+        assert "___/" in _SETUP_BANNER or "/ ___" in _SETUP_BANNER
+
+    def test_setup_banner_contains_tagline(self):
+        from surf import _SETUP_BANNER
+        assert "AI-powered search" in _SETUP_BANNER
+
+    def test_classify_tier_research_for_how_did(self):
+        """Regression: 'how did' should classify as research tier."""
+        from surf import _classify_tier
+        assert _classify_tier("how did Arsenal win the premier league") == "research"
+
+    def test_classify_tier_current_for_who_will(self):
+        from surf import _classify_tier
+        assert _classify_tier("who will win the world cup") == "current"
