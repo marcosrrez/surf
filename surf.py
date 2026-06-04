@@ -3543,28 +3543,50 @@ def _run_preferences_conversation() -> None:
     """
     Three-question preferences setup. Claude writes preferences.md from the answers.
     Ends with a demo search so setup closes with surf working, not just configured.
+    Type 'q' or press Ctrl+C at any point to exit gracefully.
     """
-    print()
-    print(f"{C_BRAND}━━ Claude API key ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
-    print()
-    print(f"  {C_META}1. open → {_link('https://console.anthropic.com/settings/keys', 'console.anthropic.com/settings/keys')} (cmd+click){C_RESET}")
-    print(f"  {C_META}2. click \"Create Key\", name it \"surf\", copy it{C_RESET}")
-    print(f"  {C_META}3. paste it here{C_RESET}")
-    print()
-    print(f"  {C_META}cost: ~$0.0004/search · free $5 credit on signup · hard cap: $1/month{C_RESET}")
+    print(_SETUP_BANNER)
+
+    existing_key = load_config().get("ANTHROPIC_API_KEY", "")
+
+    if existing_key:
+        masked = "*" * 12 + existing_key[-4:]
+        print(f"{C_BRAND}━━ Claude API key ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
+        print()
+        print(f"  {C_SPEED_FAST}✓{C_RESET}  {C_META}Already configured: {masked}{C_RESET}")
+        print(f"  {C_META}Press Enter to keep it, or paste a new key to replace it.{C_RESET}")
+        print()
+    else:
+        print(f"{C_BRAND}━━ Claude API key ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
+        print()
+        print(f"  {C_META}1. open → {_link('https://console.anthropic.com/settings/keys', 'console.anthropic.com/settings/keys')} (cmd+click){C_RESET}")
+        print(f"  {C_META}2. click \"Create Key\", name it \"surf\", copy it{C_RESET}")
+        print(f"  {C_META}3. paste it here{C_RESET}")
+        print()
+        print(f"  {C_META}cost: ~$0.0004/search · free $5 credit on signup · hard cap: $1/month{C_RESET}")
+        print()
+
+    print(f"  {C_META}(press Enter to skip, type q to exit setup){C_RESET}")
     print()
 
     try:
-        key = surf_input("sk-ant-...").strip()
+        key = surf_input("Enter to keep · q to exit").strip()
     except (KeyboardInterrupt, EOFError):
-        key = ""
+        print(f"\n{C_META}{GLYPH_META} setup cancelled.{C_RESET}\n")
+        return
+
+    if key.lower() == "q":
+        print(f"\n{C_META}{GLYPH_META} setup exited. run 'surf setup' anytime to continue.{C_RESET}\n")
+        return
 
     if key and key.startswith("sk-ant"):
         print(f"\n{C_SPEED_FAST}{GLYPH_META} Claude connected ✓{C_RESET}  {C_META}haiku-4.5 · $0.0004/query{C_RESET}\n")
         _save_config_key("ANTHROPIC_API_KEY", key)
-    elif key:
-        print(f"\n{C_META}{GLYPH_META} key format looks off — saved anyway. It'll error gracefully if invalid.{C_RESET}\n")
+    elif key and not existing_key:
+        print(f"\n{C_META}{GLYPH_META} key saved — surf will let you know if it doesn't authenticate.{C_RESET}\n")
         _save_config_key("ANTHROPIC_API_KEY", key)
+    elif not key and existing_key:
+        print(f"\n{C_META}{GLYPH_META} keeping existing key.{C_RESET}\n")
     else:
         print(f"\n{C_META}{GLYPH_META} skipping Claude key. you can add it later via 'surf setup'.{C_RESET}\n")
 
@@ -3572,34 +3594,31 @@ def _run_preferences_conversation() -> None:
     vspace(SPACE_SM)
     print(f"{C_BRAND}━━ Let's tune surf to how you think ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
     print()
-    print(f"  {C_META}Three questions. Enter to skip any.{C_RESET}")
+    print(f"  {C_META}Three questions. Press Enter to skip any, or type q to exit.{C_RESET}")
     print()
 
     answers = {}
 
-    print(f"{C_META}{GLYPH_META}{C_RESET} What kind of work do you do?")
-    print(f"  {C_META}(e.g. \"software engineer\", \"healthcare researcher\", \"investor\"){C_RESET}")
-    try:
-        answers["work"] = surf_input("your role and domain").strip()
-    except (KeyboardInterrupt, EOFError):
-        answers["work"] = ""
-    print()
-
-    print(f"{C_META}{GLYPH_META}{C_RESET} What do you want from surf's answers?")
-    print(f"  {C_META}(e.g. \"concise with data\", \"deep explanations\", \"code examples when relevant\"){C_RESET}")
-    try:
-        answers["style"] = surf_input("answer style").strip()
-    except (KeyboardInterrupt, EOFError):
-        answers["style"] = ""
-    print()
-
-    print(f"{C_META}{GLYPH_META}{C_RESET} Any sources you love or avoid?")
-    print(f"  {C_META}(e.g. \"prefer arxiv and HN, avoid Medium and Forbes\"){C_RESET}")
-    try:
-        answers["sources"] = surf_input("source preferences").strip()
-    except (KeyboardInterrupt, EOFError):
-        answers["sources"] = ""
-    print()
+    for question, key_name, example in [
+        ("What kind of work do you do?", "work",
+         "e.g. \"software engineer\", \"healthcare researcher\", \"investor\""),
+        ("What do you want from surf's answers?", "style",
+         "e.g. \"concise with data\", \"deep explanations\", \"code examples\""),
+        ("Any sources you love or avoid?", "sources",
+         "e.g. \"prefer arxiv and HN, avoid Medium\""),
+    ]:
+        print(f"{C_META}{GLYPH_META}{C_RESET} {question}")
+        print(f"  {C_META}({example}){C_RESET}")
+        try:
+            val = surf_input("type or Enter to skip").strip()
+        except (KeyboardInterrupt, EOFError):
+            print(f"\n{C_META}{GLYPH_META} setup cancelled.{C_RESET}\n")
+            return
+        if val.lower() == "q":
+            print(f"\n{C_META}{GLYPH_META} setup exited. run 'surf setup' anytime to continue.{C_RESET}\n")
+            return
+        answers[key_name] = val
+        print()
 
     # Generate preferences.md from answers
     if any(answers.values()):
@@ -3637,19 +3656,26 @@ def _run_preferences_conversation() -> None:
         print(f"  {C_META}Based on your profile, a question surf thinks you'd care about:{C_RESET}")
         print(f"\n  {C_INTERACTIVE}→{C_RESET}  {demo_query}\n")
         print(f"  {C_INTERACTIVE}y{C_RESET}  search this")
-        print(f"  {C_INTERACTIVE}Enter{C_RESET}  or type your own first search")
+        print(f"  {C_INTERACTIVE}q{C_RESET}  quit setup")
+        print(f"  {C_INTERACTIVE}↵{C_RESET}  or type your own first search")
         print()
         try:
-            first = surf_input(demo_query).strip()
+            first = surf_input("y, q, or type a question").strip()
         except (KeyboardInterrupt, EOFError):
-            first = ""
+            first = "q"
+        if first.lower() == "q":
+            print(f"\n{C_META}{GLYPH_META} all set. run 'surf [anything]' to start searching.{C_RESET}\n")
+            return
         query_to_run = demo_query if first.lower() == "y" else (first or demo_query)
     else:
-        print(f"  {C_META}What do you want to search first?{C_RESET}\n")
+        print(f"  {C_META}What do you want to search first? (q to exit){C_RESET}\n")
         try:
-            query_to_run = surf_input("your first search").strip()
+            query_to_run = surf_input("type a question or q to exit").strip()
         except (KeyboardInterrupt, EOFError):
             query_to_run = ""
+        if query_to_run.lower() == "q":
+            print(f"\n{C_META}{GLYPH_META} all set. run 'surf [anything]' to start searching.{C_RESET}\n")
+            return
 
     if query_to_run:
         print()
