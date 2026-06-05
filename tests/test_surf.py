@@ -420,6 +420,51 @@ class TestConfidenceGate:
         assert _confidence_gate("anything", [], "snippet") == "snippet"
 
 
+class TestClassifyDataSource:
+    def test_weather_with_location(self):
+        from surf import _classify_data_source
+        assert _classify_data_source("what is the weather in Siloam Springs") == "weather"
+
+    def test_weather_with_temporal(self):
+        from surf import _classify_data_source
+        assert _classify_data_source("will it rain today") == "weather"
+
+    def test_weather_no_location_no_temporal_is_web(self):
+        from surf import _classify_data_source
+        # "forecast" alone without location/temporal should NOT fire weather
+        assert _classify_data_source("economic forecast 2027") == "web"
+
+    def test_academic_fires_on_peer_reviewed(self):
+        from surf import _classify_data_source
+        assert _classify_data_source("what does the research say about aspirin") == "academic"
+
+    def test_financial_fires_on_stock_price(self):
+        from surf import _classify_data_source
+        assert _classify_data_source("Apple stock price today") == "financial"
+
+    def test_financial_fires_on_company_name(self):
+        from surf import _classify_data_source
+        assert _classify_data_source("what is Tesla trading at") == "financial"
+
+    def test_factual_fires_on_short_entity_query(self):
+        from surf import _classify_data_source
+        assert _classify_data_source("what is the Eiffel Tower") == "factual"
+
+    def test_factual_does_not_fire_on_long_query(self):
+        from surf import _classify_data_source
+        result = _classify_data_source("what is the meaning of this long philosophical question about existence and reality")
+        assert result == "web"
+
+    def test_web_is_default(self):
+        from surf import _classify_data_source
+        assert _classify_data_source("best python async libraries 2025") == "web"
+
+    def test_financial_priority_over_weather(self):
+        from surf import _classify_data_source
+        # "market forecast" — financial wins because "nasdaq" or financial signal
+        assert _classify_data_source("nasdaq stock market forecast today") == "financial"
+
+
 from surf import _deep_research
 
 class TestDeepResearch:

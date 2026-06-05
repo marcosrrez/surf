@@ -61,6 +61,11 @@ GLYPH_ELLIPSIS    = "…"   # U+2026  truncation — never three dots
 GLYPH_RANGE       = "–"   # U+2013  ranges like 1–5 — en-dash, not hyphen
 GLYPH_BULLET      = "•"   # U+2022  list bullets — never - or *
 
+# Financial direction glyphs (financial zone only)
+GLYPH_UP   = "▲"   # U+25B2  price increase
+GLYPH_DOWN = "▼"   # U+25BC  price decrease
+GLYPH_FLAT = "→"   # U+2192  no meaningful change
+
 # — Indent tokens (in character spaces) ───────────────────────────────────────
 INDENT_NONE = 0   # full-width: header bar, divider, body text
 INDENT_SM   = 2   # result number prefix, footer lines
@@ -71,6 +76,14 @@ def vspace(token: int) -> None:
     """Print N blank lines using a spacing token. The only way to add vertical space."""
     for _ in range(token):
         print()
+
+
+def print_section_break(label: str) -> None:
+    """Sub-divider within the answer zone (e.g., 48h weather day break)."""
+    width = _term_width()
+    label_str = f" {label} "
+    dashes = GLYPH_DIVIDER * max(0, width - len(label_str) - INDENT_SM)
+    print(f"{' ' * INDENT_SM}{C_META}{label_str}{dashes}{C_RESET}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1522,6 +1535,91 @@ _BREAKING_SIGNALS = {
 }
 
 
+# ─── Specialized query detection ──────────────────────────────────────────────
+
+# Weather: fires only when signal AND (location extractable OR temporal word present)
+WEATHER_SIGNALS = {
+    "forecast", "weather in", "weather for", "temperature today",
+    "rain today", "rain tomorrow", "humidity", "wind speed",
+    "uv index", "hourly forecast", "24 hour", "weekend weather",
+    "will it rain", "going to snow", "is it going to rain",
+}
+WEATHER_TEMPORAL = {
+    "today", "tomorrow", "tonight", "this weekend", "right now",
+    "this morning", "this evening", "currently", "now",
+}
+
+# Academic: specific enough that presence alone is sufficient
+ACADEMIC_SIGNALS = {
+    "peer reviewed", "peer-reviewed", "clinical trial", "meta-analysis",
+    "systematic review", "research on", "published paper", "arxiv",
+    "pubmed", "what does the science say", "what does the research say",
+    "scientific consensus", "randomized controlled", "rct",
+    "evidence for", "evidence against", "studies show",
+}
+
+# Financial: signal OR recognized ticker/company name
+FINANCIAL_SIGNALS = {
+    "stock price", "share price", "trading at", "market cap",
+    "stock today", "crypto price", "bitcoin price",
+    "dow jones", "s&p 500", "nasdaq", "nyse",
+}
+
+# Factual: prefix match + length + proper noun (all three required)
+FACTUAL_SIGNALS_PREFIX = (
+    "what is ", "what are ", "who is ", "who was ",
+    "where is ", "when was ", "when did ", "define ",
+)
+
+# WMO weather code → 8-char fixed-width description (no emoji for terminal reliability)
+WMO_CODES = {
+    0: "Sunny   ", 1: "Clear   ", 2: "P.Cloudy", 3: "Overcast",
+    45: "Fog     ", 48: "Fog     ",
+    51: "Drizzle ", 53: "Drizzle ", 55: "Drizzle ",
+    61: "Rain    ", 63: "Rain    ", 65: "Hvy Rain",
+    71: "Snow    ", 73: "Snow    ", 75: "Hvy Snow",
+    80: "Showers ", 81: "Showers ", 82: "Showers ",
+    95: "Tstorm  ", 96: "Tstorm  ", 99: "Tstorm  ",
+}
+
+# Company name → ticker (handles aliases; not exhaustive by design)
+COMPANY_TICKER_MAP = {
+    "apple": "AAPL", "microsoft": "MSFT", "google": "GOOGL",
+    "alphabet": "GOOGL", "amazon": "AMZN", "meta": "META",
+    "facebook": "META", "nvidia": "NVDA", "tesla": "TSLA",
+    "netflix": "NFLX", "adobe": "ADBE", "salesforce": "CRM",
+    "intel": "INTC", "amd": "AMD", "qualcomm": "QCOM",
+    "oracle": "ORCL", "cisco": "CSCO", "ibm": "IBM",
+    "twitter": "X", "spotify": "SPOT", "snap": "SNAP",
+    "uber": "UBER", "lyft": "LYFT", "airbnb": "ABNB",
+    "palantir": "PLTR", "shopify": "SHOP",
+    "jpmorgan": "JPM", "jp morgan": "JPM", "goldman sachs": "GS",
+    "goldman": "GS", "bank of america": "BAC", "wells fargo": "WFC",
+    "visa": "V", "mastercard": "MA", "berkshire": "BRK-B",
+    "berkshire hathaway": "BRK-B", "walmart": "WMT", "target": "TGT",
+    "coca cola": "KO", "cocacola": "KO", "pepsi": "PEP",
+    "pepsico": "PEP", "disney": "DIS", "nike": "NKE",
+    "johnson johnson": "JNJ", "johnson & johnson": "JNJ",
+    "pfizer": "PFE", "moderna": "MRNA", "exxon": "XOM",
+    "chevron": "CVX", "boeing": "BA", "ford": "F",
+    "gm": "GM", "general motors": "GM",
+    "bitcoin": "BTC-USD", "btc": "BTC-USD",
+    "ethereum": "ETH-USD", "eth": "ETH-USD",
+    "dogecoin": "DOGE-USD", "solana": "SOL-USD",
+    "cardano": "ADA-USD", "ripple": "XRP-USD",
+}
+
+SEARCH_SYSTEM_ACADEMIC = """You are synthesizing peer-reviewed literature.
+
+Format rules:
+- First line: "▸ TL;DR  " followed by key finding + confidence level
+- Cite inline as [Author et al., YEAR] — never fabricate citations
+- Note study types (RCT, meta-analysis, observational, in vitro)
+- Note sample sizes when given; distinguish correlation from causation explicitly
+- End with "**Limitations:**" section noting gaps in the evidence
+- No filler phrases"""
+
+
 def _date_filter_for_query(query: str) -> "str | None":
     """
     Return an after:YYYY-MM-DD cutoff date for temporal queries, or None.
@@ -2075,6 +2173,123 @@ def _sources_are_substantive(query: str, snippets: list[dict]) -> bool:
         return "YES" in "".join(chunks).upper()
     except Exception:
         return True  # default to proceeding if check fails
+
+
+def _classify_data_source(query: str) -> str:
+    """
+    Classify query as weather/academic/financial/factual/web.
+    Priority: financial > weather > academic > factual > web.
+    Each category has strict AND conditions to prevent over-triggering.
+    """
+    q = query.lower()
+
+    # Financial: recognized ticker OR financial vocabulary
+    if any(s in q for s in FINANCIAL_SIGNALS):
+        return "financial"
+    for name in COMPANY_TICKER_MAP:
+        if name in q:
+            return "financial"
+    if re.search(r'\b[A-Z]{2,5}\b', query) and any(
+        w in q for w in ("stock", "price", "shares", "trading", "ticker")
+    ):
+        return "financial"
+
+    # Weather: signal AND (location extractable OR temporal word)
+    if any(s in q for s in WEATHER_SIGNALS):
+        has_temporal = any(t in q for t in WEATHER_TEMPORAL)
+        weather_stop = {"what", "is", "the", "weather", "forecast", "for", "in",
+                        "today", "tomorrow", "tonight", "this", "weekend",
+                        "hourly", "hour", "will", "rain", "snow", "temperature"}
+        words = [w for w in query.split() if w.lower() not in weather_stop]
+        has_location = any(w[0].isupper() for w in words if len(w) > 2)
+        if has_temporal or has_location:
+            return "weather"
+
+    # Academic: specific research vocabulary
+    if any(s in q for s in ACADEMIC_SIGNALS):
+        return "academic"
+
+    # Factual: prefix + short + proper noun
+    has_prefix = any(q.startswith(p) for p in FACTUAL_SIGNALS_PREFIX)
+    if has_prefix:
+        stop = {"the", "a", "an", "is", "are", "was", "were", "what", "how",
+                "why", "who", "when", "does", "do", "did", "and", "or"}
+        content_words = [w for w in query.split() if w.lower() not in stop]
+        has_entity = bool(_extract_specific_entities(query))
+        if len(content_words) < 12 and has_entity:
+            return "factual"
+
+    return "web"
+
+
+def _display_specialized_result(
+    query: str,
+    response: str | None,
+    sources: list[dict],
+    handler_name: str,
+    t0: float,
+    streaming: bool = False,
+) -> tuple[list[dict], str]:
+    """
+    Shared post-processing for all specialized handlers.
+    Handles elapsed time display, source display, session save, Obsidian save.
+    Returns (sources, response) matching search_flow return type.
+    """
+    if not streaming and response:
+        print(response)
+
+    _elapsed = time.time() - t0
+    _ec = _elapsed_color(_elapsed)
+    print(f"{_ec}{GLYPH_META} {_elapsed:.1f}s · {handler_name}{C_RESET}")
+    _print_linked_sources(sources)
+    print_results(sources)
+
+    summary = response or ""
+    if "▸ TL;DR" in summary:
+        summary = summary.split("▸ TL;DR")[-1].strip()
+    save_session_entry(query, "search", _truncate_at_sentence(summary, 300))
+    _obsidian_save(query, response or "", sources, session_id=_obsidian_session_id())
+    record_feature_use("search")
+
+    return sources, response or ""
+
+
+def _run_specialized_query(
+    query: str,
+    source_type: str,
+    t0: float,
+    interactive: bool = True,
+) -> tuple[list[dict], str] | None:
+    """
+    Dispatch to the appropriate specialized handler.
+    Returns (sources, response) or None if handler failed (fall through to DDG).
+    """
+    handler_map = {
+        "weather":   _handle_weather,
+        "academic":  _handle_academic,
+        "financial": _handle_financial,
+        "factual":   _handle_factual,
+    }
+    handler = handler_map.get(source_type)
+    if not handler:
+        return None
+
+    result = handler(query)
+    if result is None:
+        return None
+
+    response, sources, streaming = result
+    return _display_specialized_result(query, response, sources,
+                                        _source_type_name(source_type), t0, streaming)
+
+
+def _source_type_name(source_type: str) -> str:
+    return {
+        "weather": "Open-Meteo",
+        "academic": "PubMed · arXiv",
+        "financial": "Yahoo Finance",
+        "factual": "Wikipedia",
+    }.get(source_type, source_type)
 
 
 def _classify_tier(query: str) -> str:
