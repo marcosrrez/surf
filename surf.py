@@ -2738,7 +2738,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
 
     print_status(f"↳ searching: \"{ddg_query[:55]}\"...")
     try:
-        results = ddg_search(ddg_query)
+        results, _queries_tried = _search_with_retry(ddg_query, entity_type=_identify_entity_type(query))
         if tier in ("research", "contested") and results:
             alt_query = (
                 f"{ddg_query} analysis expert opinion"
@@ -2777,6 +2777,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
             except Exception:
                 pass
     except Exception as e:
+        _queries_tried = [ddg_query]
         clear_status()
         print(f"\033[31mSearch failed: {e}\033[0m")
         return [], ""
@@ -2966,12 +2967,23 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     # Metadata → Action zone: SPACE_NONE (print_results starts with divider)
     print_results(results)
 
+    _meta = _SearchMeta(
+        original_query=query,
+        queries_tried=_queries_tried,
+        result_count=len(results),
+        confidence_tier=tier,
+        coverage_note=(
+            f"Searches tried: {'; '.join(_queries_tried)}"
+            if len(results) < 3 else None
+        ),
+    )
+
     if interactive:
-        _handle_results_input(results, context=response)
+        _handle_results_input(results, context=response, meta=_meta)
 
     return results, response
 
-def _handle_results_input(results: list[dict], context: str = "") -> None:
+def _handle_results_input(results: list[dict], context: str = "", meta: "_SearchMeta | None" = None) -> None:
     """Wait for user to pick a result or ask a follow-up question."""
     while True:
         try:
