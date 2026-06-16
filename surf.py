@@ -2292,6 +2292,190 @@ def _source_type_name(source_type: str) -> str:
     }.get(source_type, source_type)
 
 
+# ─── Weather handler ───────────────────────────────────────────────────────────
+
+_FAHRENHEIT_COUNTRIES = {"US", "BS", "BZ", "KY", "PW", "FM", "MH"}
+_WIND_DIRS = ["N ", "NE", "E ", "SE", "S ", "SW", "W ", "NW"]
+
+
+def _wind_dir_str(degrees: float) -> str:
+    return _WIND_DIRS[round(degrees / 45) % 8]
+
+
+def _temp_color(temp: float, is_fahrenheit: bool) -> str:
+    hot = 86 if is_fahrenheit else 30
+    cold = 44 if is_fahrenheit else 7
+    if temp >= hot:
+        return C_INTERACTIVE
+    if temp <= cold:
+        return C_META
+    return C_BODY
+
+
+def _extract_weather_location(query: str) -> str:
+    """Strip weather vocabulary from query, return remaining text as location."""
+    stop = {
+        "what", "is", "the", "weather", "forecast", "for", "in", "a", "an",
+        "today", "tomorrow", "tonight", "this", "weekend", "week", "next",
+        "hourly", "24", "hour", "current", "right", "now", "currently",
+        "will", "it", "rain", "snow", "temperature", "temp", "going", "to",
+        "be", "like", "get", "humidity", "wind", "uv", "conditions",
+        "how", "what's", "whats", "outside", "around", "near",
+    }
+    words = [w for w in query.split() if w.lower().rstrip("?.,!") not in stop]
+    location = " ".join(words).strip().rstrip("?.,!")
+    if not location or len(location) < 2:
+        entities = _extract_specific_entities(query)
+        location = entities[0] if entities else ""
+    return location
+
+
+def _handle_weather(query: str) -> "tuple[str, list[dict], bool] | None":
+    """
+    Fetch weather forecast from Open-Meteo.
+    Returns (formatted_response, sources, streaming=False) or None on failure.
+    """
+    from datetime import datetime
+
+    location = _extract_weather_location(query)
+    if not location or len(location) < 2:
+        return None
+
+    # Step 1: Geocode
+    try:
+        geo_r = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": location, "count": 1, "format": "json"},
+            headers=HEADERS, timeout=1.5,
+        )
+        geo_r.raise_for_status()
+        geo_data = geo_r.json()
+        if not geo_data.get("results"):
+            return None
+        g = geo_data["results"][0]
+        lat, lon = g["latitude"], g["longitude"]
+        country = g.get("country_code", "US")
+        name = g.get("name", location)
+        admin = g.get("admin1", "")
+        display_loc = f"{name}, {admin}" if admin else name
+        timezone = g.get("timezone", "auto")
+    except Exception:
+        return None
+
+    # Step 2: Fetch forecast
+    is_fahrenheit = country in _FAHRENHEIT_COUNTRIES
+    temp_unit = "fahrenheit" if is_fahrenheit else "celsius"
+    temp_sym = "°F" if is_fahrenheit else "°C"
+
+    try:
+        fc_r = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat, "longitude": lon, "timezone": timezone,
+                "hourly": "temperature_2m,precipitation_probability,wind_speed_10m,wind_direction_10m,weathercode",
+                "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode",
+                "forecast_days": 3, "wind_speed_unit": "mph", "temperature_unit": temp_unit,
+            },
+            headers=HEADERS, timeout=2.0,
+        )
+        fc_r.raise_for_status()
+        fc_data = fc_r.json()
+    except Exception:
+        return None
+
+    # Step 3: Format response
+    hourly = fc_data.get("hourly", {})
+    daily = fc_data.get("daily", {})
+    times = hourly.get("time", [])
+    temps = hourly.get("temperature_2m", [])
+    precips = hourly.get("precipitation_probability", [])
+    winds = hourly.get("wind_speed_10m", [])
+    wdirs = hourly.get("wind_direction_10m", [])
+    wcodes = hourly.get("weathercode", [])
+
+    # Find current hour index
+    now = datetime.now()
+    cur = 0
+    for i, t in enumerate(times):
+        try:
+            if datetime.fromisoformat(t) >= now:
+                cur = i
+                break
+        except Exception:
+            pass
+
+    # Build 8-hour table
+    rows = []
+    for i in range(8):
+        idx = cur + i
+        if idx >= len(times):
+            break
+        try:
+            dt = datetime.fromisoformat(times[idx])
+            label = "Now    " if i == 0 else dt.strftime("%I%p").lstrip("0").lower().ljust(7)
+            temp = round(temps[idx]) if idx < len(temps) else "--"
+            precip = precips[idx] if idx < len(precips) else 0
+            wind = round(winds[idx]) if idx < len(winds) else "--"
+            wdir = _wind_dir_str(wdirs[idx]) if idx < len(wdirs) else "  "
+            cond = WMO_CODES.get(wcodes[idx] if idx < len(wcodes) else 0, "Unknown ")
+            tc = _temp_color(float(temp), is_fahrenheit)
+            rows.append(
+                f"  {label:<7}  {tc}{temp:>3}{temp_sym}{C_RESET}"
+                f"  {cond}  Wind {wind:>2}mph {wdir}  {precip:>2}% rain"
+            )
+        except Exception:
+            continue
+
+    # Daily summary (next 2 days)
+    daily_lines = []
+    for i in range(1, min(3, len(daily.get("time", [])))):
+        try:
+            dt = datetime.fromisoformat(daily["time"][i])
+            hi = round(daily["temperature_2m_max"][i])
+            lo = round(daily["temperature_2m_min"][i])
+            p_mm = daily.get("precipitation_sum", [0, 0, 0])[i] or 0
+            p_pct = min(100, int(p_mm * 8))
+            daily_lines.append(
+                f"  {dt.strftime('%A'):<10}  High {hi}{temp_sym} · Low {lo}{temp_sym} · {p_pct:>2}% rain"
+            )
+        except Exception:
+            continue
+
+    # TL;DR line
+    cur_temp = round(temps[cur]) if cur < len(temps) else "?"
+    cur_cond = WMO_CODES.get(wcodes[cur] if cur < len(wcodes) else 0, "Unknown").strip().lower()
+    tldr = f"{GLYPH_TLDR} TL;DR  Now {cur_temp}{temp_sym} {cur_cond}"
+    if len(daily.get("temperature_2m_max", [])) > 1:
+        tldr += f", tomorrow high {round(daily['temperature_2m_max'][1])}{temp_sym}."
+
+    coord = f"{abs(lat):.2f}°{'N' if lat >= 0 else 'S'} {abs(lon):.2f}°{'W' if lon < 0 else 'E'}"
+    ts = datetime.now().strftime("%b %-d %H:%M")
+
+    # Print header before returning (so it appears before the API wait)
+    print_header(
+        f"{display_loc} — Forecast",
+        f"{C_META}{GLYPH_META} Open-Meteo · {coord} · {ts}{C_RESET}",
+        zone_after=SPACE_SM,
+    )
+    print_status(f"↳ fetching weather for {display_loc}...")
+    clear_status()
+
+    lines = [f"{C_ANSWER_MARK}{tldr}{C_RESET}", ""]
+    lines.extend(rows)
+    if daily_lines:
+        lines.append("")
+        lines.extend(daily_lines)
+
+    response = "\n".join(lines)
+    sources = [{
+        "title": f"Weather forecast for {display_loc}",
+        "url": "https://open-meteo.com/",
+        "domain": "open-meteo.com",
+        "snippet": f"Current conditions and 3-day forecast for {display_loc}.",
+    }]
+    return response, sources, False
+
+
 def _classify_tier(query: str) -> str:
     """Classify query into search tier using heuristics. Returns snippet | current | research | contested."""
     q = " " + query.lower() + " "

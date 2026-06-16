@@ -465,6 +465,115 @@ class TestClassifyDataSource:
         assert _classify_data_source("nasdaq stock market forecast today") == "financial"
 
 
+class TestWeatherHandler:
+    def test_extract_weather_location_city(self):
+        from surf import _extract_weather_location
+        loc = _extract_weather_location("what is the weather in Chicago")
+        assert "chicago" in loc.lower()
+
+    def test_extract_weather_location_strips_weather_words(self):
+        from surf import _extract_weather_location
+        loc = _extract_weather_location("will it rain tomorrow in Denver")
+        assert "denver" in loc.lower()
+
+    def test_extract_weather_location_returns_str(self):
+        from surf import _extract_weather_location
+        loc = _extract_weather_location("will it rain tomorrow")
+        assert isinstance(loc, str)
+
+    def test_handle_weather_returns_none_on_network_failure(self):
+        from surf import _handle_weather
+        from unittest.mock import patch
+        with patch("surf.requests.get", side_effect=Exception("timeout")):
+            result = _handle_weather("weather in Chicago")
+        assert result is None
+
+    def test_handle_weather_returns_none_on_empty_geocode(self):
+        from surf import _handle_weather
+        from unittest.mock import patch, MagicMock
+        mock_r = MagicMock()
+        mock_r.json.return_value = {"results": []}
+        mock_r.raise_for_status = MagicMock()
+        with patch("surf.requests.get", return_value=mock_r):
+            result = _handle_weather("weather in Siloam Springs")
+        assert result is None
+
+    def test_handle_weather_returns_tuple_on_success(self):
+        from surf import _handle_weather
+        from unittest.mock import patch, MagicMock
+        geo_r = MagicMock()
+        geo_r.json.return_value = {"results": [{
+            "latitude": 36.19, "longitude": -94.49,
+            "name": "Siloam Springs", "admin1": "Arkansas",
+            "country_code": "US", "timezone": "America/Chicago",
+        }]}
+        geo_r.raise_for_status = MagicMock()
+        fc_r = MagicMock()
+        fc_r.json.return_value = {
+            "hourly": {
+                "time": [f"2026-06-05T{h:02d}:00" for h in range(24)],
+                "temperature_2m": [76.0] * 24,
+                "precipitation_probability": [10] * 24,
+                "wind_speed_10m": [6.0] * 24,
+                "wind_direction_10m": [225.0] * 24,
+                "weathercode": [2] * 24,
+            },
+            "daily": {
+                "time": ["2026-06-05", "2026-06-06", "2026-06-07"],
+                "temperature_2m_max": [83.0, 79.0, 74.0],
+                "temperature_2m_min": [61.0, 58.0, 55.0],
+                "precipitation_sum": [0.0, 1.0, 0.5],
+                "weathercode": [2, 3, 1],
+            }
+        }
+        fc_r.raise_for_status = MagicMock()
+        call_count = [0]
+        def side_effect(url, **kwargs):
+            call_count[0] += 1
+            return geo_r if call_count[0] == 1 else fc_r
+        with patch("surf.requests.get", side_effect=side_effect), \
+             patch("surf.print_header"), patch("surf.print_status"), \
+             patch("surf.clear_status"):
+            result = _handle_weather("24 hour forecast for Siloam Springs AR")
+        assert result is not None
+        response, sources, streaming = result
+        assert isinstance(response, str)
+        assert "76" in response or "°F" in response
+        assert not streaming
+        assert len(sources) > 0
+
+    def test_weather_uses_celsius_outside_us(self):
+        from surf import _handle_weather
+        from unittest.mock import patch, MagicMock
+        geo_r = MagicMock()
+        geo_r.json.return_value = {"results": [{
+            "latitude": 51.5, "longitude": -0.1,
+            "name": "London", "admin1": "England",
+            "country_code": "GB", "timezone": "Europe/London",
+        }]}
+        geo_r.raise_for_status = MagicMock()
+        fc_r = MagicMock()
+        fc_r.json.return_value = {
+            "hourly": {"time": [], "temperature_2m": [], "precipitation_probability": [],
+                       "wind_speed_10m": [], "wind_direction_10m": [], "weathercode": []},
+            "daily": {"time": [], "temperature_2m_max": [], "temperature_2m_min": [],
+                      "precipitation_sum": [], "weathercode": []}
+        }
+        fc_r.raise_for_status = MagicMock()
+        captured = {}
+        call_count = [0]
+        def side_effect(url, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                captured.update(kwargs.get("params", {}))
+            return geo_r if call_count[0] == 1 else fc_r
+        with patch("surf.requests.get", side_effect=side_effect), \
+             patch("surf.print_header"), patch("surf.print_status"), \
+             patch("surf.clear_status"):
+            _handle_weather("weather in London")
+        assert captured.get("temperature_unit") == "celsius"
+
+
 from surf import _deep_research
 
 class TestDeepResearch:
