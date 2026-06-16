@@ -2663,6 +2663,61 @@ def _deep_research(
     return "\n\n---\n\n".join(combined), sources_read
 
 
+def _rephrase_query(query: str) -> str:
+    """Generate an alternative DDG query formulation for retry."""
+    prompt = f"Rephrase this search query to find better results. Return ONLY the new query, no quotes, no explanation.\n\nOriginal: {query}"
+    try:
+        chunks = list(stream_groq(prompt, "You are a search query optimizer. Return only the query string.", model=CLASSIFIER_MODEL, max_tokens=60))
+        return "".join(chunks).strip().strip('"').strip("'")
+    except Exception:
+        return query + " overview"
+
+
+def _search_with_retry(query: str, entity_type: str | None = None) -> tuple[list[dict], list[str]]:
+    """
+    Wrap ddg_search with up to 3 narrated attempts.
+    Returns (results, queries_tried).
+    'Thin' means fewer than 3 results or all snippets under 50 chars.
+    """
+    def _is_thin(results: list[dict]) -> bool:
+        if len(results) < 3:
+            return True
+        return all(len(r.get("snippet", "")) < 50 for r in results)
+
+    queries_tried = []
+
+    # Attempt 1: original query
+    queries_tried.append(query)
+    results = ddg_search(query)
+    results = _filter_results(results)
+    if not _is_thin(results):
+        return results, queries_tried
+
+    # Attempt 2: rephrased query
+    print_status("↳ That first pass was thin — trying a different angle...")
+    rephrased = _rephrase_query(query)
+    queries_tried.append(rephrased)
+    results2 = _filter_results(ddg_search(rephrased))
+    clear_status()
+    if not _is_thin(results2):
+        return results2, queries_tried
+
+    # Attempt 3: add domain hint
+    print_status("↳ Still not much — adding a source hint...")
+    if entity_type and entity_type in _SOURCE_INTELLIGENCE:
+        domain_hint = _SOURCE_INTELLIGENCE[entity_type][0].split(".")[0]
+    else:
+        domain_hint = "wikipedia"
+    hinted = f"{query} {domain_hint}"
+    queries_tried.append(hinted)
+    results3 = _filter_results(ddg_search(hinted))
+    clear_status()
+
+    # Return best non-empty set, prefer whichever has most results
+    best = max([results, results2, results3], key=len)
+    return best, queries_tried
+
+
 def search_flow(query: str, interactive: bool = True, json_output: bool = False) -> tuple[list[dict], str]:
     """
     Run the search flow: DDG → Groq → display results.

@@ -1294,3 +1294,44 @@ class TestSearchMeta:
             coverage_note="Only found Group C — others not in results",
         )
         assert meta.coverage_note is not None
+
+
+class TestSearchWithRetry:
+    def test_returns_results_on_first_try(self):
+        """When first search returns ≥3 results, no retry fires."""
+        from surf import _search_with_retry
+        good_results = [
+            {"title": f"Result {i}", "url": f"http://ex.com/{i}", "domain": "ex.com", "snippet": "x" * 60}
+            for i in range(5)
+        ]
+        with patch("surf.ddg_search", return_value=good_results) as mock_ddg:
+            results, queries_tried = _search_with_retry("test query")
+        assert len(results) == 5
+        assert mock_ddg.call_count == 1
+        assert queries_tried == ["test query"]
+
+    def test_retries_on_thin_results(self):
+        """When first search returns <3 results, retries with rephrased query."""
+        from surf import _search_with_retry
+        thin = [{"title": "A", "url": "http://a.com", "domain": "a.com", "snippet": "short"}]
+        good = [
+            {"title": f"R{i}", "url": f"http://b.com/{i}", "domain": "b.com", "snippet": "x" * 60}
+            for i in range(4)
+        ]
+        with patch("surf.ddg_search", side_effect=[thin, good]) as mock_ddg, \
+             patch("surf._rephrase_query", return_value="rephrased query") as mock_rephrase, \
+             patch("surf.print_status"), patch("surf.clear_status"):
+            results, queries_tried = _search_with_retry("test query")
+        assert len(results) == 4
+        assert mock_ddg.call_count == 2
+        assert "rephrased query" in queries_tried
+
+    def test_three_attempts_then_dead_end(self):
+        """After 3 thin searches, returns best thin result with coverage_note signal."""
+        from surf import _search_with_retry
+        thin = [{"title": "A", "url": "http://a.com", "domain": "a.com", "snippet": "x"}]
+        with patch("surf.ddg_search", return_value=thin), \
+             patch("surf._rephrase_query", return_value="q2"), \
+             patch("surf.print_status"), patch("surf.clear_status"):
+            results, queries_tried = _search_with_retry("test query")
+        assert len(queries_tried) == 3
