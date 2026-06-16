@@ -10,9 +10,19 @@ import atexit
 import threading
 import itertools
 import time
+from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 import groq
 from groq import Groq
+
+@dataclass
+class _SearchMeta:
+    original_query: str
+    queries_tried: list[str]
+    result_count: int
+    confidence_tier: str
+    coverage_note: str | None
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # surf Design System  ·  docs/product/design-system.md

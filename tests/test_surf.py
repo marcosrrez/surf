@@ -1269,3 +1269,28 @@ class TestBannerAndSetup:
     def test_classify_tier_current_for_who_will(self):
         from surf import _classify_tier
         assert _classify_tier("who will win the world cup") == "current"
+
+class TestSearchMeta:
+    def test_instantiation(self):
+        from surf import _SearchMeta
+        meta = _SearchMeta(
+            original_query="who won the world cup",
+            queries_tried=["who won the world cup", "FIFA world cup winner"],
+            result_count=5,
+            confidence_tier="current",
+            coverage_note=None,
+        )
+        assert meta.original_query == "who won the world cup"
+        assert meta.result_count == 5
+        assert meta.coverage_note is None
+
+    def test_coverage_note_populated(self):
+        from surf import _SearchMeta
+        meta = _SearchMeta(
+            original_query="all world cup groups",
+            queries_tried=["all world cup groups"],
+            result_count=1,
+            confidence_tier="current",
+            coverage_note="Only found Group C — others not in results",
+        )
+        assert meta.coverage_note is not None
