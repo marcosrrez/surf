@@ -3621,6 +3621,104 @@ def _conversational_reply(
         print()
 
 
+# ─── Scope expansion fanout ────────────────────────────────────────────────────
+
+def _extract_expansion_items(user_text: str, context: str = "") -> list[str]:
+    """
+    Use LLM to extract the list of items the user wants to expand to.
+    e.g. "what about groups A B D E F G" → ["Group A", "Group B", "Group D", ...]
+    Returns a list of strings, empty list on failure.
+    """
+    prompt = (
+        f"The user asked: \"{user_text}\"\n"
+        f"Context: \"{context[:200]}\"\n\n"
+        "List the specific items they want information about. "
+        "Return each item on its own line, nothing else. "
+        "Maximum 8 items. If you can't identify specific items, return nothing."
+    )
+    try:
+        chunks = list(stream_groq(prompt, "Extract list items. One per line. No numbering, no bullets.", model=CLASSIFIER_MODEL, max_tokens=100))
+        raw = "".join(chunks).strip()
+        items = [line.strip() for line in raw.splitlines() if line.strip()]
+        return items[:8]
+    except Exception:
+        return []
+
+
+def _fanout_search_one(item: str, base_query: str) -> tuple[str, list[dict], str]:
+    """
+    Search for one item in a fanout. Returns (item, results, synthesis).
+    Runs in a thread — must not call any terminal output functions directly.
+    """
+    query = f"{base_query} {item}"
+    try:
+        results = _filter_results(ddg_search(query, num_results=3))
+    except Exception:
+        results = []
+    if not results:
+        return item, [], f"Nothing found for {item}."
+    snippets = "\n".join(f"[{i+1}] {r['snippet']}" for i, r in enumerate(results[:3]))
+    prompt = (
+        f"Question: What is the current status of {item} in this context: {base_query}?\n\n"
+        f"Sources:\n{snippets}\n\n"
+        "Answer in 1-2 sentences. Be specific. Lead with the most interesting fact. "
+        "State your read clearly. If sources are empty or vague, say so in one sentence."
+    )
+    try:
+        chunks = list(stream_groq(prompt, "You are a sharp research assistant. One to two sentences only.", model=CLASSIFIER_MODEL, max_tokens=120))
+        synthesis = "".join(chunks).strip()
+    except Exception:
+        synthesis = results[0]["snippet"][:200] if results else "No data found."
+    return item, results, synthesis
+
+
+def _handle_scope_expansion(
+    user_text: str,
+    meta: "_SearchMeta | None",
+    context: str,
+) -> tuple[list[dict], str, "_SearchMeta"]:
+    """
+    Fan out searches for multiple items. Stream results as they land.
+    Returns (combined_results, combined_response, new_meta).
+    """
+    base_query = meta.original_query if meta else user_text
+    items = _extract_expansion_items(user_text, context=base_query)
+
+    if not items:
+        # Fallback: treat as a redirect and do a broader search
+        _conversational_reply("redirect", meta=meta, user_text=user_text)
+        new_results, new_response, new_meta = _handle_followup(user_text, context=context)
+        return new_results, new_response, new_meta
+
+    count = len(items)
+    print(f"\033[90mOn it — checking {count} {'item' if count == 1 else 'items'} now.\033[0m\n")
+
+    all_results: list[dict] = []
+    all_syntheses: list[str] = []
+    queries_tried: list[str] = []
+
+    with ThreadPoolExecutor(max_workers=min(6, count)) as executor:
+        futures = {executor.submit(_fanout_search_one, item, base_query): item for item in items}
+        for future in as_completed(futures):
+            item, results, synthesis = future.result()
+            queries_tried.append(f"{base_query} {item}")
+            print_header(item, "")
+            print(synthesis)
+            print()
+            all_results.extend(results)
+            all_syntheses.append(f"**{item}:** {synthesis}")
+
+    combined_response = "\n\n".join(all_syntheses)
+    new_meta = _SearchMeta(
+        original_query=base_query,
+        queries_tried=queries_tried,
+        result_count=len(all_results),
+        confidence_tier="current",
+        coverage_note=None,
+    )
+    return all_results, combined_response, new_meta
+
+
 _CASUAL_STARTERS = {
     "that's", "thats", "wow", "amazing", "awesome", "great", "nice", "cool",
     "interesting", "fascinating", "incredible", "unbelievable", "haha", "lol",

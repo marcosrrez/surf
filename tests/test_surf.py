@@ -1433,3 +1433,31 @@ class TestConversationalReply:
         _conversational_reply("dead_end", meta=meta)
         out = capsys.readouterr().out
         assert "r" in out or "t" in out  # shows options
+
+
+class TestScopeExpansion:
+    def test_extract_items_from_groups_query(self):
+        from surf import _extract_expansion_items
+        with patch("surf.stream_groq", return_value=iter(["Group A\nGroup B\nGroup D\nGroup E\nGroup F\nGroup G"])):
+            items = _extract_expansion_items("what about groups A B D E F G", context="World Cup")
+        assert len(items) >= 4
+        assert any("A" in item or "Group A" in item for item in items)
+
+    def test_extract_items_generic(self):
+        from surf import _extract_expansion_items
+        with patch("surf.stream_groq", return_value=iter([])):
+            items = _extract_expansion_items("what about the other teams", context="Brazil won")
+        assert isinstance(items, list)
+
+    def test_handle_scope_expansion_fires_searches(self):
+        from surf import _handle_scope_expansion, _SearchMeta
+        meta = _SearchMeta("World Cup Group C", ["World Cup Group C"], 3, "current", None)
+        fake_results = [{"title": "T", "url": "http://x.com", "domain": "x.com", "snippet": "s" * 60}]
+        with patch("surf.ddg_search", return_value=fake_results), \
+             patch("surf.stream_groq", return_value=iter(["Group A\nGroup B"])), \
+             patch("surf.print_header"), patch("surf.print_status"), patch("surf.clear_status"), \
+             patch("surf.vspace"):
+            result = _handle_scope_expansion("what about groups A and B", meta=meta, context="")
+        new_results, new_context, new_meta = result
+        assert isinstance(new_results, list)
+        assert isinstance(new_meta, _SearchMeta)
