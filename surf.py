@@ -11,13 +11,14 @@ import threading
 import itertools
 import time
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed  # used in _handle_scope_expansion fanout
 from bs4 import BeautifulSoup
 import groq
 from groq import Groq
 
 @dataclass
 class _SearchMeta:
+    """Metadata about a search execution, threaded through the interactive loop."""
     original_query: str
     queries_tried: list[str]
     result_count: int
