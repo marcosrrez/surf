@@ -3569,6 +3569,58 @@ def _classify_input(text: str) -> str:
     return "followup"
 
 
+# ─── Conversational response layer ─────────────────────────────────────────────
+
+_CASUAL_REPLIES = [
+    "Glad that's useful — anything else you want to dig into?",
+    "Happy to keep going — what's next?",
+    "Sure — what else can I find for you?",
+]
+
+_REDIRECT_REPLIES_NO_NOTE = [
+    "Fair enough — let me come at this from a wider angle.",
+    "You're right — I'll broaden the search.",
+    "Point taken — trying a different approach.",
+]
+
+
+def _conversational_reply(
+    reply_type: str,
+    meta: "_SearchMeta | None" = None,
+    user_text: str = "",
+) -> None:
+    """
+    Print a short conversational response in the professor voice. Two sentences max.
+    reply_type: 'redirect' | 'casual' | 'correction' | 'dead_end'
+    """
+    import random
+
+    if reply_type == "casual":
+        print(f"\033[90m{random.choice(_CASUAL_REPLIES)}\033[0m")
+        print()
+
+    elif reply_type == "redirect":
+        if meta and meta.coverage_note:
+            tried = meta.queries_tried[-1] if meta.queries_tried else "that"
+            print(f"\033[90mFair point — I'll widen the search beyond \"{tried}\".\033[0m")
+        else:
+            print(f"\033[90m{random.choice(_REDIRECT_REPLIES_NO_NOTE)}\033[0m")
+        print()
+
+    elif reply_type == "correction":
+        print(f"\033[90mGot it — starting fresh with that.\033[0m")
+        print()
+
+    elif reply_type == "dead_end":
+        tried_str = ""
+        if meta and meta.queries_tried:
+            tried_str = f" (tried: {len(meta.queries_tried)} searches)"
+        print(f"\033[90mThree angles, not much to show for it{tried_str}.\033[0m")
+        print(f"\033[90m  \033[33mr\033[90m — read the best result I found\033[0m")
+        print(f"\033[90m  \033[33mt\033[90m — try a completely different search\033[0m")
+        print()
+
+
 _CASUAL_STARTERS = {
     "that's", "thats", "wow", "amazing", "awesome", "great", "nice", "cool",
     "interesting", "fascinating", "incredible", "unbelievable", "haha", "lol",

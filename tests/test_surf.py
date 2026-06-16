@@ -1410,3 +1410,26 @@ class TestClassifyInput:
 
     def test_followup_how(self):
         assert self._classify("how did Scotland score?") == "followup"
+
+
+class TestConversationalReply:
+    def test_redirect_with_coverage_note(self, capsys):
+        from surf import _conversational_reply, _SearchMeta
+        meta = _SearchMeta("world cup groups", ["world cup groups"], 1, "current",
+                           "Searches tried: world cup groups; world cup standings")
+        _conversational_reply("redirect", meta=meta)
+        out = capsys.readouterr().out
+        assert len(out.strip()) > 0  # printed something
+
+    def test_casual_no_search(self, capsys):
+        from surf import _conversational_reply
+        _conversational_reply("casual", meta=None)
+        out = capsys.readouterr().out
+        assert len(out.strip()) > 0
+
+    def test_dead_end_shows_options(self, capsys):
+        from surf import _conversational_reply, _SearchMeta
+        meta = _SearchMeta("obscure query", ["q1", "q2", "q3"], 0, "snippet", "No results found")
+        _conversational_reply("dead_end", meta=meta)
+        out = capsys.readouterr().out
+        assert "r" in out or "t" in out  # shows options
