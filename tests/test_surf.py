@@ -1335,3 +1335,78 @@ class TestSearchWithRetry:
              patch("surf.print_status"), patch("surf.clear_status"):
             results, queries_tried = _search_with_retry("test query")
         assert len(queries_tried) == 3
+
+
+class TestClassifyInput:
+    def _classify(self, text):
+        from surf import _classify_input
+        return _classify_input(text)
+
+    # --- command ---
+    def test_command_numeric(self):
+        assert self._classify("1") == "command"
+
+    def test_command_open(self):
+        assert self._classify("o2") == "command"
+
+    def test_command_summary(self):
+        assert self._classify("s3") == "command"
+
+    def test_command_quit(self):
+        assert self._classify("q") == "command"
+
+    def test_command_help(self):
+        assert self._classify("?") == "command"
+
+    def test_command_new(self):
+        assert self._classify("n") == "command"
+
+    # --- casual ---
+    def test_casual_thanks(self):
+        assert self._classify("thanks") == "casual"
+
+    def test_casual_wow(self):
+        assert self._classify("wow") == "casual"
+
+    def test_casual_cool(self):
+        assert self._classify("cool that's interesting") == "casual"
+
+    # --- correction ---
+    def test_correction_no_i_meant(self):
+        assert self._classify("no, I meant 2022") == "correction"
+
+    def test_correction_not_thailand(self):
+        assert self._classify("not Thailand — Taiwan") == "correction"
+
+    def test_correction_actually(self):
+        assert self._classify("actually I want the 1998 tournament") == "correction"
+
+    # --- redirect ---
+    def test_redirect_your_job(self):
+        assert self._classify("that's your job") == "redirect"
+
+    def test_redirect_try_harder(self):
+        assert self._classify("try harder") == "redirect"
+
+    def test_redirect_you_missed(self):
+        assert self._classify("you missed the other groups") == "redirect"
+
+    # --- scope_expansion ---
+    def test_scope_expansion_the_others(self):
+        assert self._classify("what about the others") == "scope_expansion"
+
+    def test_scope_expansion_all_of_them(self):
+        assert self._classify("show me all of them") == "scope_expansion"
+
+    def test_scope_expansion_the_rest(self):
+        assert self._classify("what about the rest") == "scope_expansion"
+
+    def test_scope_expansion_groups(self):
+        assert self._classify("what about groups A B D E F G") == "scope_expansion"
+
+    # --- followup (default) ---
+    def test_followup_question(self):
+        assert self._classify("why did Brazil draw?") == "followup"
+
+    def test_followup_how(self):
+        assert self._classify("how did Scotland score?") == "followup"

@@ -3518,6 +3518,57 @@ def surf_input(placeholder: str = "") -> str:
     except (KeyboardInterrupt, EOFError):
         raise KeyboardInterrupt
 
+# ─── Input classifier ──────────────────────────────────────────────────────────
+
+_COMMAND_TOKENS = {"q", "n", "?", "prefer:"}
+_REDIRECT_PHRASES = {"your job", "try harder", "you missed", "not good enough", "do better", "try again"}
+_CORRECTION_STARTERS = ("no,", "no ", "not ", "i meant", "actually", "wait,", "wrong,")
+_SCOPE_PHRASES = {"the others", "all of them", "the rest", "show me more", "what about the",
+                  "what about groups", "and the other", "the remaining"}
+
+
+def _classify_input(text: str) -> str:
+    """
+    Classify interactive input into one of six types.
+    Pattern-match first (instant). LLM fallback only for genuine ambiguity.
+    Returns: 'command' | 'casual' | 'correction' | 'redirect' | 'scope_expansion' | 'followup'
+    """
+    t = text.strip()
+    if not t:
+        return "followup"
+    tl = t.lower()
+
+    # command — exact tokens or numeric/prefixed patterns
+    if tl in _COMMAND_TOKENS:
+        return "command"
+    if len(tl) <= 3 and (tl.isdigit() or (len(tl) >= 2 and tl[0] in "os" and tl[1:].isdigit())):
+        return "command"
+    if tl.startswith("prefer:"):
+        return "command"
+
+    # redirect — contains redirect phrase (check before casual to avoid false casual match)
+    if any(phrase in tl for phrase in _REDIRECT_PHRASES):
+        return "redirect"
+
+    # casual — short, no question mark, starts with casual word
+    words = tl.split()
+    if len(words) <= 4 and "?" not in tl and words[0] in _CASUAL_STARTERS:
+        return "casual"
+    if tl.rstrip("!").strip() in _CASUAL_STARTERS:
+        return "casual"
+
+    # correction — starts with correction phrase
+    if any(tl.startswith(s) for s in _CORRECTION_STARTERS):
+        return "correction"
+
+    # scope_expansion — contains scope phrase
+    if any(phrase in tl for phrase in _SCOPE_PHRASES):
+        return "scope_expansion"
+
+    # Default: followup (safe, sends to existing _handle_followup)
+    return "followup"
+
+
 _CASUAL_STARTERS = {
     "that's", "thats", "wow", "amazing", "awesome", "great", "nice", "cool",
     "interesting", "fascinating", "incredible", "unbelievable", "haha", "lol",
