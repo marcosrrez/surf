@@ -1461,3 +1461,41 @@ class TestScopeExpansion:
         new_results, new_context, new_meta = result
         assert isinstance(new_results, list)
         assert isinstance(new_meta, _SearchMeta)
+
+
+class TestClassifyAndDispatch:
+    def _make_meta(self):
+        from surf import _SearchMeta
+        return _SearchMeta("test query", ["test query"], 5, "current", None)
+
+    def test_command_q_returns_break(self):
+        from surf import _classify_and_dispatch
+        meta = self._make_meta()
+        _, _, _, should_break = _classify_and_dispatch("q", [], meta, "")
+        assert should_break is True
+
+    def test_casual_no_search(self):
+        from surf import _classify_and_dispatch
+        meta = self._make_meta()
+        with patch("surf._conversational_reply") as mock_reply:
+            new_results, _, _, should_break = _classify_and_dispatch("thanks", [], meta, "")
+        mock_reply.assert_called_once_with("casual", meta=meta, user_text="thanks")
+        assert should_break is False
+
+    def test_redirect_calls_followup(self):
+        from surf import _classify_and_dispatch, _SearchMeta
+        meta = self._make_meta()
+        fake_meta = self._make_meta()
+        with patch("surf._conversational_reply"), \
+             patch("surf._handle_followup", return_value=([], "", fake_meta)) as mock_fup, \
+             patch("surf.print_results"):
+            _classify_and_dispatch("that's your job", [], meta, "")
+        mock_fup.assert_called_once()
+
+    def test_scope_expansion_calls_fanout(self):
+        from surf import _classify_and_dispatch, _SearchMeta
+        meta = self._make_meta()
+        fake_meta = self._make_meta()
+        with patch("surf._handle_scope_expansion", return_value=([], "", fake_meta)) as mock_fanout:
+            _classify_and_dispatch("what about the others", [], meta, "")
+        mock_fanout.assert_called_once()

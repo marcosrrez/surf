@@ -2983,79 +2983,130 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
 
     return results, response
 
+def _classify_and_dispatch(
+    choice: str,
+    results: list[dict],
+    meta: "_SearchMeta | None",
+    context: str,
+) -> "tuple[list[dict], str, _SearchMeta | None, bool]":
+    """
+    Classify user input and dispatch to the right handler.
+    Returns (new_results, new_context, new_meta, should_break).
+    """
+    cl = choice.lower().strip()
+    input_type = _classify_input(choice)
+
+    # ── commands ──────────────────────────────────────────────────────────────
+    if input_type == "command":
+        if cl == "q":
+            return results, context, meta, True
+        if cl == "n":
+            query = surf_input("New search: ")
+            if query:
+                search_flow(query)
+            return results, context, meta, True
+        if cl == "?":
+            n = len(results)
+            print()
+            print("\033[1msurf commands\033[0m")
+            print(f"  \033[33m1–{n}\033[0m      read article in terminal")
+            print(f"  \033[33ms1–s{n}\033[0m    quick AI summary")
+            print(f"  \033[33mo1–o{n}\033[0m    open in browser")
+            print(f"  \033[33mn\033[0m        new search")
+            print(f"  \033[33mq\033[0m        quit")
+            print(f"  \033[33m↵\033[0m        follow-up question")
+            print()
+            return results, context, meta, False
+        if cl.startswith("o") and cl[1:].isdigit():
+            idx = int(cl[1:]) - 1
+            if 0 <= idx < len(results):
+                record_feature_use("browser")
+                open_in_browser(results[idx]["url"])
+            return results, context, meta, False
+        if cl.startswith("s") and cl[1:].isdigit():
+            idx = int(cl[1:]) - 1
+            if 0 <= idx < len(results):
+                record_feature_use("summary")
+                read_flow(results[idx]["url"], interactive=True, ai_summary=True)
+                return results, context, meta, True
+            return results, context, meta, False
+        if cl.isdigit():
+            idx = int(cl) - 1
+            if 0 <= idx < len(results):
+                record_feature_use("reader")
+                read_flow(results[idx]["url"], interactive=True, ai_summary=False)
+                return results, context, meta, True
+            return results, context, meta, False
+        if choice.lower().startswith("prefer:"):
+            _handle_inline_preference(choice[7:].strip())
+            return results, context, meta, False
+        # dead_end options r/t from _conversational_reply
+        if cl == "r" and results:
+            read_flow(results[0]["url"], interactive=True, ai_summary=True)
+            return results, context, meta, True
+        if cl == "t":
+            query = surf_input("New search: ")
+            if query:
+                search_flow(query)
+            return results, context, meta, True
+        return results, context, meta, False
+
+    # ── casual ────────────────────────────────────────────────────────────────
+    if input_type == "casual":
+        _conversational_reply("casual", meta=meta, user_text=choice)
+        return results, context, meta, False
+
+    # ── correction ────────────────────────────────────────────────────────────
+    if input_type == "correction":
+        _conversational_reply("correction", meta=meta, user_text=choice)
+        record_feature_use("followup")
+        new_results, new_context, new_meta = _handle_followup(choice, context="")
+        if new_results:
+            print_results(new_results)
+        return new_results or results, new_context, new_meta, False
+
+    # ── redirect ──────────────────────────────────────────────────────────────
+    if input_type == "redirect":
+        _conversational_reply("redirect", meta=meta, user_text=choice)
+        record_feature_use("followup")
+        broader = (meta.original_query if meta else choice) + " comprehensive overview all"
+        new_results, new_context, new_meta = _handle_followup(broader, context="")
+        if new_results:
+            print_results(new_results)
+        return new_results or results, new_context, new_meta, False
+
+    # ── scope_expansion ───────────────────────────────────────────────────────
+    if input_type == "scope_expansion":
+        record_feature_use("followup")
+        new_results, new_context, new_meta = _handle_scope_expansion(choice, meta=meta, context=context)
+        return new_results or results, new_context, new_meta, False
+
+    # ── followup (default) ────────────────────────────────────────────────────
+    record_feature_use("followup")
+    if format_session_context():
+        record_feature_use("session")
+    new_results, new_context, new_meta = _handle_followup(choice, context=context)
+    if new_results:
+        print_results(new_results)
+        results = new_results
+    return results, new_context or context, new_meta, False
+
+
 def _handle_results_input(results: list[dict], context: str = "", meta: "_SearchMeta | None" = None) -> None:
-    """Wait for user to pick a result or ask a follow-up question."""
+    """Wait for user input and dispatch via _classify_and_dispatch."""
     while True:
         try:
             choice = surf_input("ask a follow-up or type a new search")
         except (KeyboardInterrupt, EOFError):
             break
 
-        _add_to_history(choice)
-        cl = choice.lower()
+        if not choice.strip():
+            continue
 
-        if cl == "q":
+        _add_to_history(choice)
+        results, context, meta, should_break = _classify_and_dispatch(choice, results, meta, context)
+        if should_break:
             break
-        elif cl == "?":
-            n = len(results)
-            print()
-            print("\033[1msurf commands\033[0m")
-            print(f"  \033[33m1–{n}\033[0m      read article in terminal (reader mode — no browser)")
-            print(f"  \033[33ms1–s{n}\033[0m    quick AI summary of the article")
-            print(f"  \033[33mo1–o{n}\033[0m    open in browser  (or cmd+click any link)")
-            print(f"  \033[33mn\033[0m        new search")
-            print(f"  \033[33mq\033[0m        quit")
-            print(f"  \033[33m↵\033[0m        ask a follow-up — surf remembers this session")
-            print()
-            print("\033[90m  surf 'query' --json | jq .tldr   pipes into scripts")
-            print(f"  surf --usage                       shows Claude monthly spend")
-            print(f"  surf prefer                        view your research profile")
-            print(f"  prefer: [anything]                 tune surf to how you think\033[0m")
-            print()
-        elif cl == "n":
-            query = surf_input("New search: ")
-            if query:
-                search_flow(query)
-            break
-        elif cl.startswith("o") and cl[1:].isdigit():
-            idx = int(cl[1:]) - 1
-            if 0 <= idx < len(results):
-                record_feature_use("browser")
-                open_in_browser(results[idx]["url"])
-            else:
-                print(f"\033[90mPick o1-o{len(results)}\033[0m")
-        elif cl.startswith("s") and cl[1:].isdigit():
-            idx = int(cl[1:]) - 1
-            if 0 <= idx < len(results):
-                record_feature_use("summary")
-                read_flow(results[idx]["url"], interactive=True, ai_summary=True)
-                break
-            else:
-                print(f"\033[90mPick s1-s{len(results)}\033[0m")
-        elif cl.isdigit():
-            idx = int(cl) - 1
-            if 0 <= idx < len(results):
-                record_feature_use("reader")
-                read_flow(results[idx]["url"], interactive=True, ai_summary=False)
-                break
-            else:
-                print(f"\033[90mPick 1-{len(results)}\033[0m")
-        elif choice.lower().startswith("prefer:"):
-            _handle_inline_preference(choice[7:].strip())
-        elif choice.strip():
-            if _is_casual_input(choice):
-                print(f"\033[90m(surf is a search tool — try asking a question or picking a result)\033[0m")
-            else:
-                record_feature_use("followup")
-                # If there's session context from prior searches, this is a session-memory use
-                if format_session_context():
-                    record_feature_use("session")
-                new_results, new_response = _handle_followup(choice, context=context)
-                if new_results:
-                    print_results(new_results)
-                    results = new_results
-                context = new_response
-        # empty input: loop again
 
 def _contextualize_query(question: str, context: str) -> str:
     """
@@ -3086,7 +3137,7 @@ def _contextualize_query(question: str, context: str) -> str:
         return question
 
 
-def _handle_followup(question: str, context: str = "") -> tuple[list[dict], str]:
+def _handle_followup(question: str, context: str = "") -> "tuple[list[dict], str, _SearchMeta]":
     """
     Answer a follow-up question using web search + article context.
     Returns (search_results, response) so callers can show the results list.
@@ -3183,7 +3234,14 @@ def _handle_followup(question: str, context: str = "") -> tuple[list[dict], str]
     _ec = _elapsed_color(_elapsed)
     print(f"{_ec}{GLYPH_META} {_elapsed:.1f}s{C_RESET}{spend}")
     _print_linked_sources(search_results)
-    return search_results, response
+    _fup_meta = _SearchMeta(
+        original_query=question,
+        queries_tried=[search_query],
+        result_count=len(search_results),
+        confidence_tier=tier,
+        coverage_note=None,
+    )
+    return search_results, response, _fup_meta
 
 def parse_related_topics(text: str) -> list[str]:
     """Extract numbered lines from the 'Related:' section of Groq's response."""
@@ -3377,7 +3435,7 @@ def _handle_article_input(url: str, related: list[str], context: str) -> None:
             if _is_casual_input(choice):
                 print(f"\033[90m(surf is a search tool — try asking a question or picking a result)\033[0m")
             else:
-                new_results, new_response = _handle_followup(choice, context=context)
+                new_results, new_response, _ = _handle_followup(choice, context=context)
                 if new_results:
                     print_results(new_results)
                 context = new_response
@@ -3688,7 +3746,14 @@ def _handle_scope_expansion(
         # Fallback: treat as a redirect and do a broader search
         _conversational_reply("redirect", meta=meta, user_text=user_text)
         new_results, new_response, new_meta = _handle_followup(user_text, context=context)
-        return new_results, new_response, new_meta
+        fallback_meta = _SearchMeta(
+            original_query=user_text,
+            queries_tried=[user_text],
+            result_count=len(new_results),
+            confidence_tier="current",
+            coverage_note=None,
+        )
+        return new_results, new_response, fallback_meta
 
     count = len(items)
     print(f"\033[90mOn it — checking {count} {'item' if count == 1 else 'items'} now.\033[0m\n")
