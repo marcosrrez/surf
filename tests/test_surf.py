@@ -1499,3 +1499,56 @@ class TestClassifyAndDispatch:
         with patch("surf._handle_scope_expansion", return_value=([], "", fake_meta)) as mock_fanout:
             _classify_and_dispatch("what about the others", [], meta, "")
         mock_fanout.assert_called_once()
+
+
+class TestConversationalIntegration:
+    def test_thats_your_job_classified_as_redirect(self):
+        from surf import _classify_input
+        assert _classify_input("that's your job") == "redirect"
+
+    def test_what_about_others_classified_as_scope_expansion(self):
+        from surf import _classify_input
+        assert _classify_input("what about the other groups") == "scope_expansion"
+
+    def test_no_i_meant_classified_as_correction(self):
+        from surf import _classify_input
+        assert _classify_input("no, I meant 2022") == "correction"
+
+    def test_thanks_classified_as_casual(self):
+        from surf import _classify_input
+        assert _classify_input("thanks") == "casual"
+
+    def test_followup_question_classified_as_followup(self):
+        from surf import _classify_input
+        assert _classify_input("why did Brazil draw?") == "followup"
+
+    def test_search_meta_survives_followup(self):
+        from surf import _handle_followup
+        fake_results = [{"title": "T", "url": "http://x.com", "domain": "x.com", "snippet": "s" * 60}] * 3
+        with patch("surf.ddg_search", return_value=fake_results), \
+             patch("surf._filter_results", side_effect=lambda x, **kw: x), \
+             patch("surf._identify_entity_type", return_value=None), \
+             patch("surf._contextualize_query", return_value="test question"), \
+             patch("surf._deep_research", return_value=("", [])), \
+             patch("surf.stream_ai", return_value=iter(["Test response"])), \
+             patch("surf.stream_to_terminal", return_value="Test response"), \
+             patch("surf.print_header"), patch("surf.print_status"), patch("surf.clear_status"), \
+             patch("surf.vspace"), patch("surf.print_results"), \
+             patch("surf._print_linked_sources"), \
+             patch("surf._claude_budget_ok", return_value=False):
+            results, response, meta = _handle_followup("test question")
+        assert meta.original_query == "test question"
+        assert meta.result_count >= 0
+
+    def test_classify_and_dispatch_followup_returns_four_tuple(self):
+        from surf import _classify_and_dispatch, _SearchMeta
+        meta = _SearchMeta("test", ["test"], 3, "current", None)
+        fake_meta = _SearchMeta("test question", ["test question"], 3, "current", None)
+        with patch("surf._handle_followup", return_value=([], "response", fake_meta)), \
+             patch("surf.format_session_context", return_value=""), \
+             patch("surf.print_results"):
+            new_results, new_context, new_meta, should_break = _classify_and_dispatch(
+                "why did that happen?", [], meta, ""
+            )
+        assert should_break is False
+        assert new_meta is not None
