@@ -3597,7 +3597,8 @@ _COMMAND_TOKENS = {"q", "n", "?", "prefer:"}
 _REDIRECT_PHRASES = {"your job", "try harder", "you missed", "not good enough", "do better", "try again"}
 _CORRECTION_STARTERS = ("no,", "no ", "not ", "i meant", "actually", "wait,", "wrong,")
 _SCOPE_PHRASES = {"the others", "all of them", "the rest", "show me more", "what about the",
-                  "what about groups", "and the other", "the remaining"}
+                  "what about all", "what about groups", "and the other", "the remaining",
+                  "other groups", "other teams", "other countries"}
 
 
 def _classify_input(text: str) -> str:
