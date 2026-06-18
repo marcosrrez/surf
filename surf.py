@@ -3491,6 +3491,8 @@ def _classify_and_dispatch(
                 record_feature_use("reader")
                 read_flow(results[idx]["url"], interactive=True, ai_summary=False)
                 return results, context, meta, True
+            if results:
+                print(f"\033[90mPick 1-{len(results)} to read an article\033[0m")
             return results, context, meta, False
         if choice.lower().startswith("prefer:"):
             _handle_inline_preference(choice[7:].strip())
@@ -3848,6 +3850,7 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
 
 def _handle_article_input(url: str, related: list[str], context: str) -> None:
     """Interactive prompt after reading an article."""
+    followup_results: list[dict] = []
     while True:
         try:
             choice = surf_input("ask a follow-up or open a related topic")
@@ -3876,14 +3879,19 @@ def _handle_article_input(url: str, related: list[str], context: str) -> None:
             open_in_browser(url)
         elif cl.isdigit():
             idx = int(cl) - 1
-            if 0 <= idx < len(related):
+            if followup_results and 0 <= idx < len(followup_results):
+                read_flow(followup_results[idx]["url"], interactive=True, ai_summary=False)
+                break
+            elif 0 <= idx < len(related):
                 topic = related[idx]
                 if len(topic) > 2 and topic[1] in ".)":
                     topic = topic[2:].strip()
                 search_flow(topic)
                 break
             else:
-                print(f"\033[90mPick 1-{len(related)} or type a follow-up question\033[0m")
+                n = len(followup_results) if followup_results else len(related)
+                if n:
+                    print(f"\033[90mPick 1-{n} or type a follow-up question\033[0m")
         elif choice.lower().startswith("prefer:"):
             _handle_inline_preference(choice[7:].strip())
         elif choice.strip():
@@ -3893,6 +3901,7 @@ def _handle_article_input(url: str, related: list[str], context: str) -> None:
                 new_results, new_response, _ = _handle_followup(choice, context=context)
                 if new_results:
                     print_results(new_results)
+                    followup_results = new_results
                 context = new_response
         # empty input: loop again
 
