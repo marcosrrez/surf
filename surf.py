@@ -2502,6 +2502,20 @@ def _handle_weather(query: str) -> "tuple[str, list[dict], bool] | None":
     return response, sources, False
 
 
+# ─── Handler stubs (replaced by real implementations in Tasks 1–3) ─────────────
+
+def _handle_financial(query: str) -> "tuple[str, list[dict], bool] | None":
+    return None
+
+
+def _handle_academic(query: str) -> "tuple[str, list[dict], bool] | None":
+    return None
+
+
+def _handle_factual(query: str) -> "tuple[str, list[dict], bool] | None":
+    return None
+
+
 def _classify_tier(query: str) -> str:
     """Classify query into search tier using heuristics. Returns snippet | current | research | contested."""
     q = " " + query.lower() + " "
