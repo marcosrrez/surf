@@ -3881,6 +3881,9 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
         summary = summary.split("▸ TL;DR")[-1].strip()
     save_session_entry(url, "url", _truncate_at_sentence(summary, 300))
 
+    # Save article read to Obsidian vault
+    _obs_note_path = _obsidian_save(url, summary, [], session_id=_obsidian_session_id())
+
     if json_output:
         _output_json(url, response, [domain], url=url, intent="read")
         return response
@@ -3890,18 +3893,19 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
     # Answer → Metadata/Action zone: SPACE_XS then divider
     vspace(ZONE_SPACING[("answer", "metadata")])
     print_divider()
+    _vault_hint = "   vault: v" if _obsidian_vault_path() else ""
     if related:
-        print(f"{C_META}  related: 1{GLYPH_RANGE}{len(related)}   open {domain_link}: o   follow-up: ?   quit: q{C_RESET}")
+        print(f"{C_META}  related: 1{GLYPH_RANGE}{len(related)}   open {domain_link}: o   follow-up: ?   quit: q{_vault_hint}{C_RESET}")
     else:
-        print(f"{C_META}  open {domain_link}: o   follow-up: ?   new search: n   quit: q{C_RESET}")
+        print(f"{C_META}  open {domain_link}: o   follow-up: ?   new search: n   quit: q{_vault_hint}{C_RESET}")
     vspace(ZONE_SPACING[("actions", "prompt")])
 
     if interactive:
-        _handle_article_input(url, related, response)
+        _handle_article_input(url, related, response, note_path=_obs_note_path)
 
     return response
 
-def _handle_article_input(url: str, related: list[str], context: str) -> None:
+def _handle_article_input(url: str, related: list[str], context: str, note_path: str | None = None) -> None:
     """Interactive prompt after reading an article."""
     followup_results: list[dict] = []
     while True:
@@ -3930,6 +3934,16 @@ def _handle_article_input(url: str, related: list[str], context: str) -> None:
             break
         elif cl == "o":
             open_in_browser(url)
+        elif cl == "v":
+            vault = _obsidian_vault_path()
+            if vault and note_path and os.path.exists(note_path):
+                import urllib.parse
+                vault_name = os.path.basename(vault.rstrip("/").rstrip(os.sep))
+                rel = os.path.relpath(note_path, vault)
+                obs_url = f"obsidian://open?vault={urllib.parse.quote(vault_name)}&file={urllib.parse.quote(rel)}"
+                open_in_browser(obs_url)
+            else:
+                print(f"\033[90m(no vault configured — run 'surf setup' to add one)\033[0m")
         elif cl.isdigit():
             idx = int(cl) - 1
             if followup_results and 0 <= idx < len(followup_results):
@@ -3947,6 +3961,17 @@ def _handle_article_input(url: str, related: list[str], context: str) -> None:
                     print(f"\033[90mPick 1-{n} or type a follow-up question\033[0m")
         elif choice.lower().startswith("prefer:"):
             _handle_inline_preference(choice[7:].strip())
+        elif choice.lower().startswith("/note ") or choice.lower().startswith("/note\t"):
+            note_text = choice[6:].strip()
+            if not note_text:
+                print(f"\033[90mUsage: /note <your thought>\033[0m")
+            elif note_path and os.path.exists(note_path):
+                ts = time.strftime("%H:%M")
+                with open(note_path, "a", encoding="utf-8") as _nf:
+                    _nf.write(f"\n\n> 📝 {ts}: {note_text}\n")
+                print(f"\033[90m↳ note saved to vault\033[0m")
+            else:
+                print(f"\033[90m(no vault note active — configure OBSIDIAN_VAULT in ~/.config/surf/config)\033[0m")
         elif choice.strip():
             if _is_casual_input(choice):
                 print(f"\033[90m(surf is a search tool — try asking a question or picking a result)\033[0m")
