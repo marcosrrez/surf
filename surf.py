@@ -259,6 +259,171 @@ def format_session_context() -> str:
         lines.append(f"  [{e['type']}] {e['query']}: {e['summary']}")
     return "\n".join(lines)
 
+# ─── Named threads (persistent research) ────────────────────────────────────
+
+THREAD_DIR = os.path.expanduser("~/.config/surf/threads")
+
+
+def _thread_path(name: str) -> str:
+    """Return file path for a named thread."""
+    safe_name = re.sub(r"[^a-z0-9-]", "", name.lower().strip().replace(" ", "-"))
+    return os.path.join(THREAD_DIR, f"{safe_name}.json")
+
+
+def _load_thread(name: str) -> dict:
+    """Load a named thread. Returns empty structure if thread doesn't exist."""
+    path = _thread_path(name)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"name": name, "entries": [], "created_at": 0, "updated_at": 0}
+
+
+def _save_thread_entry(name: str, query: str, response: str, sources: list[dict]) -> None:
+    """Append an entry to a named thread."""
+    os.makedirs(THREAD_DIR, exist_ok=True)
+    thread = _load_thread(name)
+    now = int(time.time())
+    if not thread["created_at"]:
+        thread["created_at"] = now
+    thread["updated_at"] = now
+    thread["name"] = name
+    thread["entries"].append({
+        "query": query,
+        "response": _truncate_at_sentence(response, 2000),
+        "sources": [{"domain": s.get("domain", ""), "url": s.get("url", "")} for s in sources[:5]],
+        "timestamp": now,
+    })
+    path = _thread_path(name)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(thread, f, ensure_ascii=False, indent=2)
+
+
+def _list_threads() -> list[dict]:
+    """List all named threads with metadata."""
+    if not os.path.isdir(THREAD_DIR):
+        return []
+    threads = []
+    for fname in os.listdir(THREAD_DIR):
+        if not fname.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(THREAD_DIR, fname), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            threads.append({
+                "name": data.get("name", fname.replace(".json", "")),
+                "entries": len(data.get("entries", [])),
+                "updated_at": data.get("updated_at", 0),
+            })
+        except Exception:
+            continue
+    return sorted(threads, key=lambda t: t["updated_at"], reverse=True)
+
+
+# ─── Export ──────────────────────────────────────────────────────────────────
+
+def _export_thread(name: str) -> str:
+    """Export a named thread as a markdown document."""
+    thread = _load_thread(name)
+    if not thread["entries"]:
+        return ""
+
+    from datetime import datetime
+    lines = [f"# {name}\n"]
+    created = datetime.fromtimestamp(thread["created_at"]).strftime("%Y-%m-%d")
+    updated = datetime.fromtimestamp(thread["updated_at"]).strftime("%Y-%m-%d")
+    lines.append(f"*Research thread {GLYPH_SEPARATOR} {len(thread['entries'])} entries {GLYPH_SEPARATOR} {created} to {updated}*\n")
+    lines.append("---\n")
+
+    for entry in thread["entries"]:
+        ts = datetime.fromtimestamp(entry["timestamp"]).strftime("%Y-%m-%d %H:%M")
+        lines.append(f"## {entry['query']}\n")
+        lines.append(f"*{ts}*\n")
+        lines.append(f"{entry['response']}\n")
+        if entry.get("sources"):
+            lines.append("\n**Sources:**")
+            for s in entry["sources"]:
+                url = s.get("url", "")
+                domain = s.get("domain", "")
+                if url:
+                    lines.append(f"- [{domain}]({url})")
+                elif domain:
+                    lines.append(f"- {domain}")
+            lines.append("")
+        lines.append("---\n")
+
+    return "\n".join(lines)
+
+
+def _export_session() -> str:
+    """Export current session as a markdown document."""
+    entries = load_session()
+    if not entries:
+        return ""
+
+    from datetime import datetime
+    lines = ["# Surf Session\n"]
+    first_ts = datetime.fromtimestamp(entries[0]["timestamp"]).strftime("%Y-%m-%d %H:%M")
+    lines.append(f"*{len(entries)} searches starting {first_ts}*\n")
+    lines.append("---\n")
+
+    for entry in entries:
+        ts = datetime.fromtimestamp(entry["timestamp"]).strftime("%H:%M")
+        lines.append(f"## {entry['query']}\n")
+        lines.append(f"*{ts} {GLYPH_SEPARATOR} {entry['type']}*\n")
+        lines.append(f"{entry['summary']}\n")
+        lines.append("---\n")
+
+    return "\n".join(lines)
+
+
+# ─── Custom source lists ────────────────────────────────────────────────────
+
+_SOURCE_SHORTNAMES = {
+    "arxiv": "arxiv.org", "pubmed": "pubmed.ncbi.nlm.nih.gov",
+    "nature": "nature.com", "science": "science.org",
+    "reuters": "reuters.com", "bbc": "bbc.com",
+    "nyt": "nytimes.com", "nytimes": "nytimes.com",
+    "wapo": "washingtonpost.com", "wsj": "wsj.com",
+    "bloomberg": "bloomberg.com", "techcrunch": "techcrunch.com",
+    "ars": "arstechnica.com", "verge": "theverge.com",
+    "wired": "wired.com", "wikipedia": "en.wikipedia.org",
+    "wiki": "en.wikipedia.org", "github": "github.com",
+    "stackoverflow": "stackoverflow.com", "so": "stackoverflow.com",
+    "hn": "news.ycombinator.com", "guardian": "theguardian.com",
+    "apnews": "apnews.com", "ap": "apnews.com", "cnn": "cnn.com",
+}
+
+
+def _parse_source_list(spec: str) -> list[str]:
+    """Parse a comma-separated source list into domain suffixes."""
+    if not spec or not spec.strip():
+        return []
+    domains = []
+    for part in spec.split(","):
+        part = part.strip().lower()
+        if not part:
+            continue
+        if part in _SOURCE_SHORTNAMES:
+            domains.append(_SOURCE_SHORTNAMES[part])
+        elif "." in part:
+            domains.append(part)
+        else:
+            domains.append(f"{part}.com")
+    return domains
+
+
+def _filter_by_sources(results: list[dict], allowed_domains: list[str]) -> list[dict]:
+    """Filter search results to only include results from allowed domains."""
+    if not allowed_domains:
+        return results
+    return [
+        r for r in results
+        if any(allowed in r.get("domain", "") for allowed in allowed_domains)
+    ]
+
+
 # ─── Search snapshots (diff mode) ────────────────────────────────────────────
 
 SNAPSHOT_DIR = os.path.expanduser("~/.config/surf/snapshots")
@@ -3428,7 +3593,7 @@ def _search_with_retry(query: str, entity_type: str | None = None, search_fn: ca
     return best, queries_tried
 
 
-def search_flow(query: str, interactive: bool = True, json_output: bool = False, deep: bool = False) -> tuple[list[dict], str]:
+def search_flow(query: str, interactive: bool = True, json_output: bool = False, deep: bool = False, source_filter: list[str] | None = None) -> tuple[list[dict], str]:
     """
     Run the search flow: search → AI synthesis → display results.
     Returns (results, response_text).
@@ -3508,6 +3673,16 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
     # results are about a different entity, retry with quoted exact-match search
     results, ddg_query = _fix_entity_mismatch(query, results, ddg_query,
                                                evaluative_context=eval_context)
+
+    # Custom source filter: restrict to specified domains
+    if source_filter:
+        results = _filter_by_sources(results, source_filter)
+        if not results:
+            site_query = query + " " + " ".join(f"site:{d}" for d in source_filter[:3])
+            try:
+                results = _filter_results(_get_search_backend()(site_query, num_results=8))
+            except Exception:
+                pass
 
     if not results:
         print("\033[90mNo results found.\033[0m")
@@ -5747,6 +5922,10 @@ def main():
                         help="Compare results against last search for this query")
     parser.add_argument("--shell", action="store_true",
                         help="Include recent shell history as context")
+    parser.add_argument("-t", "--thread", type=str, default=None, metavar="NAME",
+                        help="Save search to a named research thread")
+    parser.add_argument("--sources", type=str, default=None, metavar="LIST",
+                        help="Restrict to sources (e.g. 'arxiv,nature,bbc')")
     parser.add_argument("setup", nargs="?", const="setup",
                         help="Interactive configuration wizard")
     args = parser.parse_args()
@@ -5766,6 +5945,52 @@ def main():
         else:
             # surf prefer — display current preferences
             _display_preferences()
+        return
+
+    # surf threads — list all named threads
+    if args.input and args.input[0] == "threads":
+        threads = _list_threads()
+        if not threads:
+            print(f"{C_META}No threads yet. Start one: surf -t 'gpu-research' your query{C_RESET}")
+            return
+        print(f"\n{C_BRAND}{GLYPH_HEADER_FILL * 2} Research Threads {GLYPH_HEADER_FILL * 50}{C_RESET}\n")
+        from datetime import datetime
+        for t in threads:
+            updated = datetime.fromtimestamp(t["updated_at"]).strftime("%Y-%m-%d %H:%M") if t["updated_at"] else "never"
+            print(f"  {C_INTERACTIVE}{t['name']}{C_RESET}  {C_META}{t['entries']} entries {GLYPH_SEPARATOR} updated {updated}{C_RESET}")
+        print(f"\n{C_META}Resume: surf -t '{threads[0]['name']}' your follow-up query{C_RESET}\n")
+        return
+
+    # surf export [--thread name] [--file path]
+    if args.input and args.input[0] == "export":
+        export_thread = None
+        export_file = None
+        i = 1
+        while i < len(args.input):
+            if args.input[i] == "--thread" and i + 1 < len(args.input):
+                export_thread = args.input[i + 1]
+                i += 2
+            elif args.input[i] == "--file" and i + 1 < len(args.input):
+                export_file = args.input[i + 1]
+                i += 2
+            else:
+                i += 1
+
+        if export_thread:
+            content = _export_thread(export_thread)
+        else:
+            content = _export_session()
+
+        if not content:
+            print(f"{C_META}Nothing to export. Start a search or use --thread name.{C_RESET}")
+            return
+
+        if export_file:
+            with open(export_file, "w", encoding="utf-8") as f:
+                f.write(content)
+            print(f"{C_META}{GLYPH_META} exported to {export_file}{C_RESET}")
+        else:
+            print(content)
         return
 
     # First-run: detect new users and route through the interstitial
@@ -5973,7 +6198,23 @@ def main():
             open_in_browser(intent["open_url"])
 
         else:
-            search_flow(query, interactive=not json_output, json_output=json_output, deep=args.deep)
+            # --thread: inject thread context before search
+            if args.thread:
+                thread = _load_thread(args.thread)
+                if thread["entries"]:
+                    thread_ctx = f"Continuing research thread '{args.thread}':\n"
+                    for e in thread["entries"][-5:]:
+                        thread_ctx += f"  [{e.get('query', '')}]: {e['response'][:200]}\n"
+                    save_session_entry(f"[thread:{args.thread}]", "thread_context", thread_ctx)
+                    print(f"{C_META}{GLYPH_META} thread \"{args.thread}\" {GLYPH_SEPARATOR} {len(thread['entries'])} prior entries{C_RESET}")
+
+            source_filter = _parse_source_list(args.sources) if args.sources else None
+            results, response = search_flow(query, interactive=not json_output, json_output=json_output, deep=args.deep, source_filter=source_filter)
+
+            # --thread: save results to thread
+            if args.thread and response:
+                _save_thread_entry(args.thread, query, response, results)
+                print(f"{C_META}{GLYPH_META} saved to thread \"{args.thread}\"{C_RESET}")
 
     except KeyboardInterrupt:
         print("\n\033[90mbye\033[0m")

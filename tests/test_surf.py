@@ -2328,3 +2328,129 @@ class TestDiffMode:
         parser.add_argument("--diff", action="store_true")
         args = parser.parse_args(["--diff", "NVDA", "stock"])
         assert args.diff is True
+
+
+# ─── Task 8: Named Threads ──────────────────────────────────────────────────
+
+class TestNamedThreads:
+    def test_thread_path_returns_path(self):
+        from surf import _thread_path
+        path = _thread_path("gpu-research")
+        assert "gpu-research" in path
+        assert path.endswith(".json")
+
+    def test_save_and_load_thread(self, tmp_path):
+        from surf import _save_thread_entry, _load_thread
+        with patch("surf.THREAD_DIR", str(tmp_path)):
+            _save_thread_entry("test-thread", "what is a GPU", "A GPU is a graphics processor.", [{"domain": "nvidia.com"}])
+            thread = _load_thread("test-thread")
+            assert thread["name"] == "test-thread"
+            assert len(thread["entries"]) == 1
+            assert "GPU" in thread["entries"][0]["query"]
+
+    def test_save_appends_to_existing_thread(self, tmp_path):
+        from surf import _save_thread_entry, _load_thread
+        with patch("surf.THREAD_DIR", str(tmp_path)):
+            _save_thread_entry("test-thread", "query 1", "response 1", [])
+            _save_thread_entry("test-thread", "query 2", "response 2", [])
+            thread = _load_thread("test-thread")
+            assert len(thread["entries"]) == 2
+
+    def test_load_nonexistent_thread_returns_empty(self, tmp_path):
+        from surf import _load_thread
+        with patch("surf.THREAD_DIR", str(tmp_path)):
+            thread = _load_thread("nonexistent")
+            assert thread["entries"] == []
+
+    def test_list_threads(self, tmp_path):
+        from surf import _save_thread_entry, _list_threads
+        with patch("surf.THREAD_DIR", str(tmp_path)):
+            _save_thread_entry("alpha", "q1", "r1", [])
+            _save_thread_entry("beta", "q2", "r2", [])
+            threads = _list_threads()
+            assert len(threads) == 2
+            names = {t["name"] for t in threads}
+            assert "alpha" in names
+            assert "beta" in names
+
+
+# ─── Task 9: Export ──────────────────────────────────────────────────────────
+
+class TestExport:
+    def test_export_thread_markdown(self, tmp_path):
+        from surf import _export_thread, _save_thread_entry
+        with patch("surf.THREAD_DIR", str(tmp_path)):
+            _save_thread_entry("test-export", "what is AI", "AI is artificial intelligence.", [{"domain": "wiki.org", "url": "https://wiki.org"}])
+            _save_thread_entry("test-export", "history of AI", "AI started in the 1950s.", [{"domain": "stanford.edu", "url": "https://stanford.edu"}])
+            result = _export_thread("test-export")
+            assert "# test-export" in result
+            assert "what is AI" in result
+            assert "AI is artificial intelligence" in result
+            assert "wiki.org" in result
+
+    def test_export_thread_nonexistent(self, tmp_path):
+        from surf import _export_thread
+        with patch("surf.THREAD_DIR", str(tmp_path)):
+            result = _export_thread("nonexistent")
+            assert result == ""
+
+    def test_export_session_returns_markdown(self):
+        from surf import _export_session
+        entries = [
+            {"query": "test q", "type": "search", "summary": "test answer", "timestamp": 1718000000},
+        ]
+        with patch("surf.load_session", return_value=entries):
+            result = _export_session()
+            assert "test q" in result
+            assert "test answer" in result
+
+    def test_export_session_empty(self):
+        from surf import _export_session
+        with patch("surf.load_session", return_value=[]):
+            result = _export_session()
+            assert result == ""
+
+
+# ─── Task 10: Custom Sources ────────────────────────────────────────────────
+
+class TestCustomSources:
+    def test_parse_source_list_basic(self):
+        from surf import _parse_source_list
+        result = _parse_source_list("arxiv,nature,science")
+        assert "arxiv.org" in result
+        assert "nature.com" in result
+        assert "science.org" in result
+
+    def test_parse_source_list_full_domains(self):
+        from surf import _parse_source_list
+        result = _parse_source_list("nytimes.com,bbc.com")
+        assert "nytimes.com" in result
+        assert "bbc.com" in result
+
+    def test_parse_source_list_mixed(self):
+        from surf import _parse_source_list
+        result = _parse_source_list("arxiv,bbc.com,reuters")
+        assert "arxiv.org" in result
+        assert "bbc.com" in result
+        assert "reuters.com" in result
+
+    def test_parse_source_list_empty(self):
+        from surf import _parse_source_list
+        result = _parse_source_list("")
+        assert result == []
+
+    def test_filter_by_sources(self):
+        from surf import _filter_by_sources
+        results = [
+            {"domain": "arxiv.org", "title": "Paper", "url": "https://arxiv.org/1", "snippet": "A"},
+            {"domain": "reddit.com", "title": "Post", "url": "https://reddit.com/1", "snippet": "B"},
+            {"domain": "nature.com", "title": "Article", "url": "https://nature.com/1", "snippet": "C"},
+        ]
+        filtered = _filter_by_sources(results, ["arxiv.org", "nature.com"])
+        assert len(filtered) == 2
+        assert all(r["domain"] in ("arxiv.org", "nature.com") for r in filtered)
+
+    def test_filter_by_sources_empty_allows_all(self):
+        from surf import _filter_by_sources
+        results = [{"domain": "anything.com"}]
+        assert _filter_by_sources(results, []) == results
