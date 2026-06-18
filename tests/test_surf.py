@@ -1643,3 +1643,103 @@ class TestFinancialHandler:
         assert result is not None
         response, _, _ = result
         assert GLYPH_DOWN in response
+
+
+class TestAcademicHandler:
+    def _pubmed_search_json(self):
+        return {"esearchresult": {"idlist": ["12345678"]}}
+
+    def _pubmed_summary_json(self):
+        return {"result": {
+            "12345678": {
+                "uid": "12345678",
+                "title": "Safety of mRNA COVID-19 Vaccines",
+                "authors": [{"name": "Polack F"}, {"name": "Thomas S"}],
+                "pubdate": "2023",
+                "fulljournalname": "New England Journal of Medicine",
+                "elocationid": "10.1056/test",
+            }
+        }}
+
+    def _arxiv_xml(self):
+        return """<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+<entry>
+  <title>mRNA Vaccine Mechanism Study</title>
+  <author><name>Smith J</name></author>
+  <published>2023-01-15T00:00:00Z</published>
+  <summary>We present findings on mRNA vaccine mechanisms. Strong immune response observed.</summary>
+  <id>http://arxiv.org/abs/2301.00001v1</id>
+</entry>
+</feed>"""
+
+    def _mock_all_requests(self, mock_get):
+        def side_effect(url, **kwargs):
+            r = MagicMock()
+            r.raise_for_status = MagicMock()
+            if "esearch" in url:
+                r.json.return_value = self._pubmed_search_json()
+            elif "esummary" in url:
+                r.json.return_value = self._pubmed_summary_json()
+            elif "efetch" in url:
+                r.text = "Abstract text. In this randomized trial, the vaccine showed 95% efficacy."
+            else:
+                r.text = self._arxiv_xml()
+            return r
+        mock_get.side_effect = side_effect
+
+    def test_strip_latex_removes_inline_math(self):
+        from surf import _strip_latex
+        assert "$" not in _strip_latex("We prove $\\mathcal{O}(n^2)$ is tight.")
+        assert "\\mathcal" not in _strip_latex("We prove $\\mathcal{O}(n^2)$ is tight.")
+
+    def test_strip_latex_removes_commands(self):
+        from surf import _strip_latex
+        cleaned = _strip_latex("Using \\text{Theorem 1} we show")
+        assert "\\text" not in cleaned
+
+    def test_handle_academic_returns_none_on_failure(self):
+        from surf import _handle_academic
+        with patch("surf.requests.get", side_effect=Exception("timeout")), \
+             patch("surf.print_status"), patch("surf.clear_status"):
+            result = _handle_academic("what does the research say about mRNA vaccines")
+        assert result is None
+
+    def test_handle_academic_returns_tuple_on_success(self):
+        from surf import _handle_academic
+        with patch("surf.requests.get") as mock_get, \
+             patch("surf.print_status"), patch("surf.clear_status"), \
+             patch("surf.print_header"):
+            self._mock_all_requests(mock_get)
+            result = _handle_academic("peer reviewed studies on aspirin")
+        assert result is not None
+        response, sources, streaming = result
+        assert isinstance(response, str)
+        assert len(sources) > 0
+
+    def test_handle_academic_returns_none_when_no_results(self):
+        from surf import _handle_academic
+        def side_effect(url, **kwargs):
+            r = MagicMock()
+            r.raise_for_status = MagicMock()
+            if "esearch" in url:
+                r.json.return_value = {"esearchresult": {"idlist": []}}
+            else:
+                r.text = """<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>"""
+            return r
+        with patch("surf.requests.get", side_effect=side_effect), \
+             patch("surf.print_status"), patch("surf.clear_status"):
+            result = _handle_academic("zzz nonexistent topic xyzxyz")
+        assert result is None
+
+    def test_source_tag_in_paper_card(self):
+        from surf import _handle_academic
+        with patch("surf.requests.get") as mock_get, \
+             patch("surf.print_status"), patch("surf.clear_status"), \
+             patch("surf.print_header"):
+            self._mock_all_requests(mock_get)
+            result = _handle_academic("peer reviewed studies on aspirin")
+        assert result is not None
+        response, sources, _ = result
+        source_domains = [s["domain"] for s in sources]
+        assert any("pubmed" in d or "arxiv" in d for d in source_domains)

@@ -2638,8 +2638,195 @@ def _handle_financial(query: str) -> "tuple[str, list[dict], bool] | None":
         return None
 
 
+def _strip_latex(text: str) -> str:
+    """Remove LaTeX math and commands from arXiv abstract text."""
+    text = re.sub(r'\$\$[^$]+\$\$', '[math]', text)
+    text = re.sub(r'\$[^$]+\$', '[math]', text)
+    text = re.sub(r'\\[a-zA-Z]+\{[^}]*\}', '', text)
+    text = re.sub(r'\\[a-zA-Z]+', '', text)
+    text = re.sub(r'[{}]', '', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _search_pubmed(query: str, max_results: int = 4) -> "list[dict]":
+    """Search PubMed; return list of {title, authors, year, journal, abstract, link, source}."""
+    base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+    search_r = requests.get(f"{base}/esearch.fcgi",
+                            params={"db": "pubmed", "term": query, "retmode": "json",
+                                    "retmax": max_results, "sort": "relevance"},
+                            headers=HEADERS, timeout=3.0)
+    search_r.raise_for_status()
+    ids = search_r.json().get("esearchresult", {}).get("idlist", [])
+    if not ids:
+        return []
+
+    summary_r = requests.get(f"{base}/esummary.fcgi",
+                             params={"db": "pubmed", "id": ",".join(ids), "retmode": "json"},
+                             headers=HEADERS, timeout=3.0)
+    summary_r.raise_for_status()
+    summaries = summary_r.json().get("result", {})
+
+    abstract_r = requests.get(f"{base}/efetch.fcgi",
+                              params={"db": "pubmed", "id": ",".join(ids),
+                                      "rettype": "abstract", "retmode": "text"},
+                              headers=HEADERS, timeout=3.0)
+    abstract_r.raise_for_status()
+    abstract_text = abstract_r.text
+
+    paper_blocks = [b.strip() for b in abstract_text.split("\n\n\n") if b.strip()]
+    papers = []
+    for pmid in ids:
+        s = summaries.get(pmid, {})
+        if not s or s.get("error"):
+            continue
+        authors = s.get("authors", [])
+        author_str = authors[0]["name"] if authors else "Unknown"
+        if len(authors) > 1:
+            author_str += " et al."
+        papers.append({
+            "title": s.get("title", "").rstrip("."),
+            "authors": author_str,
+            "year": s.get("pubdate", "")[:4],
+            "journal": s.get("fulljournalname", s.get("source", "")),
+            "abstract": "",
+            "link": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+            "source": "PubMed",
+            "pmid": pmid,
+        })
+
+    for paper in papers:
+        for block in paper_blocks:
+            if paper["pmid"] in block:
+                lines = block.split("\n")
+                abstract_lines = []
+                in_abstract = False
+                for line in lines:
+                    if line.startswith("Abstract") or line.startswith("ABSTRACT"):
+                        in_abstract = True
+                        continue
+                    if in_abstract and line.strip():
+                        abstract_lines.append(line.strip())
+                if abstract_lines:
+                    paper["abstract"] = " ".join(abstract_lines)[:500]
+                break
+
+    return papers
+
+
+def _search_arxiv(query: str, max_results: int = 3) -> "list[dict]":
+    """Search arXiv; strips LaTeX from abstracts."""
+    import xml.etree.ElementTree as ET
+    r = requests.get(
+        "https://export.arxiv.org/api/query",
+        params={"search_query": f"all:{query}", "start": 0,
+                "max_results": max_results, "sortBy": "relevance"},
+        headers=HEADERS, timeout=3.0,
+    )
+    r.raise_for_status()
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    root = ET.fromstring(r.text)
+    papers = []
+    for entry in root.findall("atom:entry", ns):
+        title_el = entry.find("atom:title", ns)
+        summary_el = entry.find("atom:summary", ns)
+        published_el = entry.find("atom:published", ns)
+        id_el = entry.find("atom:id", ns)
+        authors = entry.findall("atom:author", ns)
+
+        title = title_el.text.strip() if title_el is not None else ""
+        abstract = _strip_latex(summary_el.text.strip() if summary_el is not None else "")
+        year = published_el.text[:4] if published_el is not None else ""
+        link = id_el.text.strip() if id_el is not None else ""
+        author_names = [a.find("atom:name", ns).text for a in authors
+                        if a.find("atom:name", ns) is not None]
+        author_str = author_names[0] if author_names else "Unknown"
+        if len(author_names) > 1:
+            author_str += " et al."
+        if title:
+            papers.append({
+                "title": title, "authors": author_str, "year": year,
+                "journal": "arXiv preprint", "abstract": abstract[:500],
+                "link": link, "source": "arXiv",
+            })
+    return papers
+
+
 def _handle_academic(query: str) -> "tuple[str, list[dict], bool] | None":
-    return None
+    """Search PubMed + arXiv in parallel; return paper cards or Claude synthesis."""
+    print_status("↳ searching PubMed + arXiv...")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        pubmed_future = executor.submit(_search_pubmed, query)
+        arxiv_future = executor.submit(_search_arxiv, query)
+        papers = []
+        for future in as_completed([pubmed_future, arxiv_future], timeout=4.0):
+            try:
+                papers.extend(future.result())
+            except Exception:
+                pass
+
+    clear_status()
+
+    if not papers:
+        return None
+
+    seen_titles: set = set()
+    unique_papers = []
+    for p in papers:
+        key = p["title"].lower()[:50]
+        if key not in seen_titles:
+            seen_titles.add(key)
+            unique_papers.append(p)
+    papers = unique_papers[:5]
+
+    synthesis_signals = {"what does", "summarize", "explain", "overview",
+                         "what is known", "evidence", "consensus"}
+    is_complex = any(s in query.lower() for s in synthesis_signals)
+
+    sources = [{
+        "title": f"{p['title'][:60]} — {p['authors']}, {p['year']}",
+        "url": p["link"],
+        "domain": "pubmed.ncbi.nlm.nih.gov" if p["source"] == "PubMed" else "arxiv.org",
+        "snippet": p.get("abstract", "")[:120],
+    } for p in papers]
+
+    header_q = f"{query[:50]}… — Academic" if len(query) > 50 else f"{query} — Academic"
+    print_header(header_q,
+                 f"{C_META}{GLYPH_META} PubMed · arXiv · {len(papers)} result{'s' if len(papers) != 1 else ''}{C_RESET}",
+                 zone_after=SPACE_SM)
+
+    if is_complex:
+        abstracts_text = "\n\n".join(
+            f"[{p['authors']}, {p['year']}] {p['title']}\n{p.get('abstract', '')}"
+            for p in papers
+        )
+        prefs = _read_preferences()
+        prompt = f"Query: {query}\n\nPeer-reviewed papers:\n{abstracts_text}"
+        if prefs:
+            prompt = f"[User preferences]\n{prefs}\n[End preferences]\n\n{prompt}"
+        stream = stream_ai(prompt, SEARCH_SYSTEM_ACADEMIC)
+        stream_to_terminal(stream, results=sources)
+        return None, sources, True
+
+    lines = [
+        f"{C_ANSWER_MARK}{GLYPH_TLDR} TL;DR  Found {len(papers)} peer-reviewed result{'s' if len(papers) != 1 else ''}.{C_RESET}",
+        "",
+    ]
+    for i, p in enumerate(papers, 1):
+        abstract_preview = p.get("abstract", "")
+        if abstract_preview:
+            words = abstract_preview.split()
+            if len(words) > 40:
+                abstract_preview = " ".join(words[:40]) + f"{GLYPH_ELLIPSIS}"
+            lines.append(f" {C_INTERACTIVE}{i}{C_RESET}  {p['title'][:_term_width()-6]}")
+            lines.append(f"     {C_META}{p['authors']}, {p['year']} · {p['journal']}  [{p['source']}]{C_RESET}")
+            lines.append(f"     {C_META}{abstract_preview}{C_RESET}")
+        else:
+            lines.append(f" {C_INTERACTIVE}{i}{C_RESET}  {p['title'][:_term_width()-6]}")
+            lines.append(f"     {C_META}{p['authors']}, {p['year']} · {p['journal']}  [{p['source']}]{C_RESET}")
+        lines.append("")
+
+    return "\n".join(lines), sources, False
 
 
 def _handle_factual(query: str) -> "tuple[str, list[dict], bool] | None":
