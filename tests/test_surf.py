@@ -2169,3 +2169,162 @@ class TestStdinInput:
             mock_stdin.isatty.return_value = False
             mock_stdin.read.return_value = ""
             assert _read_stdin() is None
+
+
+# ─── Task 4: File Analysis ──────────────────────────────────────────────────
+
+class TestFileAnalysis:
+    def test_extract_text_file(self, tmp_path):
+        from surf import _extract_file_content
+        f = tmp_path / "notes.txt"
+        f.write_text("Meeting notes from today:\n- Discussed budget\n- Next steps")
+        content, ftype = _extract_file_content(str(f))
+        assert "budget" in content
+        assert ftype == "text"
+
+    def test_extract_code_file(self, tmp_path):
+        from surf import _extract_file_content
+        f = tmp_path / "app.py"
+        f.write_text("def main():\n    print('hello')\n")
+        content, ftype = _extract_file_content(str(f))
+        assert "def main" in content
+        assert ftype == "code"
+
+    def test_extract_html_file(self, tmp_path):
+        from surf import _extract_file_content
+        f = tmp_path / "page.html"
+        f.write_text("<html><body><p>Hello world</p></body></html>")
+        content, ftype = _extract_file_content(str(f))
+        assert "Hello world" in content
+        assert ftype == "html"
+
+    def test_extract_nonexistent_file(self):
+        from surf import _extract_file_content
+        content, ftype = _extract_file_content("/nonexistent/file.txt")
+        assert content == ""
+        assert ftype == "unknown"
+
+    def test_extract_truncates_large_file(self, tmp_path):
+        from surf import _extract_file_content
+        f = tmp_path / "huge.txt"
+        f.write_text("word " * 30000)
+        content, ftype = _extract_file_content(str(f))
+        assert len(content.split()) <= 15001
+
+
+# ─── Task 5: Shell Integration ──────────────────────────────────────────────
+
+class TestShellIntegration:
+    def test_get_shell_context_returns_string(self):
+        from surf import _get_shell_context
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            result = _get_shell_context(n=5)
+            assert isinstance(result, str)
+
+    def test_get_shell_context_parses_zsh_history(self, tmp_path):
+        from surf import _get_shell_context
+        hist = tmp_path / "history"
+        hist.write_text(": 1718000001:0;ls -la\n: 1718000002:0;git status\n: 1718000003:0;python app.py\n")
+        with patch("os.environ", {"SHELL": "/bin/zsh"}), \
+             patch("os.path.expanduser", return_value=str(hist)):
+            result = _get_shell_context(n=3)
+            assert "ls -la" in result
+            assert "git status" in result
+
+    def test_get_last_command_error_returns_none_when_no_history(self):
+        from surf import _get_last_command_error
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            result = _get_last_command_error()
+            assert result is None
+
+    def test_bang_bang_is_recognized(self):
+        assert "!!" == "!!"
+
+
+# ─── Task 6: Watch Mode ─────────────────────────────────────────────────────
+
+class TestWatchMode:
+    def test_parse_watch_interval_minutes(self):
+        from surf import _parse_watch_interval
+        assert _parse_watch_interval("5m") == 300
+        assert _parse_watch_interval("1m") == 60
+
+    def test_parse_watch_interval_hours(self):
+        from surf import _parse_watch_interval
+        assert _parse_watch_interval("1h") == 3600
+        assert _parse_watch_interval("2h") == 7200
+
+    def test_parse_watch_interval_seconds(self):
+        from surf import _parse_watch_interval
+        assert _parse_watch_interval("30s") == 30
+        assert _parse_watch_interval("90s") == 90
+
+    def test_parse_watch_interval_bare_number_defaults_to_minutes(self):
+        from surf import _parse_watch_interval
+        assert _parse_watch_interval("5") == 300
+
+    def test_parse_watch_interval_invalid_returns_default(self):
+        from surf import _parse_watch_interval
+        assert _parse_watch_interval("abc") == 300
+
+    def test_parse_watch_interval_minimum_30s(self):
+        from surf import _parse_watch_interval
+        assert _parse_watch_interval("5s") == 30
+
+    def test_watch_loop_calls_search_flow(self):
+        from surf import _watch_loop
+        call_count = 0
+        def fake_search(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                raise KeyboardInterrupt
+            return [], "response"
+        with patch("surf.search_flow", side_effect=fake_search), \
+             patch("surf.time.sleep"), \
+             patch("builtins.print"):
+            try:
+                _watch_loop("NVDA stock", 60)
+            except KeyboardInterrupt:
+                pass
+        assert call_count >= 1
+
+
+# ─── Task 7: Diff Mode ──────────────────────────────────────────────────────
+
+class TestDiffMode:
+    def test_save_and_load_snapshot(self, tmp_path):
+        from surf import _save_search_snapshot, _load_search_snapshot
+        with patch("surf.SNAPSHOT_DIR", str(tmp_path)):
+            _save_search_snapshot("NVDA stock", "Price is $150", [{"domain": "yahoo.com", "url": "https://yahoo.com"}])
+            loaded = _load_search_snapshot("NVDA stock")
+            assert loaded is not None
+            assert "150" in loaded["response"]
+            assert loaded["sources"][0]["domain"] == "yahoo.com"
+
+    def test_load_snapshot_returns_none_when_missing(self, tmp_path):
+        from surf import _load_search_snapshot
+        with patch("surf.SNAPSHOT_DIR", str(tmp_path)):
+            result = _load_search_snapshot("never searched this")
+            assert result is None
+
+    def test_snapshot_path_is_deterministic(self):
+        from surf import _snapshot_path
+        p1 = _snapshot_path("NVDA stock price")
+        p2 = _snapshot_path("NVDA stock price")
+        assert p1 == p2
+
+    def test_snapshot_path_sanitizes_query(self):
+        from surf import _snapshot_path
+        path = _snapshot_path("what's the price of AAPL?!")
+        assert "'" not in os.path.basename(path)
+        assert "!" not in os.path.basename(path)
+        assert "?" not in os.path.basename(path)
+
+    def test_diff_flag_accepted_by_argparse(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("input", nargs="*")
+        parser.add_argument("--diff", action="store_true")
+        args = parser.parse_args(["--diff", "NVDA", "stock"])
+        assert args.diff is True

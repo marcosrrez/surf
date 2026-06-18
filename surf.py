@@ -259,6 +259,42 @@ def format_session_context() -> str:
         lines.append(f"  [{e['type']}] {e['query']}: {e['summary']}")
     return "\n".join(lines)
 
+# ─── Search snapshots (diff mode) ────────────────────────────────────────────
+
+SNAPSHOT_DIR = os.path.expanduser("~/.config/surf/snapshots")
+
+
+def _snapshot_path(query: str) -> str:
+    """Return path for a search snapshot file."""
+    slug = re.sub(r"[^a-z0-9-]", "", query.lower().strip().replace(" ", "-"))
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")[:60]
+    return os.path.join(SNAPSHOT_DIR, f"{slug}.json")
+
+
+def _save_search_snapshot(query: str, response: str, sources: list[dict]) -> None:
+    """Save a search result as a snapshot for later diff comparison."""
+    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+    path = _snapshot_path(query)
+    data = {
+        "query": query,
+        "response": response,
+        "sources": [{"domain": s.get("domain", ""), "url": s.get("url", "")} for s in sources[:10]],
+        "timestamp": int(time.time()),
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def _load_search_snapshot(query: str) -> dict | None:
+    """Load a previous search snapshot. Returns None if no snapshot exists."""
+    path = _snapshot_path(query)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
 def load_config() -> dict:
     """Load key=value pairs from ~/.config/surf/config"""
     config = {}
@@ -3685,6 +3721,8 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
         ),
     )
 
+    _save_search_snapshot(query, response, results)
+
     if interactive:
         _handle_results_input(results, context=response, meta=_meta)
 
@@ -4106,6 +4144,71 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
         _handle_article_input(url, related, response, note_path=_obs_note_path)
 
     return response
+
+# ─── Local file analysis ─────────────────────────────────────────────────────
+
+_CODE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".rb", ".java",
+    ".c", ".cpp", ".h", ".hpp", ".cs", ".swift", ".kt", ".sh", ".bash",
+    ".zsh", ".yaml", ".yml", ".toml", ".json", ".xml", ".sql", ".r",
+    ".lua", ".pl", ".php", ".scala", ".zig", ".nim", ".ex", ".exs",
+    ".vue", ".svelte", ".css", ".scss", ".less",
+}
+_FILE_MAX_WORDS = 15000
+
+
+def _extract_file_content(path: str) -> tuple[str, str]:
+    """Extract text content from a local file. Returns (content, file_type)."""
+    if not os.path.isfile(path):
+        return "", "unknown"
+
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext == ".pdf":
+        try:
+            from pdfminer.high_level import extract_text as pdf_extract
+            content = pdf_extract(path)
+            if content and content.strip():
+                words = content.split()
+                if len(words) > _FILE_MAX_WORDS:
+                    content = " ".join(words[:_FILE_MAX_WORDS]) + "\n[truncated]"
+                return content.strip(), "pdf"
+        except ImportError:
+            pass
+        except Exception:
+            pass
+        return "", "pdf"
+
+    if ext in (".html", ".htm"):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                html = f.read()
+            _, text = extract_text(html, max_words=_FILE_MAX_WORDS, return_title=True)
+            return text, "html"
+        except Exception:
+            return "", "html"
+
+    if ext in _CODE_EXTENSIONS:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            words = content.split()
+            if len(words) > _FILE_MAX_WORDS:
+                content = " ".join(words[:_FILE_MAX_WORDS]) + "\n[truncated]"
+            return content, "code"
+        except Exception:
+            return "", "code"
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        words = content.split()
+        if len(words) > _FILE_MAX_WORDS:
+            content = " ".join(words[:_FILE_MAX_WORDS]) + "\n[truncated]"
+        return content, "text"
+    except Exception:
+        return "", "unknown"
+
 
 def _handle_article_input(url: str, related: list[str], context: str, note_path: str | None = None) -> None:
     """Interactive prompt after reading an article."""
@@ -5482,6 +5585,129 @@ def _run_setup() -> None:
     print()
 
 
+# ─── Shell integration ───────────────────────────────────────────────────────
+
+def _get_shell_context(n: int = 10) -> str:
+    """Return last N commands from shell history."""
+    shell = os.environ.get("SHELL", "/bin/zsh")
+    if "zsh" in shell:
+        hist_path = os.path.expanduser("~/.zsh_history")
+    elif "bash" in shell:
+        hist_path = os.path.expanduser("~/.bash_history")
+    else:
+        return ""
+
+    try:
+        with open(hist_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except (FileNotFoundError, PermissionError):
+        return ""
+
+    commands = []
+    for line in lines[-n * 2:]:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(": ") and ";" in line:
+            cmd = line.split(";", 1)[1]
+        else:
+            cmd = line
+        if cmd and not cmd.startswith("#"):
+            commands.append(cmd)
+
+    return "\n".join(commands[-n:])
+
+
+def _get_last_command_error() -> str | None:
+    """Get the last command from shell history. Returns command string or None."""
+    context = _get_shell_context(n=1)
+    return context.strip() if context.strip() else None
+
+
+# ─── Watch mode ──────────────────────────────────────────────────────────────
+
+def _parse_watch_interval(spec: str) -> int:
+    """Parse interval like '5m', '1h', '30s', or bare '5' (minutes). Returns seconds, minimum 30."""
+    spec = spec.strip().lower()
+    try:
+        if spec.endswith("h"):
+            seconds = int(spec[:-1]) * 3600
+        elif spec.endswith("m"):
+            seconds = int(spec[:-1]) * 60
+        elif spec.endswith("s"):
+            seconds = int(spec[:-1])
+        elif spec.isdigit():
+            seconds = int(spec) * 60
+        else:
+            seconds = 300
+    except (ValueError, IndexError):
+        seconds = 300
+    return max(30, seconds)
+
+
+def _watch_loop(query: str, interval_seconds: int, json_output: bool = False) -> None:
+    """Run search_flow on a loop. Ctrl+C to exit."""
+    iteration = 0
+    while True:
+        iteration += 1
+        now = time.strftime("%H:%M")
+        width = _term_width()
+        if iteration > 1:
+            vspace(SPACE_SM)
+            print(f"{C_META}{GLYPH_DIVIDER * width}{C_RESET}")
+            print(f"{C_META}{GLYPH_META} refreshed {GLYPH_SEPARATOR} {now}{C_RESET}")
+            vspace(SPACE_XS)
+        try:
+            search_flow(query, interactive=False, json_output=json_output)
+        except Exception as e:
+            print(f"{C_ERROR}Watch error: {e}{C_RESET}")
+        time.sleep(interval_seconds)
+
+
+# ─── Diff mode ───────────────────────────────────────────────────────────────
+
+def _diff_search(query: str, json_output: bool = False) -> None:
+    """Run a new search and compare against the last snapshot."""
+    old = _load_search_snapshot(query)
+    results, response = search_flow(query, interactive=False, json_output=False)
+
+    _save_search_snapshot(query, response, results)
+
+    if not old:
+        print(f"\n{C_META}{GLYPH_META} first search for this query — snapshot saved for next diff{C_RESET}")
+        return
+
+    from datetime import datetime
+    old_time = datetime.fromtimestamp(old["timestamp"]).strftime("%Y-%m-%d %H:%M")
+
+    old_domains = {s.get("domain", "") for s in old.get("sources", [])}
+    new_domains = {r.get("domain", "") for r in results}
+    added = new_domains - old_domains
+    removed = old_domains - new_domains
+
+    print_header(f"Changes since {old_time}", f"{query[:40]}")
+    source_delta = []
+    if added:
+        source_delta.append(f"+{len(added)} new")
+    if removed:
+        source_delta.append(f"-{len(removed)} removed")
+    if source_delta:
+        print(f"{C_META}{GLYPH_META} sources: {', '.join(source_delta)}{C_RESET}")
+    print()
+
+    diff_prompt = (
+        f"Compare these two search results for \"{query}\" and describe ONLY what changed.\n\n"
+        f"PREVIOUS ({old_time}):\n{old['response'][:3000]}\n\n"
+        f"CURRENT (now):\n{response[:3000]}\n\n"
+        "List specific changes: new facts, updated numbers, removed information. "
+        "If nothing meaningful changed, say so. Be concise."
+    )
+    stream = stream_ai(diff_prompt, "You compare search results and highlight changes. Be specific and concise.", max_tokens=1000)
+    stream_to_terminal(stream)
+
+
+# ─── Stdin ───────────────────────────────────────────────────────────────────
+
 _STDIN_MAX_CHARS = 20000
 
 
@@ -5515,6 +5741,12 @@ def main():
                         help="Full configuration wizard (advanced)")
     parser.add_argument("--deep", action="store_true",
                         help="Multi-step deep search — searches, reads, identifies gaps, repeats")
+    parser.add_argument("--watch", type=str, default=None, metavar="INTERVAL",
+                        help="Repeat search on interval (e.g. 5m, 1h, 30s)")
+    parser.add_argument("--diff", action="store_true",
+                        help="Compare results against last search for this query")
+    parser.add_argument("--shell", action="store_true",
+                        help="Include recent shell history as context")
     parser.add_argument("setup", nargs="?", const="setup",
                         help="Interactive configuration wizard")
     args = parser.parse_args()
@@ -5593,6 +5825,68 @@ def main():
         if json_output:
             _output_json(query or "piped input", response, [], intent="pipe")
         return
+
+    # Shell integration: surf !! → search for last command's error
+    if query.strip() == "!!":
+        last_cmd = _get_last_command_error()
+        if last_cmd:
+            query = f"explain this shell error: {last_cmd}"
+            print(f"{C_META}{GLYPH_META} expanding !! {GLYPH_SEPARATOR} \"{last_cmd}\"{C_RESET}")
+        else:
+            print(f"{C_ERROR}Could not read shell history{C_RESET}")
+            return
+
+    # --shell: include shell history as context
+    if args.shell:
+        shell_ctx = _get_shell_context(n=15)
+        if shell_ctx:
+            query = query + f"\n\n[Recent shell history for context:\n{shell_ctx}\n]"
+
+    # --watch: periodic refresh
+    if args.watch:
+        interval = _parse_watch_interval(args.watch)
+        interval_label = args.watch if any(c.isalpha() for c in args.watch) else f"{args.watch}m"
+        print(f"{C_META}{GLYPH_META} watching \"{query[:50]}\" every {interval_label} {GLYPH_SEPARATOR} Ctrl+C to stop{C_RESET}")
+        vspace(SPACE_XS)
+        try:
+            _watch_loop(query, interval, json_output=json_output)
+        except KeyboardInterrupt:
+            print(f"\n{C_META}watch stopped{C_RESET}")
+        return
+
+    # --diff: compare against last search
+    if args.diff:
+        _diff_search(query, json_output=json_output)
+        return
+
+    # Local file analysis: surf ./file.py "what does this do"
+    # Guard: only treat input as a file path if it contains / or . (not bare words)
+    potential_path = args.input[0] if args.input else ""
+    _looks_like_path = "/" in potential_path or "." in potential_path
+    resolved_path = os.path.expanduser(potential_path) if _looks_like_path else ""
+    if _looks_like_path and not os.path.isabs(resolved_path):
+        resolved_path = os.path.abspath(resolved_path)
+    if _looks_like_path and os.path.isfile(resolved_path):
+        content, ftype = _extract_file_content(resolved_path)
+        if content:
+            file_query = " ".join(args.input[1:]) if len(args.input) > 1 else f"explain this {ftype} file"
+            basename = os.path.basename(resolved_path)
+            print_header(f"{basename}", f"{ftype} {GLYPH_SEPARATOR} {len(content.split())} words")
+            prefs = _read_preferences()
+            preamble = f"[User preferences]\n{prefs}\n[End preferences]\n\n" if prefs else ""
+            system = (
+                f"You are analyzing a local {ftype} file named '{basename}'. "
+                "Start with ▸ TL;DR then provide your analysis. Be specific about what the file contains and does."
+            )
+            prompt = f"{preamble}User asks: {file_query}\n\nFile content ({basename}):\n{content[:10000]}"
+            stream = stream_ai(prompt, system, max_tokens=2048)
+            response = stream_to_terminal(stream)
+            save_session_entry(basename, "file", _truncate_at_sentence(response, 300))
+            _obsidian_save(file_query, response, [], session_id=_obsidian_session_id())
+            record_feature_use("file")
+            if json_output:
+                _output_json(file_query, response, [basename], intent="file")
+            return
 
     try:
         session_entries = load_session()
