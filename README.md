@@ -5,26 +5,49 @@
 ```
 surf what is the UEFA Champions League final venue 2026
 surf latest news on AI
-surf marcosgutierrezcounseling.com
-surf how do black holes form
+surf AAPL stock price
+surf peer reviewed studies on omega-3 and cognition
+surf weather in Austin tomorrow
 ```
 
-![surf demo](docs/product/demo.gif)
+```
+$ surf who won the 2026 Champions League final
+
+▸ TL;DR  Real Madrid defeated Manchester City 2–1 in the 2026 Champions League
+  final, held at the Metropolitano Stadium in Madrid on May 30, 2026.
+  Vinicius Jr. scored the winner in the 87th minute.
+
+  The match was settled in the final minutes after City leveled through
+  Erling Haaland's 71st minute header. Madrid's victory marks their 16th
+  European Cup title...
+
+  ─────────────────────────────────────────────────────
+  1  Champions League 2026 Final — UEFA.com
+  2  Real Madrid vs Man City match report — BBC Sport
+  3  Vinicius Jr. winner — The Athletic
+
+  read in terminal: 1–3   open in browser: o1–o3   summary: s1–s3
+
+› who scored first?
+▸ TL;DR  Rodrygo opened the scoring for Real Madrid in the 34th minute...
+```
 
 ---
 
 ## Why
 
-Every AI search tool today asks you to stop and switch contexts — open a browser, navigate, wait, copy, go back.
+Every AI search tool today asks you to stop and switch contexts — open a browser, navigate, wait, copy, paste back.
 
 Developers live in terminals. surf brings the answer to where you already are. It searches the web, synthesizes a clean TL;DR, and streams it live — then shows numbered sources you can read in-terminal or open in a browser with `cmd+click`.
 
-**What makes surf different from Claude Code, Perplexity, or Google:**
-- Terminal-native — lives in your shell, composes with pipes and scripts
-- No account or subscription required (bring your own API key)
-- Privacy — nothing stored, nothing sent except your query
-- Automation-ready — `surf "CVEs for nginx 1.24" >> digest.txt`
-- Open source
+**What makes surf different:**
+- **Terminal-native** — lives in your shell, composes with pipes and scripts
+- **Conversational** — follow-up questions carry full context; push back ("try harder"), correct ("no, I meant 2022"), or expand scope ("what about the other groups?") and surf adapts
+- **Specialized APIs** — live weather forecasts, real-time stock prices, PubMed/arXiv academic papers, and Wikipedia facts bypass DDG and go straight to authoritative sources
+- **No account or subscription** — bring your own API key; free fallbacks (Groq, Gemini) kick in automatically
+- **Privacy** — nothing stored except your session context; no tracking
+- **Automation-ready** — `surf "CVEs for nginx 1.24" --json >> digest.txt`
+- **Open source**
 
 ---
 
@@ -33,24 +56,23 @@ Developers live in terminals. surf brings the answer to where you already are. I
 ```bash
 git clone https://github.com/marcosrrez/surf ~/surf
 cd ~/surf
+bash install.sh
+```
+
+`install.sh` creates the virtualenv, installs dependencies, and puts `surf` in `/usr/local/bin`. Then:
+
+```bash
+surf what is a black hole
+```
+
+**Manual setup (if you prefer):**
+
+```bash
+git clone https://github.com/marcosrrez/surf ~/surf
+cd ~/surf
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-```
-
-Then add surf to your PATH — add this to `~/.zshrc` or `~/.bashrc`:
-
-```bash
-alias surf='~/surf/.venv/bin/python3 ~/surf/surf.py'
-```
-
-Or install the shell wrapper:
-
-```bash
-sudo tee /usr/local/bin/surf > /dev/null << 'EOF'
-#!/bin/zsh
-exec ~/surf/.venv/bin/python3 ~/surf/surf.py "$@"
-EOF
-sudo chmod +x /usr/local/bin/surf
+alias surf='~/surf/.venv/bin/python3 ~/surf/surf.py'  # add to ~/.zshrc
 ```
 
 ---
@@ -72,19 +94,25 @@ CEREBRAS_API_KEY=your-key-here    # inference.cerebras.ai — free
 EOF
 ```
 
-**Provider chain:** Claude → Groq → Cerebras → Gemini. surf automatically falls back through the chain if a provider hits its rate limit or your Claude budget runs out.
+**Provider chain:** Claude → Groq → Cerebras → Gemini → local Ollama. surf automatically falls back through the chain if a provider hits its rate limit or your Claude budget runs out.
 
 ---
 
 ## Usage
 
 ```bash
-# Search
+# Search anything
 surf what causes inflation
 surf latest news on Iran
 surf who invented the telephone
 
-# Read any URL (full article, stripped to text — like Brave reader mode)
+# Specialized queries — surf routes these to dedicated APIs
+surf weather in Denver tomorrow          # Open-Meteo live forecast
+surf NVDA stock price                    # Yahoo Finance real-time data
+surf peer reviewed studies on statins    # PubMed + arXiv search
+surf what is the Coriolis effect         # Wikipedia entity lookup
+
+# Read any URL (full article, stripped to text)
 surf https://arstechnica.com/science/2026/...
 surf en.wikipedia.org/wiki/Black_hole
 
@@ -103,11 +131,21 @@ After a search result appears:
 | Key | Action |
 |-----|--------|
 | `1–9` | Read full article in terminal (reader mode) |
-| `s1–s9` | AI summary of article |
+| `s1–s9` | Quick AI summary |
 | `o1–o9` | Open in browser |
-| Type a question | Follow-up search with session context |
+| Type a question | Follow-up with full session context |
 | `n` | New search |
 | `q` | Quit |
+
+**Conversational inputs surf understands:**
+
+| What you type | What surf does |
+|---------------|----------------|
+| "why did that happen?" | Follow-up using previous context |
+| "no, I meant 2022" | Discards prior context, fresh search |
+| "try harder" / "you missed some" | Broadens the search, tries again |
+| "what about groups A through G?" | Parallel searches, streamed as they land |
+| "cool" / "thanks" | Brief acknowledgment, stays in session |
 
 Source links and domain names are **cmd+clickable** in any modern terminal (iTerm2, Terminal.app, Warp).
 
@@ -116,36 +154,51 @@ Source links and domain names are **cmd+clickable** in any modern terminal (iTer
 ## Examples
 
 ```bash
-# Research session with follow-ups
-$ surf Pam Bondi attorney general
-▸ TL;DR  Pam Bondi served as the 37th Attorney General of the United States...
-[sources]
-› Who replaced her?
-▸ TL;DR  Todd Blanche was named Acting Attorney General after Bondi's removal...
+# Deep research session
+$ surf CRISPR off-target effects clinical trials
+▸ TL;DR  Off-target edits remain the central safety concern in CRISPR clinical
+  trials. A 2025 systematic review of 14 trials found off-target rates below 0.1%
+  in therapeutic doses, but longitudinal data beyond 36 months is still sparse...
+[sources from PubMed + arXiv]
 
-# Pipe output to a file
+› what do critics say about the safety data?
+▸ TL;DR  The main critique is that current detection methods (GUIDE-seq, CIRCLE-seq)
+  only catch edits at known off-target sites — novel sites may go undetected...
+
+# Scope expansion (runs 6 searches in parallel, streams results as they land)
+› what about the other major gene editing approaches?
+↳ searching: "zinc finger nucleases clinical safety 2025"...
+↳ searching: "TALENs off-target clinical trial data"...
+↳ searching: "base editing prime editing safety comparison"...
+
+# Pipe output
 $ surf "WWDC 2026 announcements" --json > wwdc.json
 
 # Check your Claude budget
 $ surf --usage
-Claude usage — 2026-05
-  ███░░░░░░░░░░░░░░░░░  $0.18 / $1.00
-  450 queries  ·  $0.82 remaining
-  ≈ 2,050 queries left this month
+Claude usage — 2026-06
+  ████░░░░░░░░░░░░░░░░  $0.22 / $1.00
+  540 queries  ·  $0.78 remaining
+  ≈ 1,900 queries left this month
 ```
 
 ---
 
 ## How it works
 
-1. Your query goes to DuckDuckGo (no tracking)
-2. Top 5 results (titles + snippets) are sent to Claude Haiku
-3. Claude streams a structured answer: TL;DR → detail → sources
-4. The numbered source list lets you dig deeper without leaving the terminal
+**Query routing:** surf classifies each query before searching. Specialized queries skip DDG entirely:
+- `weather in Austin tomorrow` → Open-Meteo live hourly forecast
+- `AAPL stock price` → Yahoo Finance real-time price card with sparkline
+- `peer reviewed studies on X` → PubMed + arXiv parallel search
+- `what is the Higgs boson` → Wikipedia entity lookup with disambiguation
 
-For URL reads: the page is fetched, HTML stripped, and the clean text is summarized by Claude in "full article" or "reader summary" mode.
+**Web search:** Everything else goes to DuckDuckGo (no tracking). Top results (titles + snippets) go to Claude Haiku for synthesis. For research/current-events queries, surf fetches full article content before synthesizing.
 
-Session memory: surf remembers your last 4 hours of searches, so follow-up questions like "who replaced her?" work with full context.
+**Conversational engine:** surf classifies every input — follow-up, correction, redirect, scope expansion, or casual — and responds accordingly. "Try harder" triggers a broader retry; "what about all the others?" fans out into parallel searches.
+
+**Session memory:** surf remembers your last 4 hours of searches, so follow-ups like "who replaced her?" resolve correctly without re-stating context.
+
+**Article reader:** `1` reads the full article in-terminal with AI formatting. Full article mode, not a summary — Claude Haiku formats it as clean prose with a TL;DR header.
 
 ---
 
