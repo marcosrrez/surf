@@ -2504,8 +2504,139 @@ def _handle_weather(query: str) -> "tuple[str, list[dict], bool] | None":
 
 # ─── Handler stubs (replaced by real implementations in Tasks 1–3) ─────────────
 
-def _handle_financial(query: str) -> "tuple[str, list[dict], bool] | None":
+def _detect_ticker(query: str) -> "str | None":
+    """Return Yahoo Finance ticker from query text, or None if not recognized."""
+    q = query.lower()
+    for name, ticker in COMPANY_TICKER_MAP.items():
+        if name in q:
+            return ticker
+    financial_words = {"stock", "price", "shares", "trading", "ticker", "market", "nasdaq", "nyse", "etf"}
+    if any(w in q for w in financial_words):
+        import re as _re2
+        matches = _re2.findall(r'\b([A-Z]{2,5})\b', query)
+        skip = {"US", "EU", "UK", "AI", "ML", "API", "CEO", "GDP", "IPO", "CIA", "FBI", "NASA", "NYT"}
+        for m in matches:
+            if m not in skip:
+                return m
     return None
+
+
+def _build_sparkline(prices: "list[float]") -> str:
+    """Build single-row block sparkline from a list of prices."""
+    blocks = "▁▂▃▄▅▆▇█"
+    if len(prices) < 2:
+        return "─" * len(prices)
+    lo, hi = min(prices), max(prices)
+    if hi == lo:
+        return "─" * len(prices)
+    return "".join(blocks[min(7, int((p - lo) / (hi - lo) * 7.99))] for p in prices)
+
+
+def _fmt_large(n: float) -> str:
+    """Format large number as human-readable: 2980000000000 → $2.98T"""
+    if n >= 1e12:
+        return f"${n/1e12:.2f}T"
+    if n >= 1e9:
+        return f"${n/1e9:.2f}B"
+    if n >= 1e6:
+        return f"${n/1e6:.1f}M"
+    return f"${n:,.0f}"
+
+
+def _handle_financial(query: str) -> "tuple[str, list[dict], bool] | None":
+    """Fetch stock/crypto price from Yahoo Finance. Returns (response, sources, streaming) or None."""
+    ticker = _detect_ticker(query)
+    if not ticker:
+        return None
+
+    print_status(f"↳ fetching {ticker} · Yahoo Finance...")
+
+    try:
+        url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}"
+        r = requests.get(url, params={"interval": "1d", "range": "5d"},
+                         headers={"User-Agent": "Mozilla/5.0"}, timeout=3.0)
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        clear_status()
+        return None
+
+    clear_status()
+
+    try:
+        result = data["chart"]["result"][0]
+        meta = result["meta"]
+        price = meta.get("regularMarketPrice", 0)
+        prev = meta.get("previousClose", price)
+        change = price - prev
+        pct = (change / prev * 100) if prev else 0
+        day_hi = meta.get("regularMarketDayHigh", price)
+        day_lo = meta.get("regularMarketDayLow", price)
+        wk52_hi = meta.get("fiftyTwoWeekHigh", 0)
+        wk52_lo = meta.get("fiftyTwoWeekLow", 0)
+        mkt_cap = meta.get("marketCap", 0)
+        volume = meta.get("regularMarketVolume", 0)
+        avg_vol = meta.get("averageVolume", 0)
+        name = meta.get("longName", meta.get("shortName", ticker))
+        exchange = meta.get("exchangeName", "")
+
+        if change > 0:
+            dir_glyph, dir_color = GLYPH_UP, C_SPEED_FAST
+        elif change < 0:
+            dir_glyph, dir_color = GLYPH_DOWN, C_ERROR
+        else:
+            dir_glyph, dir_color = GLYPH_FLAT, C_META
+
+        pct_color = C_INTERACTIVE if abs(pct) > 2 else dir_color
+
+        closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
+        closes = [c for c in closes if c is not None]
+        spark = _build_sparkline(closes) if len(closes) >= 2 else ""
+        if spark:
+            spark = f"{C_META}{spark[:-1]}{dir_color}{spark[-1]}{C_RESET}"
+
+        direction_word = "up" if change > 0 else ("down" if change < 0 else "flat")
+        tldr = (f"{GLYPH_TLDR} TL;DR  {name} {direction_word} "
+                f"{abs(pct):.2f}% today at ${price:,.2f}.")
+
+        lines = [
+            f"{C_ANSWER_MARK}{tldr}{C_RESET}",
+            "",
+            f"  {'Price':<11}${price:>8,.2f}   "
+            f"{dir_color}{dir_glyph} {'+' if change >= 0 else ''}{change:+.2f}{C_RESET}  "
+            f"{pct_color}{pct:+.2f}%{C_RESET}",
+            f"  {'Day range':<11}${day_lo:,.2f} – ${day_hi:,.2f}",
+            f"  {'52-week':<11}${wk52_lo:,.2f} – ${wk52_hi:,.2f}",
+        ]
+        if mkt_cap:
+            lines.append(f"  {'Mkt cap':<11}{_fmt_large(mkt_cap)}")
+        if volume:
+            vol_str = f"{volume/1e6:.1f}M"
+            avg_str = f"  (avg {avg_vol/1e6:.1f}M)" if avg_vol else ""
+            lines.append(f"  {'Volume':<11}{vol_str}{avg_str}")
+        if spark:
+            lines.append("")
+            lines.append(f"  {C_META}5d:{C_RESET}  {spark}")
+
+        response = "\n".join(lines)
+
+        import datetime as _dt
+        ts = _dt.datetime.now().strftime("%b %-d %H:%M")
+        tz_note = " ET" if exchange in ("NYSE", "NASDAQ") else ""
+        print_header(f"{ticker} — {name}",
+                     f"{C_META}{GLYPH_META} Yahoo Finance · {ts}{tz_note} · {exchange}{C_RESET}",
+                     zone_after=SPACE_SM)
+
+        sources = [{
+            "title": f"{ticker} — {name} · Yahoo Finance",
+            "url": f"https://finance.yahoo.com/quote/{ticker}",
+            "domain": "finance.yahoo.com",
+            "snippet": f"${price:,.2f} {dir_glyph} {pct:+.2f}% · not financial advice",
+        }]
+        return response, sources, False
+
+    except (KeyError, IndexError, TypeError):
+        return None
 
 
 def _handle_academic(query: str) -> "tuple[str, list[dict], bool] | None":

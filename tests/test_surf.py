@@ -1552,3 +1552,94 @@ class TestConversationalIntegration:
             )
         assert should_break is False
         assert new_meta is not None
+
+
+class TestFinancialHandler:
+    def _yahoo_response(self, symbol="AAPL", price=193.42, prev_close=191.28):
+        return {
+            "chart": {"result": [{
+                "meta": {
+                    "symbol": symbol,
+                    "regularMarketPrice": price,
+                    "previousClose": prev_close,
+                    "regularMarketDayHigh": price + 1,
+                    "regularMarketDayLow": price - 2,
+                    "fiftyTwoWeekHigh": 201.55,
+                    "fiftyTwoWeekLow": 142.86,
+                    "marketCap": 2980000000000,
+                    "regularMarketVolume": 48300000,
+                    "averageVolume": 54100000,
+                    "longName": "Apple Inc.",
+                    "exchangeName": "NYSE",
+                },
+                "indicators": {"quote": [{"close": [190.0, 191.0, 192.0, 191.5, price]}]},
+                "timestamp": [1717000000, 1717086400, 1717172800, 1717259200, 1717345600],
+            }]}
+        }
+
+    def test_detect_ticker_from_company_name(self):
+        from surf import _detect_ticker
+        assert _detect_ticker("Apple stock price") == "AAPL"
+
+    def test_detect_ticker_from_explicit_ticker(self):
+        from surf import _detect_ticker
+        assert _detect_ticker("what is TSLA trading at") == "TSLA"
+
+    def test_detect_ticker_from_crypto(self):
+        from surf import _detect_ticker
+        assert _detect_ticker("bitcoin price today") == "BTC-USD"
+
+    def test_detect_ticker_returns_none_for_no_match(self):
+        from surf import _detect_ticker
+        assert _detect_ticker("what is the capital of France") is None
+
+    def test_build_sparkline_ascending(self):
+        from surf import _build_sparkline
+        spark = _build_sparkline([100.0, 101.0, 102.0, 103.0, 104.0])
+        assert len(spark) == 5
+        assert ord(spark[-1]) > ord(spark[0])
+
+    def test_build_sparkline_flat(self):
+        from surf import _build_sparkline
+        spark = _build_sparkline([100.0, 100.0, 100.0])
+        assert set(spark) == {"─"}
+
+    def test_handle_financial_returns_none_on_api_failure(self):
+        from surf import _handle_financial
+        with patch("surf.requests.get", side_effect=Exception("connection")):
+            result = _handle_financial("Apple stock price")
+        assert result is None
+
+    def test_handle_financial_returns_none_when_no_ticker(self):
+        from surf import _handle_financial
+        result = _handle_financial("what is the capital of France")
+        assert result is None
+
+    def test_handle_financial_returns_tuple_on_success(self):
+        from surf import _handle_financial
+        mock_r = MagicMock()
+        mock_r.json.return_value = self._yahoo_response()
+        mock_r.raise_for_status = MagicMock()
+        with patch("surf.requests.get", return_value=mock_r), \
+             patch("surf.print_header"), patch("surf.print_status"), \
+             patch("surf.clear_status"):
+            result = _handle_financial("Apple stock price")
+        assert result is not None
+        response, sources, streaming = result
+        assert "193.42" in response or "AAPL" in response
+        assert not streaming
+        assert len(sources) == 1
+        assert "finance.yahoo.com" in sources[0]["url"]
+
+    def test_handle_financial_down_day_uses_glyph_down(self):
+        from surf import _handle_financial, GLYPH_DOWN
+        mock_r = MagicMock()
+        mock_r.json.return_value = self._yahoo_response(price=188.00, prev_close=193.42)
+        mock_r.raise_for_status = MagicMock()
+        with patch("surf.requests.get", return_value=mock_r), \
+             patch("surf.print_header"), patch("surf.print_status"), \
+             patch("surf.clear_status"):
+            result = _handle_financial("Apple stock price")
+        assert result is not None
+        response, _, _ = result
+        assert GLYPH_DOWN in response
