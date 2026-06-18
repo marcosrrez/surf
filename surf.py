@@ -3164,6 +3164,16 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     Run the search flow: DDG → Groq → display results.
     Returns (results, groq_response_text).
     """
+    _t_start = time.time()
+
+    # Specialized routing: try dedicated APIs before DDG
+    if not json_output:
+        _source_type = _classify_data_source(query)
+        if _source_type != "web":
+            _specialized = _run_specialized_query(query, _source_type, _t_start, interactive)
+            if _specialized is not None:
+                return _specialized
+
     tier = _classify_tier(query)
 
     # Evaluative intent detection — only for contested/research tier

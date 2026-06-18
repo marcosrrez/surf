@@ -1844,3 +1844,92 @@ class TestFactualHandler:
         response, _, _ = result
         assert "TL;DR" in response
         assert "wrought-iron" in response.lower() or "eiffel" in response.lower()
+
+
+class TestSpecializedIntegration:
+    def _ddg_patch_specs(self):
+        """Patch specs needed for DDG fallthrough tests."""
+        fake_results = [{"title": "T", "url": "https://example.com",
+                         "domain": "example.com", "snippet": "Content about the topic."}]
+        return [
+            ("surf.ddg_search", dict(return_value=fake_results)),
+            ("surf.stream_ai", dict(return_value=iter(["▸ TL;DR  Answer."]))),
+            ("surf.stream_to_terminal", dict(return_value="▸ TL;DR  Answer.")),
+            ("surf.print_header", {}),
+            ("surf.print_status", {}),
+            ("surf.clear_status", {}),
+            ("surf._print_linked_sources", {}),
+            ("surf.print_results", {}),
+            ("surf.save_session_entry", {}),
+            ("surf.format_session_context", dict(return_value="")),
+            ("surf._read_preferences", dict(return_value="")),
+            ("surf._obsidian_find_related", dict(return_value="")),
+            ("surf._obsidian_save", dict(return_value=None)),
+            ("surf._classify_tier", dict(return_value="snippet")),
+            ("surf._confidence_gate", dict(return_value="snippet")),
+            ("surf._enrich_ddg_query", dict(return_value="query")),
+            ("surf._fix_entity_mismatch", dict(side_effect=lambda q, r, d, **kw: (r, d))),
+            ("surf._bm25_rank", dict(side_effect=lambda q, r: r)),
+            ("surf._snippets_are_diverse", dict(return_value=True)),
+            ("surf._sources_are_substantive", dict(return_value=True)),
+            ("surf._filter_results", dict(side_effect=lambda r, **kw: r)),
+        ]
+
+    def _apply_ddg_patches(self, stack):
+        """Enter all DDG patches into a contextlib.ExitStack and return them."""
+        mocks = {}
+        for target, kwargs in self._ddg_patch_specs():
+            mocks[target] = stack.enter_context(patch(target, **kwargs))
+        return mocks
+
+    def test_weather_query_bypasses_ddg(self):
+        from surf import search_flow
+        with patch("surf._classify_data_source", return_value="weather"), \
+             patch("surf._run_specialized_query", return_value=([], "weather response")) as mock_specialized, \
+             patch("surf.ddg_search") as mock_ddg:
+            search_flow("weather in Chicago", interactive=False)
+        mock_specialized.assert_called_once()
+        mock_ddg.assert_not_called()
+
+    def test_financial_query_bypasses_ddg(self):
+        from surf import search_flow
+        with patch("surf._classify_data_source", return_value="financial"), \
+             patch("surf._run_specialized_query", return_value=([], "price response")) as mock_specialized, \
+             patch("surf.ddg_search") as mock_ddg:
+            search_flow("Apple stock price", interactive=False)
+        mock_specialized.assert_called_once()
+        mock_ddg.assert_not_called()
+
+    def test_web_query_skips_specialized_goes_to_ddg(self):
+        import contextlib
+        from surf import search_flow
+        with contextlib.ExitStack() as stack:
+            mock_specialized = stack.enter_context(
+                patch("surf._run_specialized_query"))
+            stack.enter_context(
+                patch("surf._classify_data_source", return_value="web"))
+            self._apply_ddg_patches(stack)
+            search_flow("who wrote Pride and Prejudice", interactive=False)
+        mock_specialized.assert_not_called()
+
+    def test_handler_failure_falls_through_to_ddg(self):
+        import contextlib
+        from surf import search_flow
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                patch("surf._classify_data_source", return_value="weather"))
+            stack.enter_context(
+                patch("surf._run_specialized_query", return_value=None))
+            mocks = self._apply_ddg_patches(stack)
+            search_flow("weather in Chicago", interactive=False)
+        mocks["surf.ddg_search"].assert_called()
+
+    def test_json_output_skips_specialized(self):
+        import contextlib
+        from surf import search_flow
+        with contextlib.ExitStack() as stack:
+            mock_specialized = stack.enter_context(
+                patch("surf._run_specialized_query"))
+            self._apply_ddg_patches(stack)
+            search_flow("Apple stock price", interactive=False, json_output=True)
+        mock_specialized.assert_not_called()
