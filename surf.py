@@ -2512,8 +2512,7 @@ def _detect_ticker(query: str) -> "str | None":
             return ticker
     financial_words = {"stock", "price", "shares", "trading", "ticker", "market", "nasdaq", "nyse", "etf"}
     if any(w in q for w in financial_words):
-        import re as _re2
-        matches = _re2.findall(r'\b([A-Z]{2,5})\b', query)
+        matches = re.findall(r'\b([A-Z]{2,5})\b', query)
         skip = {"US", "EU", "UK", "AI", "ML", "API", "CEO", "GDP", "IPO", "CIA", "FBI", "NASA", "NYT"}
         for m in matches:
             if m not in skip:
@@ -2537,7 +2536,7 @@ def _fmt_large(n: float) -> str:
     if n >= 1e12:
         return f"${n/1e12:.2f}T"
     if n >= 1e9:
-        return f"${n/1e9:.2f}B"
+        return f"${n/1e9:.1f}B"
     if n >= 1e6:
         return f"${n/1e6:.1f}M"
     return f"${n:,.0f}"
@@ -2603,7 +2602,7 @@ def _handle_financial(query: str) -> "tuple[str, list[dict], bool] | None":
             f"{C_ANSWER_MARK}{tldr}{C_RESET}",
             "",
             f"  {'Price':<11}${price:>8,.2f}   "
-            f"{dir_color}{dir_glyph} {'+' if change >= 0 else ''}{change:+.2f}{C_RESET}  "
+            f"{dir_color}{dir_glyph} {change:+.2f}{C_RESET}  "
             f"{pct_color}{pct:+.2f}%{C_RESET}",
             f"  {'Day range':<11}${day_lo:,.2f} – ${day_hi:,.2f}",
             f"  {'52-week':<11}${wk52_lo:,.2f} – ${wk52_hi:,.2f}",
