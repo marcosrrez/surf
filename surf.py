@@ -2212,8 +2212,10 @@ def _classify_data_source(query: str) -> str:
     # Financial: recognized ticker OR financial vocabulary
     if any(s in q for s in FINANCIAL_SIGNALS):
         return "financial"
+    _fin_vocab = {"stock", "price", "shares", "trading", "earnings", "ipo",
+                  "market cap", "ticker", "invest", "dividend", "portfolio"}
     for name in COMPANY_TICKER_MAP:
-        if name in q:
+        if name in q and any(w in q for w in _fin_vocab):
             return "financial"
     if re.search(r'\b[A-Z]{2,5}\b', query) and any(
         w in q for w in ("stock", "price", "shares", "trading", "ticker")
@@ -2507,8 +2509,10 @@ def _handle_weather(query: str) -> "tuple[str, list[dict], bool] | None":
 def _detect_ticker(query: str) -> "str | None":
     """Return Yahoo Finance ticker from query text, or None if not recognized."""
     q = query.lower()
+    _fin_vocab = {"stock", "price", "shares", "trading", "earnings", "ipo",
+                  "market cap", "ticker", "invest", "dividend", "portfolio"}
     for name, ticker in COMPANY_TICKER_MAP.items():
-        if name in q:
+        if name in q and any(w in q for w in _fin_vocab):
             return ticker
     financial_words = {"stock", "price", "shares", "trading", "ticker", "market", "nasdaq", "nyse", "etf"}
     if any(w in q for w in financial_words):

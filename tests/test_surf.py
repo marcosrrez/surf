@@ -464,6 +464,26 @@ class TestClassifyDataSource:
         # "market forecast" — financial wins because "nasdaq" or financial signal
         assert _classify_data_source("nasdaq stock market forecast today") == "financial"
 
+    def test_meta_analysis_does_not_trigger_financial(self):
+        from surf import _classify_data_source
+        result = _classify_data_source("meta-analysis of aspirin clinical trials")
+        assert result != "financial"
+
+    def test_amazon_rainforest_does_not_trigger_financial(self):
+        from surf import _classify_data_source
+        result = _classify_data_source("amazon rainforest deforestation 2024")
+        assert result == "web"
+
+    def test_pfizer_research_routes_to_academic(self):
+        from surf import _classify_data_source
+        result = _classify_data_source("peer reviewed studies on pfizer vaccine safety")
+        assert result == "academic"
+
+    def test_company_name_with_financial_vocab_still_triggers(self):
+        from surf import _classify_data_source
+        assert _classify_data_source("apple stock price today") == "financial"
+        assert _classify_data_source("amazon earnings per share") == "financial"
+
 
 class TestWeatherHandler:
     def test_extract_weather_location_city(self):
@@ -1592,6 +1612,12 @@ class TestFinancialHandler:
     def test_detect_ticker_returns_none_for_no_match(self):
         from surf import _detect_ticker
         assert _detect_ticker("what is the capital of France") is None
+
+    def test_detect_ticker_requires_financial_vocab_for_company_names(self):
+        from surf import _detect_ticker
+        assert _detect_ticker("meta-analysis of aspirin") is None
+        assert _detect_ticker("amazon rainforest") is None
+        assert _detect_ticker("apple stock price") == "AAPL"
 
     def test_build_sparkline_ascending(self):
         from surf import _build_sparkline
