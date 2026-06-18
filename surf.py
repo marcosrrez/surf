@@ -675,6 +675,47 @@ def ddg_search(query: str, num_results: int = 5) -> list[dict]:
 
     return results
 
+
+def brave_search(query: str, num_results: int = 5) -> list[dict]:
+    """Search Brave and return list of {title, url, domain, snippet}. Same format as ddg_search."""
+    from urllib.parse import urlparse
+    config = load_config()
+    api_key = config.get("BRAVE_API_KEY", os.environ.get("BRAVE_API_KEY", ""))
+    if not api_key:
+        return []
+    try:
+        r = requests.get(
+            "https://api.search.brave.com/res/v1/web/search",
+            params={"q": query, "count": num_results},
+            headers={"Accept": "application/json", "Accept-Encoding": "gzip", "X-Subscription-Token": api_key},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        results = []
+        for item in data.get("web", {}).get("results", []):
+            url = item.get("url", "")
+            parsed = urlparse(url)
+            domain = parsed.netloc.removeprefix("www.") if parsed.netloc else ""
+            results.append({
+                "title": item.get("title", ""),
+                "url": url,
+                "domain": domain,
+                "snippet": item.get("description", ""),
+            })
+        return results
+    except Exception:
+        return []
+
+
+def _get_search_backend() -> callable:
+    """Return brave_search if BRAVE_API_KEY is configured, else ddg_search."""
+    config = load_config()
+    if config.get("BRAVE_API_KEY") or os.environ.get("BRAVE_API_KEY"):
+        return brave_search
+    return ddg_search
+
+
 GROQ_MODEL = "llama-3.3-70b-versatile"
 CLASSIFIER_MODEL = "llama-3.1-8b-instant"
 
@@ -714,6 +755,7 @@ FEATURE_TIPS = {
     "automation": "tip: \033[33msurf 'query' --json | jq .tldr\033[90m  pipes cleanly into scripts and cron jobs",
     "preferences": "tip: type \033[33mprefer: concise answers with data\033[90m after any search to tune surf to how you think",
     "preferences_view": "tip: \033[33msurf prefer\033[90m shows your research profile — edit it anytime in Obsidian",
+    "pipe": "tip: \033[33mcat error.log | surf 'explain'\033[90m  pipes content directly into surf for analysis",
 }
 _session_tip_shown: bool = False  # one tip per session maximum
 
@@ -3171,12 +3213,146 @@ def _rephrase_query(query: str) -> str:
         return query + " overview"
 
 
-def _search_with_retry(query: str, entity_type: str | None = None) -> tuple[list[dict], list[str]]:
+def _identify_knowledge_gaps(query: str, current_synthesis: str, seen_gaps: set[str] | None = None) -> list[str]:
+    """Use LLM to identify what's missing from the current answer. Returns deduped list of follow-up queries."""
+    if seen_gaps is None:
+        seen_gaps = set()
+    prompt = (
+        f"Original question: {query}\n\n"
+        f"Current answer:\n{current_synthesis[:2000]}\n\n"
+        "What important aspects of this question are NOT covered in the answer? "
+        "Return a JSON array of 1-3 specific search queries that would fill the gaps. "
+        "Return ONLY the JSON array, no explanation. Example: [\"query one\", \"query two\"]"
+    )
+    try:
+        chunks = list(stream_ai(prompt, "You identify knowledge gaps. Return only a JSON array of search queries.", max_tokens=200))
+        raw = "".join(chunks).strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        gaps = json.loads(raw)
+        if isinstance(gaps, list) and all(isinstance(g, str) for g in gaps):
+            return [g for g in gaps[:3] if g.lower().strip() not in seen_gaps]
+        return []
+    except Exception:
+        return []
+
+
+def _deep_search_loop(
+    query: str,
+    initial_results: list[dict],
+    tier: str,
+    max_steps: int = 3,
+    timeout: float = 45.0,
+) -> tuple[str, list[dict], list[str]]:
     """
-    Wrap ddg_search with up to 3 narrated attempts.
+    Multi-step deep search: search → read → identify gaps → search again → synthesize.
+    Returns (final_synthesis, all_sources, step_log).
+    Wall-clock timeout caps total duration.
+    """
+    t_start = time.time()
+    all_sources: list[dict] = list(initial_results)
+    all_content: list[str] = []
+    step_log: list[str] = []
+    seen_domains: set[str] = {r.get("domain", "") for r in initial_results}
+    seen_gaps: set[str] = set()
+    search_fn = _get_search_backend()
+
+    # Initial deep read
+    print_status(f"↳ reading {len(initial_results)} sources{GLYPH_ELLIPSIS}")
+    step_log.append(f"read {len(initial_results)} initial sources")
+    deep_content, deep_sources = _deep_research(query, tier, initial_results, query)
+    if deep_content:
+        all_content.append(deep_content)
+    if deep_sources:
+        for s in deep_sources:
+            if s.get("domain", "") not in seen_domains:
+                all_sources.append(s)
+                seen_domains.add(s["domain"])
+
+    # Initial synthesis
+    base_prompt = build_search_prompt(query, all_sources)
+    if deep_content:
+        base_prompt += f"\n\nFull article content:\n{deep_content}"
+    print_status(f"↳ synthesizing initial findings{GLYPH_ELLIPSIS}")
+    with Spinner("synthesizing..."):
+        chunks = list(stream_ai(base_prompt, SEARCH_SYSTEM_RESEARCH, max_tokens=1500))
+    current_synthesis = "".join(chunks)
+    clear_status()
+
+    # Gap-filling loop
+    for step in range(max_steps):
+        if time.time() - t_start > timeout:
+            step_log.append("timeout — moving to final synthesis")
+            break
+
+        gaps = _identify_knowledge_gaps(query, current_synthesis, seen_gaps=seen_gaps)
+        if not gaps:
+            step_log.append("no gaps found — search complete")
+            break
+
+        gap_query = gaps[0]
+        seen_gaps.add(gap_query.lower().strip())
+        print_status(f"↳ filling gap — {gap_query[:50]}{GLYPH_ELLIPSIS}")
+        step_log.append(f"gap search — \"{gap_query}\"")
+
+        try:
+            gap_results = _filter_results(search_fn(gap_query, num_results=5))
+        except Exception:
+            gap_results = []
+
+        new_results = [r for r in gap_results if r.get("domain", "") not in seen_domains]
+        if not new_results:
+            step_log.append("no new sources found")
+            continue
+
+        for r in new_results[:3]:
+            seen_domains.add(r["domain"])
+            all_sources.append(r)
+
+        gap_content, gap_sources = _deep_research(gap_query, tier, new_results[:3], gap_query)
+        if gap_content:
+            all_content.append(gap_content)
+
+    # Final synthesis with all accumulated content
+    clear_status()
+    combined_content = "\n\n---\n\n".join(all_content)
+
+    prefs = _read_preferences()
+    vault_ctx = _obsidian_find_related(query)
+    preamble = ""
+    if prefs:
+        preamble += f"[User preferences]\n{prefs}\n[End preferences]\n\n"
+    if vault_ctx:
+        preamble += f"{vault_ctx}\n\n"
+
+    final_prompt = (
+        f"{preamble}"
+        f"Original question: {query}\n\n"
+        f"Research from {len(all_sources)} sources across {len(step_log)} search steps:\n\n"
+        f"{combined_content[:8000]}\n\n"
+        f"Provide a comprehensive answer. Cite sources inline as [1], [2], etc."
+    )
+
+    elapsed = time.time() - t_start
+    print(f"{C_META}{GLYPH_META} deep search: {len(step_log)} steps, {len(all_sources)} sources, {elapsed:.0f}s{C_RESET}")
+    print_header(query.capitalize(), f"{len(all_sources)} sources {GLYPH_SEPARATOR} deep search")
+    stream = stream_ai(final_prompt, SEARCH_SYSTEM_RESEARCH, max_tokens=3000, tier="research")
+    final_synthesis = stream_to_terminal(stream, results=all_sources)
+
+    return final_synthesis, all_sources, step_log
+
+
+def _search_with_retry(query: str, entity_type: str | None = None, search_fn: callable | None = None) -> tuple[list[dict], list[str]]:
+    """
+    Wrap search backend with up to 3 narrated attempts.
     Returns (results, queries_tried).
     'Thin' means fewer than 3 results or all snippets under 50 chars.
     """
+    if search_fn is None:
+        search_fn = _get_search_backend()
+
     def _is_thin(results: list[dict]) -> bool:
         if len(results) < 3:
             return True
@@ -3186,7 +3362,7 @@ def _search_with_retry(query: str, entity_type: str | None = None) -> tuple[list
 
     # Attempt 1: original query
     queries_tried.append(query)
-    results = ddg_search(query)
+    results = search_fn(query)
     results = _filter_results(results)
     if not _is_thin(results):
         return results, queries_tried
@@ -3195,7 +3371,7 @@ def _search_with_retry(query: str, entity_type: str | None = None) -> tuple[list
     print_status("↳ That first pass was thin — trying a different angle...")
     rephrased = _rephrase_query(query)
     queries_tried.append(rephrased)
-    results2 = _filter_results(ddg_search(rephrased))
+    results2 = _filter_results(search_fn(rephrased))
     clear_status()
     if not _is_thin(results2):
         return results2, queries_tried
@@ -3208,7 +3384,7 @@ def _search_with_retry(query: str, entity_type: str | None = None) -> tuple[list
         domain_hint = "wikipedia"
     hinted = f"{query} {domain_hint}"
     queries_tried.append(hinted)
-    results3 = _filter_results(ddg_search(hinted))
+    results3 = _filter_results(search_fn(hinted))
     clear_status()
 
     # Return best non-empty set, prefer whichever has most results
@@ -3216,10 +3392,10 @@ def _search_with_retry(query: str, entity_type: str | None = None) -> tuple[list
     return best, queries_tried
 
 
-def search_flow(query: str, interactive: bool = True, json_output: bool = False) -> tuple[list[dict], str]:
+def search_flow(query: str, interactive: bool = True, json_output: bool = False, deep: bool = False) -> tuple[list[dict], str]:
     """
-    Run the search flow: DDG → Groq → display results.
-    Returns (results, groq_response_text).
+    Run the search flow: search → AI synthesis → display results.
+    Returns (results, response_text).
     """
     _t_start = time.time()
 
@@ -3319,6 +3495,29 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
 
     # Adaptive confidence gate — may escalate tier based on snippet quality
     tier = _confidence_gate(query, results, tier, entity_type=_entity_type)
+
+    # Deep search mode: multi-step reasoning loop
+    if deep and results:
+        synthesis, all_sources, step_log = _deep_search_loop(query, results, tier)
+        save_session_entry(query, "deep_search", _truncate_at_sentence(synthesis, 300))
+        _obsidian_save(query, synthesis, all_sources, session_id=_obsidian_session_id())
+        record_feature_use("search")
+        if json_output:
+            _output_json(query, synthesis, [s["domain"] for s in all_sources], intent="deep_search")
+            return all_sources, synthesis
+        vspace(ZONE_SPACING[("answer", "metadata")])
+        _print_linked_sources(all_sources)
+        print_results(all_sources)
+        _meta = _SearchMeta(
+            original_query=query,
+            queries_tried=[f"deep:{s}" for s in step_log],
+            result_count=len(all_sources),
+            confidence_tier="deep",
+            coverage_note=f"Deep search: {len(step_log)} steps, {len(all_sources)} sources",
+        )
+        if interactive:
+            _handle_results_input(all_sources, context=synthesis, meta=_meta)
+        return all_sources, synthesis
 
     # Self-evaluating source check: try one more targeted search when sources are thin.
     # Fast cosine check first (free) — if snippets are near-copies, skip the LLM call.
@@ -3658,8 +3857,9 @@ def _handle_followup(question: str, context: str = "") -> "tuple[list[dict], str
         print_status(f"↳ searching {entity_type} sources for: \"{search_query[:40]}\"...")
     else:
         print_status(f"↳ searching: \"{search_query[:55]}\"...")
+    _search_fn = _get_search_backend()
     try:
-        search_results = ddg_search(search_query)
+        search_results = _search_fn(search_query)
     except Exception:
         search_results = []
     search_results = _filter_results(search_results)
@@ -3674,7 +3874,7 @@ def _handle_followup(question: str, context: str = "") -> "tuple[list[dict], str
         if not has_authoritative or len(search_results) < 3:
             auth_query = search_query + " " + authoritative_domains[0].split(".")[0]
             try:
-                auth_results = _filter_results(ddg_search(auth_query, num_results=3))
+                auth_results = _filter_results(_search_fn(auth_query, num_results=3))
                 seen = {r["domain"] for r in search_results}
                 for r in auth_results:
                     if r["domain"] not in seen:
@@ -5139,6 +5339,11 @@ def _run_setup() -> None:
         cfg.get("CEREBRAS_API_KEY", ""), secret=True
     )
     print()
+    cfg["BRAVE_API_KEY"] = _setup_prompt(
+        "Brave Search API key (better results — brave.com/search/api, free 2k/mo)",
+        cfg.get("BRAVE_API_KEY", ""), secret=True
+    )
+    print()
 
     # ── Section 2: Research preferences ───────────────────────────────────────
     print(f"{C_BOLD}2. Research preferences{C_RESET}")
@@ -5277,6 +5482,24 @@ def _run_setup() -> None:
     print()
 
 
+_STDIN_MAX_CHARS = 20000
+
+
+def _read_stdin() -> str | None:
+    """Read piped stdin content. Returns None if stdin is a terminal or empty."""
+    if sys.stdin.isatty():
+        return None
+    try:
+        content = sys.stdin.read()
+        if not content or not content.strip():
+            return None
+        if len(content) > _STDIN_MAX_CHARS:
+            content = content[:_STDIN_MAX_CHARS] + "\n[truncated]"
+        return content
+    except Exception:
+        return None
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(
@@ -5290,6 +5513,8 @@ def main():
                         help="Show Claude monthly spend and exit")
     parser.add_argument("--full", action="store_true",
                         help="Full configuration wizard (advanced)")
+    parser.add_argument("--deep", action="store_true",
+                        help="Multi-step deep search — searches, reads, identifies gaps, repeats")
     parser.add_argument("setup", nargs="?", const="setup",
                         help="Interactive configuration wizard")
     args = parser.parse_args()
@@ -5339,6 +5564,35 @@ def main():
 
     query = " ".join(args.input)
     _add_to_history(query)
+
+    # Stdin pipe: cat file | surf "explain this"
+    piped_content = _read_stdin()
+    if piped_content:
+        content_type = "text"
+        if any(sig in piped_content for sig in ["Traceback", "Error:", "Exception:", "at line", "FAILED"]):
+            content_type = "error"
+        elif any(sig in piped_content[:200] for sig in ["def ", "function ", "class ", "import ", "const ", "var ", "#include"]):
+            content_type = "code"
+
+        _system_by_type = {
+            "error": "You diagnose errors and stack traces from the terminal. Start with ▸ TL;DR naming the root cause, then explain the fix. Be specific.",
+            "code": "You analyze source code. Start with ▸ TL;DR describing what the code does, then provide detailed analysis.",
+            "text": "You analyze content piped from the terminal. Start with ▸ TL;DR followed by your analysis. Be direct and specific.",
+        }
+
+        label = query.capitalize() if query else f"Analyzing piped {content_type}"
+        print_header(label)
+        prefs = _read_preferences()
+        preamble = f"[User preferences]\n{prefs}\n[End preferences]\n\n" if prefs else ""
+        prompt = f"{preamble}User piped the following {content_type} and asks: {query or 'explain this'}\n\nContent:\n{piped_content}"
+        stream = stream_ai(prompt, _system_by_type[content_type], max_tokens=2048)
+        response = stream_to_terminal(stream)
+        save_session_entry(query or "piped input", "pipe", _truncate_at_sentence(response, 300))
+        _obsidian_save(query or "piped input", response, [], session_id=_obsidian_session_id())
+        record_feature_use("pipe")
+        if json_output:
+            _output_json(query or "piped input", response, [], intent="pipe")
+        return
 
     try:
         session_entries = load_session()
@@ -5425,7 +5679,7 @@ def main():
             open_in_browser(intent["open_url"])
 
         else:
-            search_flow(query, interactive=not json_output, json_output=json_output)
+            search_flow(query, interactive=not json_output, json_output=json_output, deep=args.deep)
 
     except KeyboardInterrupt:
         print("\n\033[90mbye\033[0m")

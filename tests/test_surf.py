@@ -1959,3 +1959,213 @@ class TestSpecializedIntegration:
             self._apply_ddg_patches(stack)
             search_flow("Apple stock price", interactive=False, json_output=True)
         mock_specialized.assert_called_once()
+
+
+# ─── Task 1: Deep Search ────────────────────────────────────────────────────
+
+class TestDeepSearchLoop:
+    def test_identify_gaps_returns_list_of_queries(self):
+        from surf import _identify_knowledge_gaps
+        with patch("surf.stream_ai") as mock_ai:
+            mock_ai.return_value = iter(['["impact on GDP", "timeline of events"]'])
+            gaps = _identify_knowledge_gaps("US tariffs on China", "Tariffs were imposed in 2018.")
+            assert isinstance(gaps, list)
+            assert len(gaps) == 2
+            assert "GDP" in gaps[0]
+
+    def test_identify_gaps_returns_empty_on_error(self):
+        from surf import _identify_knowledge_gaps
+        with patch("surf.stream_ai", side_effect=Exception("fail")):
+            gaps = _identify_knowledge_gaps("test query", "some context")
+            assert gaps == []
+
+    def test_identify_gaps_returns_empty_for_invalid_json(self):
+        from surf import _identify_knowledge_gaps
+        with patch("surf.stream_ai") as mock_ai:
+            mock_ai.return_value = iter(["not valid json"])
+            gaps = _identify_knowledge_gaps("test query", "some context")
+            assert gaps == []
+
+    def test_identify_gaps_deduplicates(self):
+        from surf import _identify_knowledge_gaps
+        with patch("surf.stream_ai") as mock_ai:
+            mock_ai.return_value = iter(['["impact on GDP", "impact on GDP", "timeline"]'])
+            gaps = _identify_knowledge_gaps("US tariffs", "context", seen_gaps={"impact on gdp"})
+            assert "timeline" in gaps
+            assert len([g for g in gaps if "GDP" in g]) == 0
+
+    def test_deep_search_loop_returns_synthesis_and_sources(self):
+        from surf import _deep_search_loop
+        initial_results = [
+            {"title": "Article 1", "url": "https://example.com/1", "domain": "example.com", "snippet": "Tariffs imposed in 2018"},
+        ]
+        with patch("surf._identify_knowledge_gaps", return_value=["GDP impact"]), \
+             patch("surf._get_search_backend", return_value=lambda q, num_results=5: [
+                 {"title": "GDP Report", "url": "https://econ.com/1", "domain": "econ.com", "snippet": "GDP fell 0.3%"},
+             ]), \
+             patch("surf._filter_results", side_effect=lambda r, **kw: r), \
+             patch("surf._deep_research", return_value=("Article content here", initial_results)), \
+             patch("surf.stream_ai", return_value=iter(["Final synthesis of tariff impacts."])), \
+             patch("surf.stream_to_terminal", return_value="Final synthesis of tariff impacts."), \
+             patch("surf.print_header"), \
+             patch("surf.print_status"), \
+             patch("surf.clear_status"), \
+             patch("surf._read_preferences", return_value=""), \
+             patch("surf._obsidian_find_related", return_value=""):
+            synthesis, sources, steps = _deep_search_loop("US tariffs", initial_results, "research")
+            assert isinstance(synthesis, str)
+            assert len(synthesis) > 0
+            assert isinstance(sources, list)
+            assert isinstance(steps, list)
+
+    def test_deep_search_loop_stops_when_no_gaps(self):
+        from surf import _deep_search_loop
+        initial = [{"title": "A", "url": "https://a.com", "domain": "a.com", "snippet": "full coverage"}]
+        with patch("surf._identify_knowledge_gaps", return_value=[]), \
+             patch("surf._deep_research", return_value=("content", initial)), \
+             patch("surf.stream_ai", return_value=iter(["Complete answer."])), \
+             patch("surf.stream_to_terminal", return_value="Complete answer."), \
+             patch("surf.print_header"), \
+             patch("surf.print_status"), \
+             patch("surf.clear_status"), \
+             patch("surf._read_preferences", return_value=""), \
+             patch("surf._obsidian_find_related", return_value=""):
+            synthesis, sources, steps = _deep_search_loop("test", initial, "research")
+            assert any("no gaps" in s for s in steps)
+
+    def test_deep_search_loop_max_steps_respected(self):
+        from surf import _deep_search_loop
+        initial = [{"title": "A", "url": "https://a.com", "domain": "a.com", "snippet": "partial"}]
+        call_count = 0
+        def counting_gaps(q, s, seen_gaps=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 5:
+                return []
+            return [f"gap query {call_count}"]
+        with patch("surf._identify_knowledge_gaps", side_effect=counting_gaps), \
+             patch("surf._get_search_backend", return_value=lambda q, num_results=5: [
+                 {"title": "B", "url": f"https://b{call_count}.com", "domain": f"b{call_count}.com", "snippet": "more"},
+             ]), \
+             patch("surf._filter_results", side_effect=lambda r, **kw: r), \
+             patch("surf._deep_research", return_value=("content", initial)), \
+             patch("surf.stream_ai", return_value=iter(["synthesis"])), \
+             patch("surf.stream_to_terminal", return_value="synthesis"), \
+             patch("surf.print_header"), \
+             patch("surf.print_status"), \
+             patch("surf.clear_status"), \
+             patch("surf._read_preferences", return_value=""), \
+             patch("surf._obsidian_find_related", return_value=""):
+            _, _, steps = _deep_search_loop("test", initial, "research", max_steps=2)
+            gap_steps = [s for s in steps if "gap search" in s]
+            assert len(gap_steps) <= 2
+
+    def test_deep_flag_parsed_by_argparse(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("input", nargs="*")
+        parser.add_argument("--deep", action="store_true")
+        args = parser.parse_args(["--deep", "climate", "change"])
+        assert args.deep is True
+        assert args.input == ["climate", "change"]
+
+
+# ─── Task 2: Brave Search ───────────────────────────────────────────────────
+
+class TestBraveSearch:
+    def test_brave_search_returns_formatted_results(self):
+        from surf import brave_search
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "web": {
+                "results": [
+                    {
+                        "title": "Test Article",
+                        "url": "https://example.com/article",
+                        "description": "A test snippet about the topic",
+                    },
+                    {
+                        "title": "Another Article",
+                        "url": "https://other.com/page",
+                        "description": "More information here",
+                    },
+                ]
+            }
+        }
+        with patch("surf.requests.get", return_value=mock_response), \
+             patch("surf.load_config", return_value={"BRAVE_API_KEY": "test-key"}):
+            results = brave_search("test query", num_results=5)
+        assert len(results) == 2
+        assert results[0]["title"] == "Test Article"
+        assert results[0]["domain"] == "example.com"
+        assert results[0]["snippet"] == "A test snippet about the topic"
+        assert results[0]["url"] == "https://example.com/article"
+
+    def test_brave_search_handles_empty_response(self):
+        from surf import brave_search
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"web": {"results": []}}
+        with patch("surf.requests.get", return_value=mock_response), \
+             patch("surf.load_config", return_value={"BRAVE_API_KEY": "test-key"}):
+            results = brave_search("no results query")
+        assert results == []
+
+    def test_brave_search_handles_api_error(self):
+        from surf import brave_search
+        with patch("surf.requests.get", side_effect=Exception("API error")), \
+             patch("surf.load_config", return_value={"BRAVE_API_KEY": "test-key"}):
+            results = brave_search("failing query")
+        assert results == []
+
+    def test_brave_search_returns_empty_without_key(self):
+        from surf import brave_search
+        with patch("surf.load_config", return_value={}):
+            results = brave_search("test query")
+        assert results == []
+
+    def test_get_search_backend_returns_brave_when_configured(self):
+        from surf import _get_search_backend, brave_search
+        with patch("surf.load_config", return_value={"BRAVE_API_KEY": "test-key"}):
+            backend = _get_search_backend()
+        assert backend == brave_search
+
+    def test_get_search_backend_returns_ddg_by_default(self):
+        from surf import _get_search_backend, ddg_search
+        with patch("surf.load_config", return_value={}):
+            backend = _get_search_backend()
+        assert backend == ddg_search
+
+
+# ─── Task 3: Stdin Input ────────────────────────────────────────────────────
+
+class TestStdinInput:
+    def test_read_stdin_returns_none_when_tty(self):
+        from surf import _read_stdin
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = True
+            assert _read_stdin() is None
+
+    def test_read_stdin_returns_content_when_piped(self):
+        from surf import _read_stdin
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            mock_stdin.read.return_value = "error: connection refused\nstack trace..."
+            result = _read_stdin()
+            assert "connection refused" in result
+
+    def test_read_stdin_truncates_long_input(self):
+        from surf import _read_stdin
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            mock_stdin.read.return_value = "x" * 50000
+            result = _read_stdin()
+            assert len(result) <= 20015  # 20000 + "\n[truncated]"
+
+    def test_read_stdin_returns_none_for_empty_input(self):
+        from surf import _read_stdin
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            mock_stdin.read.return_value = ""
+            assert _read_stdin() is None
