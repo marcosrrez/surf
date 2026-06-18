@@ -1950,12 +1950,12 @@ class TestSpecializedIntegration:
             search_flow("weather in Chicago", interactive=False)
         mocks["surf.ddg_search"].assert_called()
 
-    def test_json_output_skips_specialized(self):
+    def test_json_output_uses_specialized(self):
         import contextlib
         from surf import search_flow
         with contextlib.ExitStack() as stack:
             mock_specialized = stack.enter_context(
-                patch("surf._run_specialized_query"))
+                patch("surf._run_specialized_query", return_value=([], "")))
             self._apply_ddg_patches(stack)
             search_flow("Apple stock price", interactive=False, json_output=True)
-        mock_specialized.assert_not_called()
+        mock_specialized.assert_called_once()

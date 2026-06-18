@@ -2257,12 +2257,18 @@ def _display_specialized_result(
     handler_name: str,
     t0: float,
     streaming: bool = False,
+    json_output: bool = False,
 ) -> tuple[list[dict], str]:
     """
     Shared post-processing for all specialized handlers.
     Handles elapsed time display, source display, session save, Obsidian save.
     Returns (sources, response) matching search_flow return type.
     """
+    if json_output:
+        source_urls = [s.get("url", s.get("domain", "")) for s in sources]
+        _output_json(query, response or "", source_urls, intent=handler_name)
+        return sources, response or ""
+
     if not streaming and response:
         print(response)
 
@@ -2287,6 +2293,7 @@ def _run_specialized_query(
     source_type: str,
     t0: float,
     interactive: bool = True,
+    json_output: bool = False,
 ) -> tuple[list[dict], str] | None:
     """
     Dispatch to the appropriate specialized handler.
@@ -2308,7 +2315,8 @@ def _run_specialized_query(
 
     response, sources, streaming = result
     return _display_specialized_result(query, response, sources,
-                                        _source_type_name(source_type), t0, streaming)
+                                        _source_type_name(source_type), t0, streaming,
+                                        json_output=json_output)
 
 
 def _source_type_name(source_type: str) -> str:
@@ -2755,19 +2763,64 @@ def _search_arxiv(query: str, max_results: int = 3) -> "list[dict]":
     return papers
 
 
+_ACADEMIC_PREAMBLES = (
+    "find me a peer reviewed article on ", "find me peer reviewed articles on ",
+    "find me a peer-reviewed article on ", "find me studies on ",
+    "find me research on ", "find me papers on ",
+    "find a peer reviewed article on ", "find peer reviewed articles on ",
+    "find a peer-reviewed article on ", "find peer-reviewed articles on ",
+    "find peer reviewed studies on ", "find peer-reviewed studies on ",
+    "find research on ", "find studies on ", "find papers on ",
+    "find an article on ", "find articles on ",
+    "look up papers on ", "search for papers on ", "search for studies on ",
+    "show me research on ", "show me studies on ", "get me papers on ",
+)
+
+_ACADEMIC_STOP = {"the", "a", "an", "is", "are", "was", "were", "for", "on", "in",
+                  "of", "to", "and", "or", "but", "with", "from", "by", "at", "about"}
+
+
 def _handle_academic(query: str) -> "tuple[str, list[dict], bool] | None":
     """Search PubMed + arXiv in parallel; return paper cards or Claude synthesis."""
+    # Strip request-phrasing preambles — APIs need clean topic terms, not intent
+    search_terms = query
+    ql = query.lower()
+    for prefix in _ACADEMIC_PREAMBLES:
+        if ql.startswith(prefix):
+            search_terms = query[len(prefix):]
+            break
+
     print_status("↳ searching PubMed + arXiv...")
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        pubmed_future = executor.submit(_search_pubmed, query)
-        arxiv_future = executor.submit(_search_arxiv, query)
-        papers = []
-        for future in as_completed([pubmed_future, arxiv_future], timeout=4.0):
+        pubmed_future = executor.submit(_search_pubmed, search_terms)
+        arxiv_future = executor.submit(_search_arxiv, search_terms)
+        pubmed_papers: list[dict] = []
+        arxiv_papers: list[dict] = []
+        future_map = {pubmed_future: "pubmed", arxiv_future: "arxiv"}
+        for future in as_completed(future_map, timeout=4.0):
             try:
-                papers.extend(future.result())
+                res = future.result()
+                if future_map[future] == "pubmed":
+                    pubmed_papers = res
+                else:
+                    arxiv_papers = res
             except Exception:
                 pass
+
+    # Filter arXiv results: key search terms must appear in title or abstract.
+    # Prevents irrelevant physics/CS papers from surfacing for medical/social queries.
+    if arxiv_papers and search_terms:
+        key_terms = {w.lower().rstrip("s") for w in search_terms.split()
+                     if len(w) > 3 and w.lower() not in _ACADEMIC_STOP}
+        if key_terms:
+            arxiv_papers = [
+                p for p in arxiv_papers
+                if any(t in (p.get("title", "") + " " + p.get("abstract", "")).lower()
+                       for t in key_terms)
+            ]
+
+    papers = pubmed_papers + arxiv_papers
 
     clear_status()
 
@@ -3170,13 +3223,13 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False)
     """
     _t_start = time.time()
 
-    # Specialized routing: try dedicated APIs before DDG
-    if not json_output:
-        _source_type = _classify_data_source(query)
-        if _source_type != "web":
-            _specialized = _run_specialized_query(query, _source_type, _t_start, interactive)
-            if _specialized is not None:
-                return _specialized
+    # Specialized routing: try dedicated APIs before DDG (runs in json_output mode too)
+    _source_type = _classify_data_source(query)
+    if _source_type != "web":
+        _specialized = _run_specialized_query(query, _source_type, _t_start, interactive,
+                                              json_output=json_output)
+        if _specialized is not None:
+            return _specialized
 
     tier = _classify_tier(query)
 
