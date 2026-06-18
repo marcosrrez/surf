@@ -2876,13 +2876,13 @@ def _handle_factual(query: str) -> "tuple[str, list[dict], bool] | None":
         or summary.get("type", "") == "disambiguation"
     )
 
-    if is_disambiguation and len(titles) > 1:
+    if is_disambiguation:
         choice_lines = [
             f"{C_ANSWER_MARK}{GLYPH_TLDR} TL;DR  Multiple Wikipedia articles match \"{titles[0]}\" — choose one.{C_RESET}",
             "",
         ]
         max_title_len = max(len(t) for t in titles[:4]) + 2
-        descs = descriptions[:4] if descriptions else [""] * 4
+        descs = descriptions[:4] if descriptions else [""] * len(titles[:4])
         for i, (t, d) in enumerate(zip(titles[:4], descs), 1):
             desc_str = f"  {C_META}{d}{C_RESET}" if d else ""
             choice_lines.append(f" {C_INTERACTIVE}{i}{C_RESET}  {t:<{max_title_len}}{desc_str}")
