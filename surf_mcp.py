@@ -175,21 +175,19 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 pubmed_papers: list[dict] = []
                 arxiv_papers: list[dict] = []
 
-                buf = io.StringIO()
-                with contextlib.redirect_stdout(buf):
-                    with ThreadPoolExecutor(max_workers=2) as executor:
-                        pubmed_future = executor.submit(_search_pubmed, search_terms)
-                        arxiv_future = executor.submit(_search_arxiv, search_terms)
-                        future_map = {pubmed_future: "pubmed", arxiv_future: "arxiv"}
-                        for future in as_completed(future_map, timeout=15.0):
-                            try:
-                                res = future.result()
-                                if future_map[future] == "pubmed":
-                                    pubmed_papers = res
-                                else:
-                                    arxiv_papers = res
-                            except Exception:
-                                pass
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    pubmed_future = executor.submit(_search_pubmed, search_terms)
+                    arxiv_future = executor.submit(_search_arxiv, search_terms)
+                    future_map = {pubmed_future: "pubmed", arxiv_future: "arxiv"}
+                    for future in as_completed(future_map, timeout=15.0):
+                        try:
+                            res = future.result()
+                            if future_map[future] == "pubmed":
+                                pubmed_papers = res
+                            else:
+                                arxiv_papers = res
+                        except Exception:
+                            pass
 
                 # Filter arXiv: key search terms must appear in title or abstract
                 if arxiv_papers and search_terms:
@@ -269,7 +267,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
             return _json_content({
                 "title": title,
-                "text_excerpt": text[:3000],
+                "text_excerpt": text[:6000],
             })
         except Exception as e:
             return _json_content({"error": str(e)})

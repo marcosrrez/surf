@@ -3882,7 +3882,9 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
     save_session_entry(url, "url", _truncate_at_sentence(summary, 300))
 
     # Save article read to Obsidian vault
-    _obs_note_path = _obsidian_save(url, summary, [], session_id=_obsidian_session_id())
+    _obs_note_path = _obsidian_save(title or url, summary, [], session_id=_obsidian_session_id())
+    if _obs_note_path:
+        print(f"\033[90m↳ saved to vault\033[0m")
 
     if json_output:
         _output_json(url, response, [domain], url=url, intent="read")
@@ -3893,7 +3895,7 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
     # Answer → Metadata/Action zone: SPACE_XS then divider
     vspace(ZONE_SPACING[("answer", "metadata")])
     print_divider()
-    _vault_hint = "   vault: v" if _obsidian_vault_path() else ""
+    _vault_hint = "   open in obsidian: v" if _obsidian_vault_path() else ""
     if related:
         print(f"{C_META}  related: 1{GLYPH_RANGE}{len(related)}   open {domain_link}: o   follow-up: ?   quit: q{_vault_hint}{C_RESET}")
     else:
@@ -3922,10 +3924,12 @@ def _handle_article_input(url: str, related: list[str], context: str, note_path:
         elif cl == "?":
             print()
             print("\033[1msurf reader commands\033[0m")
-            print(f"  \033[33mo\033[0m   open in browser  (or cmd+click the link in the header)")
-            print(f"  \033[33m?\033[0m   ask a follow-up question about this article")
-            print(f"  \033[33mn\033[0m   new search")
-            print(f"  \033[33mq\033[0m   quit")
+            print(f"  \033[33mo\033[0m              open in browser  (or cmd+click the link in the header)")
+            print(f"  \033[33mv\033[0m              open in Obsidian  (if vault configured)")
+            print(f"  \033[33m?\033[0m              ask a follow-up question about this article")
+            print(f"  \033[33m/note <text>\033[0m   append a note to the vault entry")
+            print(f"  \033[33mn\033[0m              new search")
+            print(f"  \033[33mq\033[0m              quit")
             print()
         elif cl == "n":
             query = surf_input("New search: ")
@@ -3943,7 +3947,13 @@ def _handle_article_input(url: str, related: list[str], context: str, note_path:
                 obs_url = f"obsidian://open?vault={urllib.parse.quote(vault_name)}&file={urllib.parse.quote(rel)}"
                 open_in_browser(obs_url)
             else:
-                print(f"\033[90m(no vault configured — run 'surf setup' to add one)\033[0m")
+                vault = _obsidian_vault_path()
+                if not vault:
+                    print(f"\033[90m(no vault configured — run 'surf setup' to add one)\033[0m")
+                elif not note_path:
+                    print(f"\033[90m(note was not saved — check vault permissions)\033[0m")
+                else:
+                    print(f"\033[90m(note file not found)\033[0m")
         elif cl.isdigit():
             idx = int(cl) - 1
             if followup_results and 0 <= idx < len(followup_results):
@@ -3971,7 +3981,11 @@ def _handle_article_input(url: str, related: list[str], context: str, note_path:
                     _nf.write(f"\n\n> 📝 {ts}: {note_text}\n")
                 print(f"\033[90m↳ note saved to vault\033[0m")
             else:
-                print(f"\033[90m(no vault note active — configure OBSIDIAN_VAULT in ~/.config/surf/config)\033[0m")
+                vault = _obsidian_vault_path()
+                if not vault:
+                    print(f"\033[90m(no vault configured — run 'surf setup' to add one)\033[0m")
+                else:
+                    print(f"\033[90m(note was not saved — check vault permissions)\033[0m")
         elif choice.strip():
             if _is_casual_input(choice):
                 print(f"\033[90m(surf is a search tool — try asking a question or picking a result)\033[0m")

@@ -217,6 +217,42 @@ Add a free Groq key and you effectively get unlimited searches — Groq handles 
 
 ---
 
+## Claude Code integration (MCP)
+
+surf can run as an MCP server inside Claude Code, giving Claude access to live search, weather, stocks, academic papers, Wikipedia, and URL reading — with no extra API keys. Claude Code synthesizes answers using its own subscription.
+
+### Setup
+
+Add this to `~/.claude/settings.json` (adjust the path to wherever you cloned surf):
+
+```json
+{
+  "mcpServers": {
+    "surf": {
+      "command": "/Users/you/surf/.venv/bin/python3",
+      "args": ["/Users/you/surf/surf_mcp.py"]
+    }
+  }
+}
+```
+
+Restart Claude Code. You'll see surf listed under MCP servers. Claude will automatically use it when you ask questions that benefit from live data.
+
+### Available tools
+
+| Tool | What it does |
+|------|-------------|
+| `search` | DuckDuckGo web search, returns top 10 results |
+| `weather` | Live forecast from Open-Meteo |
+| `stock` | Real-time price from Yahoo Finance |
+| `academic` | PubMed + arXiv paper search |
+| `factual` | Wikipedia entity lookup |
+| `read_url` | Fetch and extract any web page |
+
+**No extra API keys needed.** surf does the data gathering; Claude Code synthesizes the answer.
+
+---
+
 ## Requirements
 
 - Python 3.10+
