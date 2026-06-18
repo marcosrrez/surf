@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
-"""
-surf MCP server — exposes surf as tools for Claude Code and other MCP clients.
-
-Setup (add to ~/.claude/settings.json under mcpServers):
-  "surf": {
-    "command": "/path/to/surf/.venv/bin/python3",
-    "args": ["/path/to/surf/surf_mcp.py"]
-  }
-"""
+"""surf MCP server — data-only. Returns structured search/API data for Claude Code to synthesize."""
 
 import asyncio
+import contextlib
+import io
 import json
 import re
-import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 try:
@@ -22,67 +16,42 @@ try:
     from mcp.server.stdio import stdio_server
     import mcp.types as types
 except ImportError:
-    sys.exit(
-        "mcp package not installed. Run: pip install mcp\n"
-        "Or from the surf directory: .venv/bin/pip install mcp"
-    )
+    sys.exit("mcp package not installed: pip install mcp")
 
-SURF_DIR = Path(__file__).parent
-SURF_PY = SURF_DIR / "surf.py"
-PYTHON = sys.executable
+# Import surf data functions
+sys.path.insert(0, str(Path(__file__).parent))
+try:
+    from surf import (
+        ddg_search,
+        _handle_weather, _handle_financial, _handle_factual,
+        _search_pubmed, _search_arxiv,
+        _ACADEMIC_PREAMBLES, _ACADEMIC_STOP,
+        fetch_page, extract_text,
+    )
+except ImportError as e:
+    sys.exit(f"Could not import surf: {e}")
 
 server = Server("surf")
 
-
-def _run_surf(query: str) -> dict:
-    """Run surf with --json and return parsed result dict."""
-    try:
-        result = subprocess.run(
-            [PYTHON, str(SURF_PY), query, "--json"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            cwd=str(SURF_DIR),
-        )
-        stdout = result.stdout.strip()
-        if stdout:
-            return json.loads(stdout)
-        return {"error": result.stderr.strip() or "No output from surf"}
-    except subprocess.TimeoutExpired:
-        return {"error": "Query timed out after 60 seconds"}
-    except json.JSONDecodeError as e:
-        return {"error": f"Could not parse surf output: {e}"}
-    except Exception as e:
-        return {"error": str(e)}
+_ANSI = re.compile(r'\033\[[0-9;]*m')
 
 
-def _strip_ansi(text: str) -> str:
-    return re.sub(r'\033\[[0-9;]*m', '', text)
+def _strip(text: str) -> str:
+    return _ANSI.sub('', text).strip()
 
 
-def _format_result(data: dict) -> str:
-    """Format surf JSON result as clean text for MCP clients."""
-    if "error" in data:
-        return f"Error: {data['error']}"
+def _call(fn, *args, **kwargs):
+    """Call a surf function, suppressing all stdout."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        return fn(*args, **kwargs)
 
-    parts = []
 
-    if tldr := data.get("tldr"):
-        parts.append(f"**Summary:** {_strip_ansi(tldr)}")
-
-    if body := data.get("answer") or data.get("response"):
-        clean = _strip_ansi(str(body)).strip()
-        if clean and clean != data.get("tldr", ""):
-            parts.append(clean)
-
-    if sources := data.get("sources"):
-        lines = ["**Sources:**"]
-        for i, s in enumerate(sources[:6], 1):
-            lines.append(f"{i}. {s}" if isinstance(s, str) else
-                         f"{i}. {s.get('title', '')} — {s.get('url', '')}")
-        parts.append("\n".join(lines))
-
-    return "\n\n".join(parts) if parts else "No results found."
+def _json_content(result: dict | list) -> list[types.TextContent]:
+    return [types.TextContent(
+        type="text",
+        text=json.dumps(result, ensure_ascii=False, indent=2),
+    )]
 
 
 def _tool(name: str, description: str, query_param: str = "query",
@@ -103,22 +72,22 @@ async def list_tools() -> list[types.Tool]:
     return [
         _tool(
             "search",
-            "Search the web and get an AI-synthesized answer with cited sources. "
-            "Best for general questions, current events, how-to, research, comparisons. "
-            "surf routes weather/stock/academic/factual queries to specialized APIs automatically.",
+            "Search the web via DuckDuckGo and return a list of results with titles, "
+            "URLs, domains, and snippets. Best for general questions, current events, "
+            "how-to, research, comparisons. Returns raw structured data for Claude to synthesize.",
             query_desc="Natural language search query",
         ),
         _tool(
             "weather",
-            "Get a live weather forecast for any location. "
-            "Returns current conditions, hourly and daily forecast from Open-Meteo. "
+            "Get a live weather forecast for any location from Open-Meteo. "
+            "Returns current conditions, hourly and daily forecast data. "
             "Use for temperature, rain, wind, UV index queries.",
             query_desc="Weather query, e.g. 'weather in Austin tomorrow' or 'will it rain in NYC this weekend'",
         ),
         _tool(
             "stock",
             "Get real-time stock or crypto price data from Yahoo Finance. "
-            "Returns current price, day/52-week range, market cap, volume, and trend sparkline.",
+            "Returns current price, day/52-week range, market cap, volume, and trend data.",
             query_desc="Stock query, e.g. 'AAPL stock price' or 'Apple stock today' or 'bitcoin price'",
         ),
         _tool(
@@ -131,14 +100,13 @@ async def list_tools() -> list[types.Tool]:
         _tool(
             "factual",
             "Look up a named entity on Wikipedia. "
-            "Use for 'what is X', 'who is Y', 'where is Z' — people, places, events, concepts. "
-            "Handles disambiguation pages with an inline choice.",
+            "Use for 'what is X', 'who is Y', 'where is Z' — people, places, events, concepts.",
             query_desc="Entity query, e.g. 'what is the Coriolis effect' or 'who is Ada Lovelace'",
         ),
         _tool(
             "read_url",
             "Fetch and read any web page or article. "
-            "Returns AI-formatted full article content with a TL;DR header. "
+            "Returns the page title and first 3000 characters of extracted text. "
             "Use when you have a specific URL to read and extract information from.",
             query_param="url",
             query_desc="The full URL to fetch and read",
@@ -148,10 +116,166 @@ async def list_tools() -> list[types.Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-    query = arguments.get("query") or arguments.get("url", "")
     loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(None, _run_surf, query)
-    return [types.TextContent(type="text", text=_format_result(data))]
+
+    if name == "search":
+        query = arguments.get("query", "")
+        try:
+            results = await loop.run_in_executor(
+                None, lambda: _call(ddg_search, query, num_results=10)
+            )
+            return _json_content(results or [])
+        except Exception as e:
+            return _json_content({"error": str(e)})
+
+    elif name == "weather":
+        query = arguments.get("query", "")
+        try:
+            result = await loop.run_in_executor(
+                None, lambda: _call(_handle_weather, query)
+            )
+            if result is None:
+                return _json_content({"error": "no results found"})
+            response_str, sources, _streaming = result
+            return _json_content({
+                "summary": _strip(response_str),
+                "sources": sources,
+            })
+        except Exception as e:
+            return _json_content({"error": str(e)})
+
+    elif name == "stock":
+        query = arguments.get("query", "")
+        try:
+            result = await loop.run_in_executor(
+                None, lambda: _call(_handle_financial, query)
+            )
+            if result is None:
+                return _json_content({"error": "no ticker found"})
+            response_str, sources, _streaming = result
+            return _json_content({
+                "summary": _strip(response_str),
+                "sources": sources,
+            })
+        except Exception as e:
+            return _json_content({"error": str(e)})
+
+    elif name == "academic":
+        query = arguments.get("query", "")
+        try:
+            def _do_academic():
+                # Strip request-phrasing preambles
+                search_terms = query
+                ql = query.lower()
+                for prefix in _ACADEMIC_PREAMBLES:
+                    if ql.startswith(prefix):
+                        search_terms = query[len(prefix):]
+                        break
+
+                pubmed_papers: list[dict] = []
+                arxiv_papers: list[dict] = []
+
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        pubmed_future = executor.submit(_search_pubmed, search_terms)
+                        arxiv_future = executor.submit(_search_arxiv, search_terms)
+                        future_map = {pubmed_future: "pubmed", arxiv_future: "arxiv"}
+                        for future in as_completed(future_map, timeout=15.0):
+                            try:
+                                res = future.result()
+                                if future_map[future] == "pubmed":
+                                    pubmed_papers = res
+                                else:
+                                    arxiv_papers = res
+                            except Exception:
+                                pass
+
+                # Filter arXiv: key search terms must appear in title or abstract
+                if arxiv_papers and search_terms:
+                    key_terms = {w.lower().rstrip("s") for w in search_terms.split()
+                                 if len(w) > 3 and w.lower() not in _ACADEMIC_STOP}
+                    if key_terms:
+                        arxiv_papers = [
+                            p for p in arxiv_papers
+                            if any(t in (p.get("title", "") + " " + p.get("abstract", "")).lower()
+                                   for t in key_terms)
+                        ]
+
+                papers = pubmed_papers + arxiv_papers
+
+                # Deduplicate by title prefix
+                seen_titles: set = set()
+                unique_papers = []
+                for p in papers:
+                    key = p["title"].lower()[:50]
+                    if key not in seen_titles:
+                        seen_titles.add(key)
+                        unique_papers.append(p)
+                papers = unique_papers[:5]
+
+                return [
+                    {
+                        "title": p.get("title", ""),
+                        "authors": p.get("authors", ""),
+                        "year": p.get("year", ""),
+                        "abstract": p.get("abstract", ""),
+                        "url": p.get("link", ""),
+                        "source": p.get("source", ""),
+                    }
+                    for p in papers
+                ]
+
+            papers = await loop.run_in_executor(None, _do_academic)
+            if not papers:
+                return _json_content({"error": "no results found"})
+            return _json_content({"papers": papers})
+        except Exception as e:
+            return _json_content({"error": str(e)})
+
+    elif name == "factual":
+        query = arguments.get("query", "")
+        try:
+            result = await loop.run_in_executor(
+                None, lambda: _call(_handle_factual, query)
+            )
+            if result is None:
+                return _json_content({"error": "not found"})
+            response_str, sources, _streaming = result
+            url = sources[0].get("url", "") if sources else ""
+            return _json_content({
+                "summary": _strip(response_str),
+                "url": url,
+            })
+        except Exception as e:
+            return _json_content({"error": str(e)})
+
+    elif name == "read_url":
+        url = arguments.get("url", "")
+        try:
+            def _do_read():
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    html = fetch_page(url)
+                    extracted = extract_text(html, return_title=True)
+                return extracted
+
+            extracted = await loop.run_in_executor(None, _do_read)
+
+            if isinstance(extracted, tuple):
+                title, text = extracted
+            else:
+                title, text = "", extracted or ""
+
+            return _json_content({
+                "title": title,
+                "text_excerpt": text[:3000],
+            })
+        except Exception as e:
+            return _json_content({"error": str(e)})
+
+    else:
+        return _json_content({"error": f"unknown tool: {name}"})
 
 
 async def main() -> None:
@@ -161,7 +285,7 @@ async def main() -> None:
             write_stream,
             InitializationOptions(
                 server_name="surf",
-                server_version="1.0.0",
+                server_version="2.0.0",
                 capabilities=server.get_capabilities(
                     notification_options=NotificationOptions(),
                     experimental_capabilities={},
