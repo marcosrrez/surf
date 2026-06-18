@@ -2830,7 +2830,102 @@ def _handle_academic(query: str) -> "tuple[str, list[dict], bool] | None":
 
 
 def _handle_factual(query: str) -> "tuple[str, list[dict], bool] | None":
-    return None
+    """Look up named entity on Wikipedia. Disambiguation → inline menu, not DDG fallback."""
+    print_status("↳ looking up Wikipedia...")
+
+    try:
+        search_r = requests.get(
+            "https://en.wikipedia.org/w/opensearch",
+            params={"search": query, "limit": 4, "format": "json"},
+            headers=HEADERS, timeout=2.0,
+        )
+        search_r.raise_for_status()
+        search_data = search_r.json()
+        titles = search_data[1] if len(search_data) > 1 else []
+        descriptions = search_data[2] if len(search_data) > 2 else []
+        urls = search_data[3] if len(search_data) > 3 else []
+        if not titles:
+            clear_status()
+            return None
+    except Exception:
+        clear_status()
+        return None
+
+    try:
+        title_encoded = titles[0].replace(" ", "_")
+        summary_r = requests.get(
+            f"https://en.wikipedia.org/api/rest_v1/page/summary/{title_encoded}",
+            headers=HEADERS, timeout=2.0,
+        )
+        summary_r.raise_for_status()
+        summary = summary_r.json()
+    except Exception:
+        clear_status()
+        return None
+
+    clear_status()
+
+    extract = summary.get("extract", "")
+    description = summary.get("description", "")
+    page_url = summary.get("content_urls", {}).get("desktop", {}).get("page", urls[0] if urls else "")
+
+    is_disambiguation = (
+        len(extract) < 100
+        or "may refer to" in extract.lower()
+        or "disambiguation" in description.lower()
+        or summary.get("type", "") == "disambiguation"
+    )
+
+    if is_disambiguation and len(titles) > 1:
+        choice_lines = [
+            f"{C_ANSWER_MARK}{GLYPH_TLDR} TL;DR  Multiple Wikipedia articles match \"{titles[0]}\" — choose one.{C_RESET}",
+            "",
+        ]
+        max_title_len = max(len(t) for t in titles[:4]) + 2
+        descs = descriptions[:4] if descriptions else [""] * 4
+        for i, (t, d) in enumerate(zip(titles[:4], descs), 1):
+            desc_str = f"  {C_META}{d}{C_RESET}" if d else ""
+            choice_lines.append(f" {C_INTERACTIVE}{i}{C_RESET}  {t:<{max_title_len}}{desc_str}")
+        response = "\n".join(choice_lines)
+        sources = [
+            {"title": t, "url": u, "domain": "en.wikipedia.org", "snippet": d}
+            for t, d, u in zip(
+                titles[:4],
+                descs,
+                urls[:4] if urls else [""] * 4,
+            )
+        ]
+        print_header(titles[0], f"{C_META}{GLYPH_META} Wikipedia · disambiguation{C_RESET}", zone_after=SPACE_SM)
+        return response, sources, False
+
+    paragraphs = [p.strip() for p in extract.split("\n") if p.strip()]
+    if paragraphs:
+        display_text = paragraphs[0]
+        if len(display_text.split()) < 80 and len(paragraphs) > 1:
+            display_text += "\n\n" + paragraphs[1]
+    else:
+        display_text = extract[:400]
+
+    first_sentence = display_text.split(".")[0] + "."
+    if len(first_sentence) > 120:
+        first_sentence = first_sentence[:117] + GLYPH_ELLIPSIS
+
+    lines = [
+        f"{C_ANSWER_MARK}{GLYPH_TLDR} TL;DR  {first_sentence}{C_RESET}",
+        "",
+        display_text,
+    ]
+    response = "\n".join(lines)
+
+    print_header(titles[0], f"{C_META}{GLYPH_META} Wikipedia · {description}{C_RESET}", zone_after=SPACE_SM)
+
+    sources = [{
+        "title": f"{titles[0]} — Wikipedia",
+        "url": page_url,
+        "domain": "en.wikipedia.org",
+        "snippet": description,
+    }]
+    return response, sources, False
 
 
 def _classify_tier(query: str) -> str:

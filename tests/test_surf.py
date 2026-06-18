@@ -1743,3 +1743,104 @@ class TestAcademicHandler:
         response, sources, _ = result
         source_domains = [s["domain"] for s in sources]
         assert any("pubmed" in d or "arxiv" in d for d in source_domains)
+
+
+class TestFactualHandler:
+    def _wiki_summary(self, title="Eiffel Tower"):
+        return {
+            "title": title,
+            "description": "Iron lattice tower in Paris, France",
+            "extract": ("The Eiffel Tower is a wrought-iron lattice tower on the Champ de Mars "
+                        "in Paris, France. It was named after the engineer Gustave Eiffel, "
+                        "whose company designed and built the tower from 1887 to 1889."),
+            "content_urls": {"desktop": {"page": f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"}},
+            "type": "standard",
+        }
+
+    def _wiki_disambiguation(self):
+        return {
+            "title": "Mercury",
+            "description": "disambiguation page",
+            "extract": "Mercury may refer to:",
+            "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Mercury"}},
+            "type": "disambiguation",
+        }
+
+    def _mock_search_success(self, mock_get, title="Eiffel Tower"):
+        def side_effect(url, **kwargs):
+            r = MagicMock()
+            r.raise_for_status = MagicMock()
+            if "opensearch" in url:
+                r.json.return_value = [title, [title], ["description"], [f"https://en.wikipedia.org/wiki/{title}"]]
+            else:
+                r.json.return_value = self._wiki_summary(title)
+            return r
+        mock_get.side_effect = side_effect
+
+    def test_handle_factual_returns_none_on_network_failure(self):
+        from surf import _handle_factual
+        with patch("surf.requests.get", side_effect=Exception("timeout")), \
+             patch("surf.print_status"), patch("surf.clear_status"):
+            result = _handle_factual("what is the Eiffel Tower")
+        assert result is None
+
+    def test_handle_factual_returns_none_when_no_results(self):
+        from surf import _handle_factual
+        def side_effect(url, **kwargs):
+            r = MagicMock()
+            r.raise_for_status = MagicMock()
+            r.json.return_value = ["query", [], [], []]
+            return r
+        with patch("surf.requests.get", side_effect=side_effect), \
+             patch("surf.print_status"), patch("surf.clear_status"):
+            result = _handle_factual("what is zzz xyzabc")
+        assert result is None
+
+    def test_handle_factual_returns_entity_response(self):
+        from surf import _handle_factual
+        with patch("surf.requests.get") as mock_get, \
+             patch("surf.print_status"), patch("surf.clear_status"), \
+             patch("surf.print_header"):
+            self._mock_search_success(mock_get)
+            result = _handle_factual("what is the Eiffel Tower")
+        assert result is not None
+        response, sources, streaming = result
+        assert "Eiffel" in response
+        assert not streaming
+        assert sources[0]["domain"] == "en.wikipedia.org"
+
+    def test_handle_factual_disambiguation_shows_choice_menu(self):
+        from surf import _handle_factual
+        def side_effect(url, **kwargs):
+            r = MagicMock()
+            r.raise_for_status = MagicMock()
+            if "opensearch" in url:
+                r.json.return_value = [
+                    "Mercury",
+                    ["Mercury (planet)", "Mercury (element)", "Freddie Mercury"],
+                    ["desc1", "desc2", "desc3"],
+                    ["url1", "url2", "url3"]
+                ]
+            else:
+                r.json.return_value = self._wiki_disambiguation()
+            return r
+        with patch("surf.requests.get", side_effect=side_effect), \
+             patch("surf.print_status"), patch("surf.clear_status"), \
+             patch("surf.print_header"):
+            result = _handle_factual("what is Mercury")
+        assert result is not None
+        response, sources, streaming = result
+        assert "Mercury (planet)" in response or "choose" in response.lower()
+        assert len(sources) > 1
+
+    def test_handle_factual_tldr_is_first_sentence(self):
+        from surf import _handle_factual
+        with patch("surf.requests.get") as mock_get, \
+             patch("surf.print_status"), patch("surf.clear_status"), \
+             patch("surf.print_header"):
+            self._mock_search_success(mock_get)
+            result = _handle_factual("what is the Eiffel Tower")
+        assert result is not None
+        response, _, _ = result
+        assert "TL;DR" in response
+        assert "wrought-iron" in response.lower() or "eiffel" in response.lower()
