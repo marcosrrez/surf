@@ -5820,7 +5820,7 @@ def _parse_watch_interval(spec: str) -> int:
     return max(30, seconds)
 
 
-def _watch_loop(query: str, interval_seconds: int, json_output: bool = False) -> None:
+def _watch_loop(query: str, interval_seconds: int, json_output: bool = False, deep: bool = False, source_filter: list[str] | None = None) -> None:
     """Run search_flow on a loop. Ctrl+C to exit."""
     iteration = 0
     while True:
@@ -5833,7 +5833,7 @@ def _watch_loop(query: str, interval_seconds: int, json_output: bool = False) ->
             print(f"{C_META}{GLYPH_META} refreshed {GLYPH_SEPARATOR} {now}{C_RESET}")
             vspace(SPACE_XS)
         try:
-            search_flow(query, interactive=False, json_output=json_output)
+            search_flow(query, interactive=False, json_output=json_output, deep=deep, source_filter=source_filter)
         except Exception as e:
             print(f"{C_ERROR}Watch error: {e}{C_RESET}")
         time.sleep(interval_seconds)
@@ -5841,10 +5841,10 @@ def _watch_loop(query: str, interval_seconds: int, json_output: bool = False) ->
 
 # ─── Diff mode ───────────────────────────────────────────────────────────────
 
-def _diff_search(query: str, json_output: bool = False) -> None:
+def _diff_search(query: str, json_output: bool = False, deep: bool = False, source_filter: list[str] | None = None) -> None:
     """Run a new search and compare against the last snapshot."""
     old = _load_search_snapshot(query)
-    results, response = search_flow(query, interactive=False, json_output=False)
+    results, response = search_flow(query, interactive=False, json_output=False, deep=deep, source_filter=source_filter)
 
     _save_search_snapshot(query, response, results)
 
@@ -6074,14 +6074,16 @@ def main():
         print(f"{C_META}{GLYPH_META} watching \"{query[:50]}\" every {interval_label} {GLYPH_SEPARATOR} Ctrl+C to stop{C_RESET}")
         vspace(SPACE_XS)
         try:
-            _watch_loop(query, interval, json_output=json_output)
+            _source_filter = _parse_source_list(args.sources) if args.sources else None
+            _watch_loop(query, interval, json_output=json_output, deep=args.deep, source_filter=_source_filter)
         except KeyboardInterrupt:
             print(f"\n{C_META}watch stopped{C_RESET}")
         return
 
     # --diff: compare against last search
     if args.diff:
-        _diff_search(query, json_output=json_output)
+        _source_filter = _parse_source_list(args.sources) if args.sources else None
+        _diff_search(query, json_output=json_output, deep=args.deep, source_filter=_source_filter)
         return
 
     # Local file analysis: surf ./file.py "what does this do"
