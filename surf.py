@@ -202,275 +202,42 @@ except ImportError:
     def _table_block_to_rich(rows: list[str]) -> str:
         return "\n".join(rows)
 
-CONFIG_PATH = os.path.expanduser("~/.config/surf/config")
-SESSION_FILE = os.path.expanduser("~/.config/surf/session.json")
-SESSION_TTL = 4 * 60 * 60  # 4 hours — one work session
-
-def _truncate_at_sentence(text: str, max_chars: int) -> str:
-    """Truncate at the last sentence boundary before max_chars."""
-    if len(text) <= max_chars:
-        return text
-    truncated = text[:max_chars]
-    last_period = max(truncated.rfind(". "), truncated.rfind(".\n"))
-    return truncated[:last_period + 1] if last_period > max_chars // 2 else truncated
-
-
-def load_session() -> list[dict]:
-    """Load session entries, returning empty list if expired or missing."""
-    try:
-        with open(SESSION_FILE) as f:
-            data = json.load(f)
-        if time.time() > data.get("expires_at", 0):
-            return []  # expired
-        return data.get("entries", [])
-    except Exception:
-        return []
-
-def save_session_entry(query: str, entry_type: str, summary: str) -> None:
-    """Append a new entry to the session, creating or refreshing as needed."""
-    entries = load_session()
-    # Remove duplicate queries
-    entries = [e for e in entries if e.get("query") != query]
-    entries.append({
-        "query": query,
-        "type": entry_type,
-        "summary": _truncate_at_sentence(summary, 500),
-        "timestamp": int(time.time()),
-    })
-    # Keep last 10 entries
-    entries = entries[-10:]
-    try:
-        os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
-        with open(SESSION_FILE, "w") as f:
-            json.dump({
-                "expires_at": int(time.time()) + SESSION_TTL,
-                "entries": entries,
-            }, f)
-    except Exception:
-        pass
-
-def format_session_context() -> str:
-    """Return session entries as a context string for Groq prompts."""
-    entries = load_session()
-    if not entries:
-        return ""
-    lines = ["Earlier in this session:"]
-    for e in entries[-5:]:  # last 5 only
-        lines.append(f"  [{e['type']}] {e['query']}: {e['summary']}")
-    return "\n".join(lines)
-
-# ─── Named threads (persistent research) ────────────────────────────────────
-
-THREAD_DIR = os.path.expanduser("~/.config/surf/threads")
+# ─── Imports from extracted modules ──────────────────────────────────────────
+import surf_config
+from surf_config import load_config, CONFIG_PATH, SESSION_FILE, SESSION_TTL, THREAD_DIR, SNAPSHOT_DIR
+from surf_store import (
+    _truncate_at_sentence, load_session, save_session_entry, format_session_context,
+    _thread_path, _load_thread, _save_thread_entry, _list_threads,
+    _export_thread, _export_session,
+    _snapshot_path, _save_search_snapshot, _load_search_snapshot,
+    _obsidian_vault_path, _make_note_slug, _make_frontmatter,
+    _obsidian_save as _obsidian_save_raw, _obsidian_find_related,
+    _obsidian_link_related, _obsidian_session_id,
+    _preferences_path, _read_preferences, _write_preferences,
+)
+from surf_backends import (
+    SSL_CERT, HEADERS, DDG_URL, JINA_BASE,
+    fetch_page, _fetch_with_jina, _is_spa_shell,
+    ddg_search, brave_search,
+    _SOURCE_SHORTNAMES, _parse_source_list, _filter_by_sources,
+)
 
 
-def _thread_path(name: str) -> str:
-    """Return file path for a named thread."""
-    safe_name = re.sub(r"[^a-z0-9-]", "", name.lower().strip().replace(" ", "-"))
-    return os.path.join(THREAD_DIR, f"{safe_name}.json")
+def _get_search_backend() -> callable:
+    """Return brave_search if BRAVE_API_KEY is configured, else ddg_search.
+    Defined here (not in surf_backends) so tests can patch surf.ddg_search/brave_search."""
+    import surf_config
+    config = surf_config.load_config()
+    if config.get("BRAVE_API_KEY") or os.environ.get("BRAVE_API_KEY"):
+        return brave_search
+    return ddg_search
 
 
-def _load_thread(name: str) -> dict:
-    """Load a named thread. Returns empty structure if thread doesn't exist."""
-    path = _thread_path(name)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"name": name, "entries": [], "created_at": 0, "updated_at": 0}
+def _obsidian_save(query, response, sources, session_id):
+    """Wrapper that passes _identify_entity_type to the store module."""
+    return _obsidian_save_raw(query, response, sources, session_id, identify_entity_type_fn=_identify_entity_type)
 
 
-def _save_thread_entry(name: str, query: str, response: str, sources: list[dict]) -> None:
-    """Append an entry to a named thread."""
-    os.makedirs(THREAD_DIR, exist_ok=True)
-    thread = _load_thread(name)
-    now = int(time.time())
-    if not thread["created_at"]:
-        thread["created_at"] = now
-    thread["updated_at"] = now
-    thread["name"] = name
-    thread["entries"].append({
-        "query": query,
-        "response": _truncate_at_sentence(response, 2000),
-        "sources": [{"domain": s.get("domain", ""), "url": s.get("url", "")} for s in sources[:5]],
-        "timestamp": now,
-    })
-    path = _thread_path(name)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(thread, f, ensure_ascii=False, indent=2)
-
-
-def _list_threads() -> list[dict]:
-    """List all named threads with metadata."""
-    if not os.path.isdir(THREAD_DIR):
-        return []
-    threads = []
-    for fname in os.listdir(THREAD_DIR):
-        if not fname.endswith(".json"):
-            continue
-        try:
-            with open(os.path.join(THREAD_DIR, fname), "r", encoding="utf-8") as f:
-                data = json.load(f)
-            threads.append({
-                "name": data.get("name", fname.replace(".json", "")),
-                "entries": len(data.get("entries", [])),
-                "updated_at": data.get("updated_at", 0),
-            })
-        except Exception:
-            continue
-    return sorted(threads, key=lambda t: t["updated_at"], reverse=True)
-
-
-# ─── Export ──────────────────────────────────────────────────────────────────
-
-def _export_thread(name: str) -> str:
-    """Export a named thread as a markdown document."""
-    thread = _load_thread(name)
-    if not thread["entries"]:
-        return ""
-
-    from datetime import datetime
-    lines = [f"# {name}\n"]
-    created = datetime.fromtimestamp(thread["created_at"]).strftime("%Y-%m-%d")
-    updated = datetime.fromtimestamp(thread["updated_at"]).strftime("%Y-%m-%d")
-    lines.append(f"*Research thread {GLYPH_SEPARATOR} {len(thread['entries'])} entries {GLYPH_SEPARATOR} {created} to {updated}*\n")
-    lines.append("---\n")
-
-    for entry in thread["entries"]:
-        ts = datetime.fromtimestamp(entry["timestamp"]).strftime("%Y-%m-%d %H:%M")
-        lines.append(f"## {entry['query']}\n")
-        lines.append(f"*{ts}*\n")
-        lines.append(f"{entry['response']}\n")
-        if entry.get("sources"):
-            lines.append("\n**Sources:**")
-            for s in entry["sources"]:
-                url = s.get("url", "")
-                domain = s.get("domain", "")
-                if url:
-                    lines.append(f"- [{domain}]({url})")
-                elif domain:
-                    lines.append(f"- {domain}")
-            lines.append("")
-        lines.append("---\n")
-
-    return "\n".join(lines)
-
-
-def _export_session() -> str:
-    """Export current session as a markdown document."""
-    entries = load_session()
-    if not entries:
-        return ""
-
-    from datetime import datetime
-    lines = ["# Surf Session\n"]
-    first_ts = datetime.fromtimestamp(entries[0]["timestamp"]).strftime("%Y-%m-%d %H:%M")
-    lines.append(f"*{len(entries)} searches starting {first_ts}*\n")
-    lines.append("---\n")
-
-    for entry in entries:
-        ts = datetime.fromtimestamp(entry["timestamp"]).strftime("%H:%M")
-        lines.append(f"## {entry['query']}\n")
-        lines.append(f"*{ts} {GLYPH_SEPARATOR} {entry['type']}*\n")
-        lines.append(f"{entry['summary']}\n")
-        lines.append("---\n")
-
-    return "\n".join(lines)
-
-
-# ─── Custom source lists ────────────────────────────────────────────────────
-
-_SOURCE_SHORTNAMES = {
-    "arxiv": "arxiv.org", "pubmed": "pubmed.ncbi.nlm.nih.gov",
-    "nature": "nature.com", "science": "science.org",
-    "reuters": "reuters.com", "bbc": "bbc.com",
-    "nyt": "nytimes.com", "nytimes": "nytimes.com",
-    "wapo": "washingtonpost.com", "wsj": "wsj.com",
-    "bloomberg": "bloomberg.com", "techcrunch": "techcrunch.com",
-    "ars": "arstechnica.com", "verge": "theverge.com",
-    "wired": "wired.com", "wikipedia": "en.wikipedia.org",
-    "wiki": "en.wikipedia.org", "github": "github.com",
-    "stackoverflow": "stackoverflow.com", "so": "stackoverflow.com",
-    "hn": "news.ycombinator.com", "guardian": "theguardian.com",
-    "apnews": "apnews.com", "ap": "apnews.com", "cnn": "cnn.com",
-}
-
-
-def _parse_source_list(spec: str) -> list[str]:
-    """Parse a comma-separated source list into domain suffixes."""
-    if not spec or not spec.strip():
-        return []
-    domains = []
-    for part in spec.split(","):
-        part = part.strip().lower()
-        if not part:
-            continue
-        if part in _SOURCE_SHORTNAMES:
-            domains.append(_SOURCE_SHORTNAMES[part])
-        elif "." in part:
-            domains.append(part)
-        else:
-            domains.append(f"{part}.com")
-    return domains
-
-
-def _filter_by_sources(results: list[dict], allowed_domains: list[str]) -> list[dict]:
-    """Filter search results to only include results from allowed domains."""
-    if not allowed_domains:
-        return results
-    return [
-        r for r in results
-        if any(allowed in r.get("domain", "") for allowed in allowed_domains)
-    ]
-
-
-# ─── Search snapshots (diff mode) ────────────────────────────────────────────
-
-SNAPSHOT_DIR = os.path.expanduser("~/.config/surf/snapshots")
-
-
-def _snapshot_path(query: str) -> str:
-    """Return path for a search snapshot file."""
-    slug = re.sub(r"[^a-z0-9-]", "", query.lower().strip().replace(" ", "-"))
-    slug = re.sub(r"-{2,}", "-", slug).strip("-")[:60]
-    return os.path.join(SNAPSHOT_DIR, f"{slug}.json")
-
-
-def _save_search_snapshot(query: str, response: str, sources: list[dict]) -> None:
-    """Save a search result as a snapshot for later diff comparison."""
-    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
-    path = _snapshot_path(query)
-    data = {
-        "query": query,
-        "response": response,
-        "sources": [{"domain": s.get("domain", ""), "url": s.get("url", "")} for s in sources[:10]],
-        "timestamp": int(time.time()),
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-
-
-def _load_search_snapshot(query: str) -> dict | None:
-    """Load a previous search snapshot. Returns None if no snapshot exists."""
-    path = _snapshot_path(query)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
-
-
-def load_config() -> dict:
-    """Load key=value pairs from ~/.config/surf/config"""
-    config = {}
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.partition("=")
-                    config[key.strip()] = value.strip()
-    return config
 
 # Matches: nasa.gov, nasa.gov/path, www.nasa.gov, http://nasa.gov,
 # en.wikipedia.org, en.wikipedia.org/wiki/Black_hole
@@ -486,31 +253,6 @@ def detect_input_type(text: str) -> str:
         return "url"
     return "query"
 
-SSL_CERT = "/etc/ssl/cert.pem"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    # Omit Accept-Encoding so requests uses its own transparent decompression
-    # (gzip/deflate). Advertising "br" causes DDG to return Brotli-compressed
-    # content that requests cannot decompress without the optional brotli
-    # package, resulting in garbled bytes and zero parsed results.
-    "DNT": "1",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Cache-Control": "max-age=0",
-}
-
-def fetch_page(url: str) -> str:
-    """Fetch a URL and return raw HTML. Raises requests.HTTPError on bad status."""
-    if not url.startswith("http"):
-        url = "https://" + url
-    r = requests.get(url, headers=HEADERS, verify=SSL_CERT, timeout=25)
-    r.raise_for_status()
-    return r.text
 
 def extract_text(html: str, max_words: int = 6000, return_title: bool = False):
     """
@@ -610,17 +352,6 @@ _VALUABLE_PAGE_KEYWORDS = {
     "faq", "info", "team", "staff", "appointment", "book", "schedule",
 }
 
-JINA_BASE = "https://r.jina.ai/"
-
-def _is_spa_shell(html: str) -> bool:
-    """Return True if html looks like a JS SPA shell with no real content."""
-    if len(html) > 15000:
-        return False  # too big to be a shell
-    # SPA shells typically have a module script and almost no body text
-    has_module_script = 'type="module"' in html or "type='module'" in html
-    soup = BeautifulSoup(html, "html.parser")
-    body_text = soup.get_text(strip=True)
-    return has_module_script and len(body_text) < 500
 
 _UNCERTAINTY_SIGNALS = [
     "to be confirmed", "to be determined", "tbd", "yet to be announced",
@@ -633,24 +364,6 @@ def _has_uncertainty(text: str) -> bool:
     """Return True if response contains stale/uncertain data signals."""
     text_lower = text.lower()
     return any(signal in text_lower for signal in _UNCERTAINTY_SIGNALS)
-
-def _fetch_with_jina(url: str) -> str:
-    """
-    Fetch a JS-rendered page using Jina.ai Reader.
-    Returns rendered markdown text, or empty string on failure.
-    """
-    jina_url = JINA_BASE + url
-    try:
-        r = requests.get(
-            jina_url,
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "text/plain"},
-            verify=SSL_CERT,
-            timeout=20,
-        )
-        r.raise_for_status()
-        return r.text
-    except Exception:
-        return ""
 
 def _get_sitemap_urls(base_url: str) -> list[str]:
     """Fetch sitemap.xml and return a list of page URLs."""
@@ -812,111 +525,6 @@ def build_read_prompt(title: str, text: str) -> str:
     """Build Groq prompt for reading a specific page."""
     return f"Page title: {title}\n\nContent:\n{text}"
 
-DDG_URL = "https://lite.duckduckgo.com/lite/"
-
-def ddg_search(query: str, num_results: int = 5) -> list[dict]:
-    """Search DuckDuckGo and return list of {title, url, domain, snippet}."""
-    from urllib.parse import urlparse
-
-    if _HAS_DDGS:
-        with DDGS() as ddgs:
-            raw = list(ddgs.text(query, max_results=num_results))
-        results = []
-        for r in raw:
-            url = r.get("href", "")
-            parsed = urlparse(url)
-            domain = parsed.netloc.removeprefix("www.") if parsed.netloc else url.split("/")[0]
-            results.append({
-                "title": r.get("title", ""),
-                "url": url,
-                "domain": domain,
-                "snippet": r.get("body", ""),
-            })
-        return results
-
-    # Fallback: scrape DDG Lite directly
-    r = requests.post(
-        DDG_URL,
-        data={"q": query},
-        headers=HEADERS,
-        verify=SSL_CERT,
-        timeout=10
-    )
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
-
-    results = []
-    links = soup.find_all("a", class_="result-link")
-    snippets_els = soup.find_all("td", class_="result-snippet")
-
-    for link, snippet_el in zip(links, snippets_els):
-        from urllib.parse import unquote, parse_qs
-        href = link.get("href", "")
-        actual_url = href
-        if href:
-            parsed = urlparse(href)
-            uddg = parse_qs(parsed.query).get("uddg", [])
-            if uddg:
-                actual_url = unquote(uddg[0])
-            elif parsed.scheme in ("http", "https"):
-                actual_url = href
-
-        parsed_actual = urlparse(actual_url)
-        domain = parsed_actual.netloc.removeprefix("www.") if parsed_actual.netloc else actual_url.split("/")[0]
-
-        results.append({
-            "title": link.get_text(strip=True),
-            "url": actual_url,
-            "domain": domain,
-            "snippet": snippet_el.get_text(strip=True),
-        })
-
-        if len(results) >= num_results:
-            break
-
-    return results
-
-
-def brave_search(query: str, num_results: int = 5) -> list[dict]:
-    """Search Brave and return list of {title, url, domain, snippet}. Same format as ddg_search."""
-    from urllib.parse import urlparse
-    config = load_config()
-    api_key = config.get("BRAVE_API_KEY", os.environ.get("BRAVE_API_KEY", ""))
-    if not api_key:
-        return []
-    try:
-        r = requests.get(
-            "https://api.search.brave.com/res/v1/web/search",
-            params={"q": query, "count": num_results},
-            headers={"Accept": "application/json", "Accept-Encoding": "gzip", "X-Subscription-Token": api_key},
-            timeout=10,
-        )
-        r.raise_for_status()
-        data = r.json()
-        results = []
-        for item in data.get("web", {}).get("results", []):
-            url = item.get("url", "")
-            parsed = urlparse(url)
-            domain = parsed.netloc.removeprefix("www.") if parsed.netloc else ""
-            results.append({
-                "title": item.get("title", ""),
-                "url": url,
-                "domain": domain,
-                "snippet": item.get("description", ""),
-            })
-        return results
-    except Exception:
-        return []
-
-
-def _get_search_backend() -> callable:
-    """Return brave_search if BRAVE_API_KEY is configured, else ddg_search."""
-    config = load_config()
-    if config.get("BRAVE_API_KEY") or os.environ.get("BRAVE_API_KEY"):
-        return brave_search
-    return ddg_search
-
-
 GROQ_MODEL = "llama-3.3-70b-versatile"
 CLASSIFIER_MODEL = "llama-3.1-8b-instant"
 
@@ -931,7 +539,7 @@ def _get_synthesis_model() -> str:
     Config: SYNTHESIS_MODEL=sonnet uses claude-sonnet-4-6 for research/current tier.
     Default and all other values: claude-haiku-4-5.
     """
-    val = load_config().get("SYNTHESIS_MODEL", "haiku").lower().strip()
+    val = surf_config.load_config().get("SYNTHESIS_MODEL", "haiku").lower().strip()
     return CLAUDE_SONNET_MODEL if val == "sonnet" else CLAUDE_MODEL
 
 CLAUDE_MONTHLY_BUDGET = 1.00            # USD hard cap per calendar month
@@ -4957,120 +4565,6 @@ def _add_to_history(text: str) -> None:
         _readline.add_history(text.strip())
 
 
-# ─── Obsidian vault integration ───────────────────────────────────────────────
-# Gated on OBSIDIAN_VAULT config key. Zero impact without it.
-
-def _obsidian_vault_path() -> str | None:
-    """Return configured Obsidian vault path, or None."""
-    return load_config().get("OBSIDIAN_VAULT") or None
-
-
-def _make_note_slug(query: str) -> str:
-    """Convert query to a safe filename slug, max 60 chars."""
-    slug = query.lower().strip()
-    slug = re.sub(r"[^a-z0-9\s-]", "", slug)
-    slug = re.sub(r"\s+", "-", slug)
-    slug = re.sub(r"-{2,}", "-", slug).strip("-")
-    if len(slug) > 60:
-        slug = slug[:60].rsplit("-", 1)[0]
-    return slug
-
-
-def _make_frontmatter(query: str, sources: list[dict], tags: list[str]) -> str:
-    """Generate YAML frontmatter for a surf vault note."""
-    today = time.strftime("%Y-%m-%d")
-    source_lines = "\n".join(
-        f"  - {r.get('domain', '').removeprefix('www.')}" for r in sources[:5]
-    ) or "  []"
-    tag_str = "[" + ", ".join(tags) + "]" if tags else "[]"
-    safe_query = query.replace('"', "'")
-    return f'---\ndate: {today}\nquery: "{safe_query}"\nsources:\n{source_lines}\ntags: {tag_str}\n---'
-
-
-def _obsidian_save(
-    query: str,
-    response: str,
-    sources: list[dict],
-    session_id: str,
-) -> str | None:
-    """
-    Save or append a surf response to the Obsidian vault.
-
-    File: $VAULT/surf/YYYY/MM/YYYY-MM-DD-{session_id[:8]}.md
-    IMPORTANT: path is keyed on session_id only (not query slug) so all
-    follow-ups within the same session share one file.
-
-    First call: creates file with frontmatter + H1 title.
-    Follow-up calls (same session_id, file already exists): append as H2.
-    """
-    vault = _obsidian_vault_path()
-    if not vault:
-        return None
-
-    today = time.strftime("%Y-%m-%d")
-    note_dir = os.path.join(vault, "surf", time.strftime("%Y"), time.strftime("%m"))
-    os.makedirs(note_dir, exist_ok=True)
-
-    # Session-keyed path — all follow-ups share this file
-    note_path = os.path.join(note_dir, f"{today}-{session_id[:8]}.md")
-
-    # Auto-detect tags
-    entity_type = _identify_entity_type(query) or ""
-    tags = [entity_type] if entity_type else []
-    topic_signals = {
-        "finance": ["stock", "market", "economy", "inflation", "fed", "rate"],
-        "medical": ["health", "disease", "drug", "vaccine", "treatment"],
-        "sports":  ["game", "match", "season", "league", "tournament"],
-        "tech":    ["software", "ai", "model", "code", "programming"],
-    }
-    for topic, signals in topic_signals.items():
-        if topic not in tags and any(s in query.lower() for s in signals):
-            tags.append(topic)
-
-    if os.path.exists(note_path):
-        with open(note_path, "a", encoding="utf-8") as f:
-            f.write(f"\n\n## {query}\n\n{response}\n")
-    else:
-        fm = _make_frontmatter(query, sources, tags)
-        with open(note_path, "w", encoding="utf-8") as f:
-            f.write(f"{fm}\n\n# {query}\n\n{response}\n")
-
-    _obsidian_link_related(query, note_path, vault)
-    return note_path
-
-
-# ─── Preferences ──────────────────────────────────────────────────────────────
-
-def _preferences_path() -> str | None:
-    """Return path to preferences.md — in vault if configured, else local fallback."""
-    vault = _obsidian_vault_path()
-    if vault:
-        return os.path.join(vault, "surf", "preferences.md")
-    config_dir = os.path.dirname(os.path.expanduser("~/.config/surf/config"))
-    return os.path.join(config_dir, "preferences.md")
-
-
-def _read_preferences() -> str:
-    """Read user's preferences.md. Returns empty string if not set up yet."""
-    path = _preferences_path()
-    if not path or not os.path.exists(path):
-        return ""
-    try:
-        return open(path, encoding="utf-8").read().strip()
-    except Exception:
-        return ""
-
-
-def _write_preferences(text: str, append: bool = False) -> str | None:
-    """Write or append to preferences.md. Creates parent dirs. Returns path or None."""
-    path = _preferences_path()
-    if not path:
-        return None
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    mode = "a" if append else "w"
-    with open(path, mode, encoding="utf-8") as f:
-        f.write(text if not append else f"\n{text}\n")
-    return path
 
 
 def _display_preferences() -> None:
@@ -5114,101 +4608,6 @@ def _handle_inline_preference(text: str) -> None:
               f"{C_META}\"{text.strip()}\" will apply to future searches{C_RESET}")
     else:
         print(f"{C_META}{GLYPH_META} no preferences file configured — run 'surf setup' first{C_RESET}")
-
-
-def _obsidian_find_related(query: str) -> str:
-    """
-    Scan vault for recent notes (last 30 days) related to this query.
-    Returns a context string or "" if nothing found.
-    Zero network calls — pure file scan.
-    """
-    vault = _obsidian_vault_path()
-    if not vault:
-        return ""
-
-    surf_dir = os.path.join(vault, "surf")
-    if not os.path.isdir(surf_dir):
-        return ""
-
-    stop = {"the", "a", "an", "is", "are", "was", "were", "what", "how",
-            "why", "who", "when", "does", "do", "did", "and", "or", "for",
-            "of", "in", "on", "at", "to", "by", "it", "its"}
-    q_words = {w for w in re.findall(r"\b[a-z]{4,}\b", query.lower()) if w not in stop}
-    if not q_words:
-        return ""
-
-    from datetime import date, timedelta
-    cutoff = date.today() - timedelta(days=30)
-    best_score, best_excerpt, best_date = 0, "", ""
-
-    for root, _dirs, files in os.walk(surf_dir):
-        for fname in files:
-            if not fname.endswith(".md"):
-                continue
-            fpath = os.path.join(root, fname)
-            try:
-                if date.fromtimestamp(os.path.getmtime(fpath)) < cutoff:
-                    continue
-                text = open(fpath, encoding="utf-8").read()
-                date_m = re.search(r"^date:\s*(\d{4}-\d{2}-\d{2})", text, re.MULTILINE)
-                note_date = date_m.group(1) if date_m else ""
-                note_words = set(re.findall(r"\b[a-z]{4,}\b", text.lower()))
-                score = len(q_words & note_words)
-                if score > best_score and score >= 3:
-                    best_score = score
-                    body_start = text.find("---", 3)
-                    excerpt = text[body_start + 3:].strip()[:300] if body_start != -1 else text[:300]
-                    best_excerpt = excerpt.strip()
-                    best_date = note_date
-            except Exception:
-                continue
-
-    if best_excerpt:
-        return f"[Prior research from {best_date}]\n{best_excerpt}\n[End prior research]"
-    return ""
-
-
-def _obsidian_link_related(query: str, note_path: str, vault: str) -> None:
-    """Add [[wiki links]] between notes that share capitalized entities."""
-    entities = _ENTITY_RE.findall(query)
-    if not entities:
-        return
-    surf_dir = os.path.join(vault, "surf")
-    note_stem = os.path.splitext(os.path.basename(note_path))[0]
-    from datetime import date, timedelta
-    cutoff = date.today() - timedelta(days=30)
-    for root, _dirs, files in os.walk(surf_dir):
-        for fname in files:
-            if not fname.endswith(".md"):
-                continue
-            fpath = os.path.join(root, fname)
-            if fpath == note_path:
-                continue
-            try:
-                if date.fromtimestamp(os.path.getmtime(fpath)) < cutoff:
-                    continue
-                other_text = open(fpath, encoding="utf-8").read()
-                if not any(e in other_text for e in entities):
-                    continue
-                other_stem = os.path.splitext(fname)[0]
-                current_text = open(note_path, encoding="utf-8").read()
-                if f"[[{other_stem}]]" not in current_text:
-                    with open(note_path, "a", encoding="utf-8") as f:
-                        f.write(f"\n\nRelated: [[{other_stem}]]\n")
-                if f"[[{note_stem}]]" not in other_text:
-                    with open(fpath, "a", encoding="utf-8") as f:
-                        f.write(f"\n\nRelated: [[{note_stem}]]\n")
-            except Exception:
-                continue
-
-
-def _obsidian_session_id() -> str:
-    """Stable 8-char hex ID from session file mtime. Stable within a 4-hour session."""
-    try:
-        mtime = int(os.path.getmtime(SESSION_FILE))
-        return format(mtime % (16 ** 8), "08x")
-    except Exception:
-        return format(int(time.time()) % (16 ** 8), "08x")
 
 
 # Banner uses bright variants for visibility on dark terminals.
@@ -5920,8 +5319,6 @@ def main():
                         help="Repeat search on interval (e.g. 5m, 1h, 30s)")
     parser.add_argument("--diff", action="store_true",
                         help="Compare results against last search for this query")
-    parser.add_argument("--shell", action="store_true",
-                        help="Include recent shell history as context")
     parser.add_argument("-t", "--thread", type=str, default=None, metavar="NAME",
                         help="Save search to a named research thread")
     parser.add_argument("--sources", type=str, default=None, metavar="LIST",
@@ -6060,12 +5457,6 @@ def main():
         else:
             print(f"{C_ERROR}Could not read shell history{C_RESET}")
             return
-
-    # --shell: include shell history as context
-    if args.shell:
-        shell_ctx = _get_shell_context(n=15)
-        if shell_ctx:
-            query = query + f"\n\n[Recent shell history for context:\n{shell_ctx}\n]"
 
     # --watch: periodic refresh
     if args.watch:

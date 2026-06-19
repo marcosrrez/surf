@@ -41,36 +41,36 @@ class TestLoadConfig:
     def test_returns_api_key(self, tmp_path):
         config_file = tmp_path / "config"
         config_file.write_text("GROQ_API_KEY=test-key-1234567890\n")
-        import surf
-        original = surf.CONFIG_PATH
-        surf.CONFIG_PATH = str(config_file)
+        import surf, surf_config
+        original = surf_config.CONFIG_PATH
+        surf_config.CONFIG_PATH = str(config_file)
         try:
             config = surf.load_config()
         finally:
-            surf.CONFIG_PATH = original
+            surf_config.CONFIG_PATH = original
         assert "GROQ_API_KEY" in config
         assert len(config["GROQ_API_KEY"]) > 10
 
     def test_returns_empty_dict_for_missing_file(self, tmp_path):
-        import surf
-        original = surf.CONFIG_PATH
-        surf.CONFIG_PATH = str(tmp_path / "nonexistent")
+        import surf, surf_config
+        original = surf_config.CONFIG_PATH
+        surf_config.CONFIG_PATH = str(tmp_path / "nonexistent")
         try:
             config = surf.load_config()
         finally:
-            surf.CONFIG_PATH = original
+            surf_config.CONFIG_PATH = original
         assert config == {}
 
     def test_skips_comments_and_blank_lines(self, tmp_path):
         config_file = tmp_path / "config"
         config_file.write_text("# comment\n\nKEY=value\n")
-        import surf
-        original = surf.CONFIG_PATH
-        surf.CONFIG_PATH = str(config_file)
+        import surf, surf_config
+        original = surf_config.CONFIG_PATH
+        surf_config.CONFIG_PATH = str(config_file)
         try:
             config = surf.load_config()
         finally:
-            surf.CONFIG_PATH = original
+            surf_config.CONFIG_PATH = original
         assert config == {"KEY": "value"}
 
 class TestExtractText:
@@ -952,17 +952,17 @@ class TestEvaluativeRouting:
 class TestSynthesisModel:
     def test_get_synthesis_model_returns_haiku_by_default(self):
         from surf import _get_synthesis_model, CLAUDE_MODEL
-        with patch("surf.load_config", return_value={}):
+        with patch("surf_config.load_config", return_value={}):
             assert _get_synthesis_model() == CLAUDE_MODEL
 
     def test_get_synthesis_model_returns_sonnet_when_configured(self):
         from surf import _get_synthesis_model, CLAUDE_SONNET_MODEL
-        with patch("surf.load_config", return_value={"SYNTHESIS_MODEL": "sonnet"}):
+        with patch("surf_config.load_config", return_value={"SYNTHESIS_MODEL": "sonnet"}):
             assert _get_synthesis_model() == CLAUDE_SONNET_MODEL
 
     def test_get_synthesis_model_ignores_unknown_values(self):
         from surf import _get_synthesis_model, CLAUDE_MODEL
-        with patch("surf.load_config", return_value={"SYNTHESIS_MODEL": "gpt5"}):
+        with patch("surf_config.load_config", return_value={"SYNTHESIS_MODEL": "gpt5"}):
             assert _get_synthesis_model() == CLAUDE_MODEL
 
     def test_stream_claude_accepts_tier_kwarg(self):
@@ -1038,12 +1038,12 @@ class TestObsidianIntegration:
 
     def test_vault_path_returns_none_when_not_configured(self):
         from surf import _obsidian_vault_path
-        with patch("surf.load_config", return_value={}):
+        with patch("surf_config.load_config", return_value={}):
             assert _obsidian_vault_path() is None
 
     def test_vault_path_returns_configured_path(self):
         from surf import _obsidian_vault_path
-        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": "/tmp/vault"}):
+        with patch("surf_config.load_config", return_value={"OBSIDIAN_VAULT": "/tmp/vault"}):
             assert _obsidian_vault_path() == "/tmp/vault"
 
     def test_make_note_slug_sanitizes_query(self):
@@ -1071,7 +1071,7 @@ class TestObsidianIntegration:
         vault = str(tmp_path / "vault")
         os.makedirs(vault, exist_ok=True)
         sources = [{"domain": "bbc.com", "url": "https://bbc.com/1", "title": "BBC"}]
-        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": vault}):
+        with patch("surf_config.load_config", return_value={"OBSIDIAN_VAULT": vault}):
             path = _obsidian_save("what causes inflation", "TL;DR content.", sources, "sess001")
         assert path is not None and os.path.exists(path)
 
@@ -1080,7 +1080,7 @@ class TestObsidianIntegration:
         vault = str(tmp_path / "vault")
         os.makedirs(vault, exist_ok=True)
         sources = [{"domain": "bbc.com", "url": "https://bbc.com/1", "title": "BBC"}]
-        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": vault}):
+        with patch("surf_config.load_config", return_value={"OBSIDIAN_VAULT": vault}):
             path = _obsidian_save("what causes inflation", "TL;DR content.", sources, "sess001")
         content = open(path).read()
         assert content.startswith("---")
@@ -1092,7 +1092,7 @@ class TestObsidianIntegration:
         vault = str(tmp_path / "vault")
         os.makedirs(vault, exist_ok=True)
         sources = [{"domain": "bbc.com", "url": "https://bbc.com/1", "title": "BBC"}]
-        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": vault}):
+        with patch("surf_config.load_config", return_value={"OBSIDIAN_VAULT": vault}):
             path1 = _obsidian_save("what causes inflation", "First.", sources, "shared-sess")
             path2 = _obsidian_save("how do central banks respond", "Second.", sources, "shared-sess")
         assert path1 == path2
@@ -1102,12 +1102,12 @@ class TestObsidianIntegration:
 
     def test_obsidian_save_returns_none_when_not_configured(self):
         from surf import _obsidian_save
-        with patch("surf.load_config", return_value={}):
+        with patch("surf_config.load_config", return_value={}):
             assert _obsidian_save("query", "response", [], "s1") is None
 
     def test_obsidian_find_related_returns_empty_when_no_vault(self):
         from surf import _obsidian_find_related
-        with patch("surf.load_config", return_value={}):
+        with patch("surf_config.load_config", return_value={}):
             assert _obsidian_find_related("what causes inflation") == ""
 
     def test_obsidian_find_related_finds_matching_note(self, tmp_path):
@@ -1117,7 +1117,7 @@ class TestObsidianIntegration:
         os.makedirs(note_dir, exist_ok=True)
         note_content = "---\nquery: what is inflation\ndate: 2026-06-01\n---\n\nInflation means rising prices caused by monetary supply."
         open(os.path.join(note_dir, "2026-06-01-sess001.md"), "w").write(note_content)
-        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": vault}):
+        with patch("surf_config.load_config", return_value={"OBSIDIAN_VAULT": vault}):
             result = _obsidian_find_related("what causes inflation rising prices")
         # Should find the note (shares words: inflation, prices)
         assert result == "" or "Prior research" in result or "inflation" in result.lower()
@@ -1126,14 +1126,14 @@ class TestObsidianIntegration:
 class TestPreferences:
     def test_read_preferences_returns_empty_when_no_file(self, tmp_path):
         from surf import _read_preferences
-        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": str(tmp_path / "nonexistent")}):
+        with patch("surf_config.load_config", return_value={"OBSIDIAN_VAULT": str(tmp_path / "nonexistent")}):
             assert _read_preferences() == ""
 
     def test_write_and_read_preferences(self, tmp_path):
         from surf import _write_preferences, _read_preferences
         vault = str(tmp_path / "vault")
         os.makedirs(vault)
-        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": vault}):
+        with patch("surf_config.load_config", return_value={"OBSIDIAN_VAULT": vault}):
             _write_preferences("# My prefs\nI like concise answers.")
             result = _read_preferences()
         assert "concise" in result
@@ -1142,7 +1142,7 @@ class TestPreferences:
         from surf import _write_preferences, _read_preferences
         vault = str(tmp_path / "vault")
         os.makedirs(vault)
-        with patch("surf.load_config", return_value={"OBSIDIAN_VAULT": vault}):
+        with patch("surf_config.load_config", return_value={"OBSIDIAN_VAULT": vault}):
             _write_preferences("first line")
             _write_preferences("second line", append=True)
             result = _read_preferences()
@@ -1172,7 +1172,7 @@ class TestPreferences:
 
     def test_handle_inline_preference_no_vault_shows_message(self, capsys):
         from surf import _handle_inline_preference
-        with patch("surf.load_config", return_value={}):
+        with patch("surf_config.load_config", return_value={}):
             _handle_inline_preference("always show data sources")
         # Should not crash; message shown
         captured = capsys.readouterr()
@@ -1182,7 +1182,7 @@ class TestPreferences:
     def test_preferences_injected_into_prompt(self):
         # Verify preferences appear in the base_prompt during search
         from surf import _read_preferences
-        with patch("surf.load_config", return_value={}):
+        with patch("surf_config.load_config", return_value={}):
             prefs = _read_preferences()
         # Just verify the function works (vault context injection is tested elsewhere)
         assert isinstance(prefs, str)
@@ -2094,7 +2094,7 @@ class TestBraveSearch:
             }
         }
         with patch("surf.requests.get", return_value=mock_response), \
-             patch("surf.load_config", return_value={"BRAVE_API_KEY": "test-key"}):
+             patch("surf_config.load_config", return_value={"BRAVE_API_KEY": "test-key"}):
             results = brave_search("test query", num_results=5)
         assert len(results) == 2
         assert results[0]["title"] == "Test Article"
@@ -2108,32 +2108,32 @@ class TestBraveSearch:
         mock_response.status_code = 200
         mock_response.json.return_value = {"web": {"results": []}}
         with patch("surf.requests.get", return_value=mock_response), \
-             patch("surf.load_config", return_value={"BRAVE_API_KEY": "test-key"}):
+             patch("surf_config.load_config", return_value={"BRAVE_API_KEY": "test-key"}):
             results = brave_search("no results query")
         assert results == []
 
     def test_brave_search_handles_api_error(self):
         from surf import brave_search
         with patch("surf.requests.get", side_effect=Exception("API error")), \
-             patch("surf.load_config", return_value={"BRAVE_API_KEY": "test-key"}):
+             patch("surf_config.load_config", return_value={"BRAVE_API_KEY": "test-key"}):
             results = brave_search("failing query")
         assert results == []
 
     def test_brave_search_returns_empty_without_key(self):
         from surf import brave_search
-        with patch("surf.load_config", return_value={}):
+        with patch("surf_config.load_config", return_value={}):
             results = brave_search("test query")
         assert results == []
 
     def test_get_search_backend_returns_brave_when_configured(self):
         from surf import _get_search_backend, brave_search
-        with patch("surf.load_config", return_value={"BRAVE_API_KEY": "test-key"}):
+        with patch("surf_config.load_config", return_value={"BRAVE_API_KEY": "test-key"}):
             backend = _get_search_backend()
         assert backend == brave_search
 
     def test_get_search_backend_returns_ddg_by_default(self):
         from surf import _get_search_backend, ddg_search
-        with patch("surf.load_config", return_value={}):
+        with patch("surf_config.load_config", return_value={}):
             backend = _get_search_backend()
         assert backend == ddg_search
 
@@ -2295,7 +2295,7 @@ class TestWatchMode:
 class TestDiffMode:
     def test_save_and_load_snapshot(self, tmp_path):
         from surf import _save_search_snapshot, _load_search_snapshot
-        with patch("surf.SNAPSHOT_DIR", str(tmp_path)):
+        with patch("surf_config.SNAPSHOT_DIR", str(tmp_path)):
             _save_search_snapshot("NVDA stock", "Price is $150", [{"domain": "yahoo.com", "url": "https://yahoo.com"}])
             loaded = _load_search_snapshot("NVDA stock")
             assert loaded is not None
@@ -2304,7 +2304,7 @@ class TestDiffMode:
 
     def test_load_snapshot_returns_none_when_missing(self, tmp_path):
         from surf import _load_search_snapshot
-        with patch("surf.SNAPSHOT_DIR", str(tmp_path)):
+        with patch("surf_config.SNAPSHOT_DIR", str(tmp_path)):
             result = _load_search_snapshot("never searched this")
             assert result is None
 
@@ -2341,7 +2341,7 @@ class TestNamedThreads:
 
     def test_save_and_load_thread(self, tmp_path):
         from surf import _save_thread_entry, _load_thread
-        with patch("surf.THREAD_DIR", str(tmp_path)):
+        with patch("surf_config.THREAD_DIR", str(tmp_path)):
             _save_thread_entry("test-thread", "what is a GPU", "A GPU is a graphics processor.", [{"domain": "nvidia.com"}])
             thread = _load_thread("test-thread")
             assert thread["name"] == "test-thread"
@@ -2350,7 +2350,7 @@ class TestNamedThreads:
 
     def test_save_appends_to_existing_thread(self, tmp_path):
         from surf import _save_thread_entry, _load_thread
-        with patch("surf.THREAD_DIR", str(tmp_path)):
+        with patch("surf_config.THREAD_DIR", str(tmp_path)):
             _save_thread_entry("test-thread", "query 1", "response 1", [])
             _save_thread_entry("test-thread", "query 2", "response 2", [])
             thread = _load_thread("test-thread")
@@ -2358,13 +2358,13 @@ class TestNamedThreads:
 
     def test_load_nonexistent_thread_returns_empty(self, tmp_path):
         from surf import _load_thread
-        with patch("surf.THREAD_DIR", str(tmp_path)):
+        with patch("surf_config.THREAD_DIR", str(tmp_path)):
             thread = _load_thread("nonexistent")
             assert thread["entries"] == []
 
     def test_list_threads(self, tmp_path):
         from surf import _save_thread_entry, _list_threads
-        with patch("surf.THREAD_DIR", str(tmp_path)):
+        with patch("surf_config.THREAD_DIR", str(tmp_path)):
             _save_thread_entry("alpha", "q1", "r1", [])
             _save_thread_entry("beta", "q2", "r2", [])
             threads = _list_threads()
@@ -2379,7 +2379,7 @@ class TestNamedThreads:
 class TestExport:
     def test_export_thread_markdown(self, tmp_path):
         from surf import _export_thread, _save_thread_entry
-        with patch("surf.THREAD_DIR", str(tmp_path)):
+        with patch("surf_config.THREAD_DIR", str(tmp_path)):
             _save_thread_entry("test-export", "what is AI", "AI is artificial intelligence.", [{"domain": "wiki.org", "url": "https://wiki.org"}])
             _save_thread_entry("test-export", "history of AI", "AI started in the 1950s.", [{"domain": "stanford.edu", "url": "https://stanford.edu"}])
             result = _export_thread("test-export")
@@ -2390,7 +2390,7 @@ class TestExport:
 
     def test_export_thread_nonexistent(self, tmp_path):
         from surf import _export_thread
-        with patch("surf.THREAD_DIR", str(tmp_path)):
+        with patch("surf_config.THREAD_DIR", str(tmp_path)):
             result = _export_thread("nonexistent")
             assert result == ""
 
@@ -2399,14 +2399,14 @@ class TestExport:
         entries = [
             {"query": "test q", "type": "search", "summary": "test answer", "timestamp": 1718000000},
         ]
-        with patch("surf.load_session", return_value=entries):
+        with patch("surf_store.load_session", return_value=entries):
             result = _export_session()
             assert "test q" in result
             assert "test answer" in result
 
     def test_export_session_empty(self):
         from surf import _export_session
-        with patch("surf.load_session", return_value=[]):
+        with patch("surf_store.load_session", return_value=[]):
             result = _export_session()
             assert result == ""
 
