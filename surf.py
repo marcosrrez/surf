@@ -5360,14 +5360,11 @@ def main():
 
     # surf export [--thread name] [--file path]
     if args.input and args.input[0] == "export":
-        export_thread = None
+        export_thread = args.thread  # argparse may have consumed -t/--thread
         export_file = None
         i = 1
         while i < len(args.input):
-            if args.input[i] == "--thread" and i + 1 < len(args.input):
-                export_thread = args.input[i + 1]
-                i += 2
-            elif args.input[i] == "--file" and i + 1 < len(args.input):
+            if args.input[i] == "--file" and i + 1 < len(args.input):
                 export_file = args.input[i + 1]
                 i += 2
             else:
