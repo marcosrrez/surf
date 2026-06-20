@@ -218,16 +218,18 @@ from surf_store import (
 from surf_backends import (
     SSL_CERT, HEADERS, DDG_URL, JINA_BASE,
     fetch_page, _fetch_with_jina, _is_spa_shell,
-    ddg_search, brave_search,
+    ddg_search, brave_search, tavily_search,
     _SOURCE_SHORTNAMES, _parse_source_list, _filter_by_sources,
 )
 
 
 def _get_search_backend() -> callable:
-    """Return brave_search if BRAVE_API_KEY is configured, else ddg_search.
+    """Return best available search backend: Tavily > Brave > DDG.
     Defined here (not in surf_backends) so tests can patch surf.ddg_search/brave_search."""
     import surf_config
     config = surf_config.load_config()
+    if config.get("TAVILY_API_KEY") or os.environ.get("TAVILY_API_KEY"):
+        return tavily_search
     if config.get("BRAVE_API_KEY") or os.environ.get("BRAVE_API_KEY"):
         return brave_search
     return ddg_search
@@ -1270,6 +1272,7 @@ def stream_to_terminal(stream, results: list[dict] | None = None) -> str:
         sys.stdout.write("\033[22m")
     sys.stdout.write("\n")
     sys.stdout.flush()
+
     return accumulated
 
 def print_divider() -> None:
@@ -2956,55 +2959,49 @@ def _deep_research(
             except Exception:
                 pass
 
-    # Read sources
+    # Read sources concurrently
     combined: list[str] = []
     sources_read: list[dict] = []
+    READ_TIMEOUT = 8
 
-    # Tight per-source timeout for deep reads — a slow source isn't worth the wait
-    READ_TIMEOUT = 8  # seconds; overrides the global 25s fetch_page timeout
+    from urllib.parse import urlparse as _up
 
-    for i, r in enumerate(sources_to_read[:source_cap]):
+    def _read_one_source(idx_and_result):
+        idx, r = idx_and_result
         url = r.get("url", "")
         domain = r.get("domain", "").removeprefix("www.")
         if not url or not url.startswith("http"):
-            continue
-
-        # Skip homepages — they're navigation indexes, not articles
-        from urllib.parse import urlparse as _up
+            return None
         _parsed = _up(url)
         if _parsed.path in ("", "/", "//"):
-            sys.stdout.write(f"\r\033[90m↳ skipping {domain} (homepage) — not an article\033[0m" + " " * 10)
-            sys.stdout.flush()
-            continue
-
-        # Show progress with elapsed time so users know surf is working, not frozen
-        _t_source = time.time()
-        sys.stdout.write(f"\r\033[90m↳ reading {domain}...\033[0m" + " " * 20)
-        sys.stdout.flush()
-
+            return None
         try:
-            # Use tight timeout — override the global fetch_page timeout
             r_req = requests.get(url, headers=HEADERS, verify=SSL_CERT, timeout=READ_TIMEOUT)
             r_req.raise_for_status()
             html = r_req.text
-
             if _is_spa_shell(html):
                 content = _fetch_with_jina(url)
             else:
                 _, content = extract_text(html, max_words=1500, return_title=True)
-
-            _elapsed_source = time.time() - _t_source
-            sys.stdout.write(f"\r\033[90m↳ read {domain} ({_elapsed_source:.1f}s)\033[0m" + " " * 20)
-            sys.stdout.flush()
-
-            # Quality gate: 150 words — skip thin/boilerplate pages
             if content and len(content.split()) > 150:
-                combined.append(f"[{i + 1}] {domain}\n{content[:2000]}")
-                sources_read.append(r)
+                return (idx, domain, content, r)
         except Exception:
-            sys.stdout.write(f"\r\033[90m↳ {domain} timed out — skipping\033[0m" + " " * 20)
-            sys.stdout.flush()
-            continue
+            pass
+        return None
+
+    valid_sources = [(i, r) for i, r in enumerate(sources_to_read[:source_cap])
+                     if r.get("url", "").startswith("http")]
+
+    domains_reading = [r.get("domain", "").removeprefix("www.") for _, r in valid_sources[:3]]
+    sys.stdout.write(f"\r\033[90m↳ reading {' · '.join(domains_reading)}{GLYPH_ELLIPSIS}\033[0m" + " " * 10)
+    sys.stdout.flush()
+
+    with ThreadPoolExecutor(max_workers=min(5, len(valid_sources))) as executor:
+        for result in executor.map(_read_one_source, valid_sources):
+            if result:
+                idx, domain, content, r = result
+                combined.append(f"[{idx + 1}] {domain}\n{content[:2000]}")
+                sources_read.append(r)
 
     sys.stdout.write("\r" + " " * 70 + "\r")
     sys.stdout.flush()
@@ -5019,6 +5016,11 @@ def _run_setup() -> None:
     cfg["BRAVE_API_KEY"] = _setup_prompt(
         "Brave Search API key (better results — brave.com/search/api, free 2k/mo)",
         cfg.get("BRAVE_API_KEY", ""), secret=True
+    )
+    print()
+    cfg["TAVILY_API_KEY"] = _setup_prompt(
+        "Tavily API key (best results — tavily.com, free 1k/mo)",
+        cfg.get("TAVILY_API_KEY", ""), secret=True
     )
     print()
 

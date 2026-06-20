@@ -2454,3 +2454,75 @@ class TestCustomSources:
         from surf import _filter_by_sources
         results = [{"domain": "anything.com"}]
         assert _filter_by_sources(results, []) == results
+
+
+# ─── Tavily Search ───────────────────────────────────────────────────────────
+
+class TestTavilySearch:
+    def test_tavily_search_returns_formatted_results(self):
+        from surf import tavily_search
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "results": [
+                {
+                    "title": "Test Article",
+                    "url": "https://example.com/article",
+                    "content": "A test snippet about the topic that Tavily returned",
+                },
+            ]
+        }
+        with patch("surf_backends.requests.post", return_value=mock_response), \
+             patch("surf_config.load_config", return_value={"TAVILY_API_KEY": "tvly-test"}):
+            results = tavily_search("test query")
+        assert len(results) == 1
+        assert results[0]["title"] == "Test Article"
+        assert results[0]["domain"] == "example.com"
+
+    def test_tavily_search_returns_empty_without_key(self):
+        from surf import tavily_search
+        with patch("surf_config.load_config", return_value={}):
+            results = tavily_search("test query")
+        assert results == []
+
+    def test_tavily_search_handles_api_error(self):
+        from surf import tavily_search
+        with patch("surf_backends.requests.post", side_effect=Exception("API error")), \
+             patch("surf_config.load_config", return_value={"TAVILY_API_KEY": "tvly-test"}):
+            results = tavily_search("failing query")
+        assert results == []
+
+    def test_get_search_backend_prefers_tavily(self):
+        from surf import _get_search_backend, tavily_search
+        with patch("surf_config.load_config", return_value={"TAVILY_API_KEY": "tvly-test"}):
+            backend = _get_search_backend()
+        assert backend == tavily_search
+
+
+# ─── Keyring ─────────────────────────────────────────────────────────────────
+
+class TestKeyring:
+    def test_load_config_uses_keyring_fallback(self):
+        from surf_config import load_config, _HAS_KEYRING
+        if not _HAS_KEYRING:
+            return  # skip if keyring not installed
+        with patch("surf_config._get_key_from_keyring", return_value="keyring-key"), \
+             patch("os.path.exists", return_value=False):
+            config = load_config()
+            assert config.get("ANTHROPIC_API_KEY") == "keyring-key"
+
+    def test_config_file_takes_precedence_over_keyring(self, tmp_path):
+        from surf_config import _HAS_KEYRING
+        if not _HAS_KEYRING:
+            return
+        config_file = tmp_path / "config"
+        config_file.write_text("ANTHROPIC_API_KEY=file-key\n")
+        import surf_config
+        original = surf_config.CONFIG_PATH
+        surf_config.CONFIG_PATH = str(config_file)
+        try:
+            with patch("surf_config._get_key_from_keyring", return_value="keyring-key"):
+                config = surf_config.load_config()
+                assert config["ANTHROPIC_API_KEY"] == "file-key"
+        finally:
+            surf_config.CONFIG_PATH = original

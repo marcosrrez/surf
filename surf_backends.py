@@ -207,9 +207,42 @@ def brave_search(query: str, num_results: int = 5) -> list[dict]:
         return []
 
 
-def _get_search_backend() -> callable:
-    """Return brave_search if BRAVE_API_KEY is configured, else ddg_search."""
+def tavily_search(query: str, num_results: int = 5) -> list[dict]:
+    """Search Tavily and return list of {title, url, domain, snippet}. Same format as ddg_search."""
+    from urllib.parse import urlparse
     config = surf_config.load_config()
+    api_key = config.get("TAVILY_API_KEY", os.environ.get("TAVILY_API_KEY", ""))
+    if not api_key:
+        return []
+    try:
+        r = requests.post(
+            "https://api.tavily.com/search",
+            json={"query": query, "max_results": num_results, "api_key": api_key},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        results = []
+        for item in data.get("results", []):
+            url = item.get("url", "")
+            parsed = urlparse(url)
+            domain = parsed.netloc.removeprefix("www.") if parsed.netloc else ""
+            results.append({
+                "title": item.get("title", ""),
+                "url": url,
+                "domain": domain,
+                "snippet": item.get("content", "")[:300],
+            })
+        return results
+    except Exception:
+        return []
+
+
+def _get_search_backend() -> callable:
+    """Return best available search backend: Tavily > Brave > DDG."""
+    config = surf_config.load_config()
+    if config.get("TAVILY_API_KEY") or os.environ.get("TAVILY_API_KEY"):
+        return tavily_search
     if config.get("BRAVE_API_KEY") or os.environ.get("BRAVE_API_KEY"):
         return brave_search
     return ddg_search
