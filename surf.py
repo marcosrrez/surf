@@ -3427,7 +3427,9 @@ def _deep_research(
                 r["_quality"]["credibility"] = round(0.4 * r["_quality"]["credibility"] + 0.6 * content_score, 2)
                 r["_quality"]["composite"] = round(0.45 * r["_quality"]["reliability"] + 0.55 * r["_quality"]["credibility"], 2)
             if comment and sys.stdout.isatty():
-                print_status(f"↳ [{idx + 1}] {domain} — {comment}")
+                _w = _term_width() - 2
+                _line = f"↳ [{idx + 1}] {domain} — {comment}"
+                print_status(_line[:_w])
                 time.sleep(0.4)
             combined.append(f"[{idx + 1}] {domain}\n{content[:2000]}")
             sources_read.append(r)
