@@ -1211,53 +1211,56 @@ _ALLOWLISTED_DOMAINS = frozenset([
 ])
 
 
-def score_source_quality(result: dict, domain: str = "general", source_strategy: str = "any") -> float:
-    """Score 0.0 (junk) to 1.0 (treasure) from snippet + URL signals. Zero LLM cost."""
+def score_source_quality(result: dict, domain: str = "general", source_strategy: str = "any") -> dict:
+    """Two-axis quality score: source reliability x information credibility.
+
+    Returns dict with reliability (0.0-1.0), credibility (0.0-1.0), composite (0.0-1.0).
+    """
     url = (result.get("url", "") + " " + result.get("domain", "")).lower()
     snippet = (result.get("snippet", "") + " " + result.get("title", "")).lower()
     rdomain = result.get("domain", "").lower()
 
     if rdomain in _SPAM_DOMAINS:
-        return 0.0
+        return {"reliability": 0.0, "credibility": 0.0, "composite": 0.0}
+
+    # -- Reliability axis (source-level trust) --
+    rel = 0.5
     if rdomain in _ALLOWLISTED_DOMAINS:
-        return 0.7
-
-    score = 0.5
-
-    # Demotes
+        rel = 0.7
     if any(s in url for s in _AFFILIATE_URL_SIGNALS):
-        score -= 0.30
-    if any(s in snippet for s in _COMPANY_PROMO_SIGNALS):
-        score -= 0.15
-    marketing_hits = sum(1 for p in _MARKETING_VOCAB if p in snippet)
-    if marketing_hits >= 2:
-        score -= 0.15
-    if _LISTICLE_RE.search(result.get("title", "")):
-        score -= 0.10
-
-    # Boosts
-    factual_hits = len(_FACTUAL_DENSITY_RE.findall(snippet))
-    score += min(0.20, factual_hits * 0.05)
-    attr_hits = sum(1 for p in _ATTRIBUTION_PHRASES if p in snippet)
-    score += min(0.15, attr_hits * 0.08)
+        rel -= 0.30
     if any(s in url for s in _REGULATORY_DOMAIN_SIGNALS):
-        score += 0.20
-    data_hits = sum(1 for s in _DATA_SNIPPET_SIGNALS if s in snippet)
-    score += min(0.15, data_hits * 0.05)
-
-    # Domain-specific authority boost
+        rel += 0.20
     if domain in _QUALITY_DOMAIN_BOOSTS:
         if any(d in url for d in _QUALITY_DOMAIN_BOOSTS[domain]):
-            score += 0.20
-    # Source strategy boost
+            rel += 0.20
     if source_strategy == "academic" and any(d in url for d in ("arxiv", "pubmed", "pmc.ncbi", "scholar", "jstor")):
-        score += 0.15
+        rel += 0.15
     if source_strategy == "authoritative" and any(d in url for d in (".gov", ".edu", "reuters", "apnews")):
-        score += 0.15
+        rel += 0.15
     if source_strategy == "official" and ".gov" in url:
-        score += 0.20
+        rel += 0.20
+    rel = max(0.0, min(1.0, rel))
 
-    return max(0.0, min(1.0, score))
+    # -- Credibility axis (content-level evidence) --
+    cred = 0.5
+    if any(s in snippet for s in _COMPANY_PROMO_SIGNALS):
+        cred -= 0.20
+    marketing_hits = sum(1 for p in _MARKETING_VOCAB if p in snippet)
+    if marketing_hits >= 2:
+        cred -= 0.15
+    if _LISTICLE_RE.search(result.get("title", "")):
+        cred -= 0.15
+    factual_hits = len(_FACTUAL_DENSITY_RE.findall(snippet))
+    cred += min(0.25, factual_hits * 0.06)
+    attr_hits = sum(1 for p in _ATTRIBUTION_PHRASES if p in snippet)
+    cred += min(0.20, attr_hits * 0.10)
+    data_hits = sum(1 for s in _DATA_SNIPPET_SIGNALS if s in snippet)
+    cred += min(0.15, data_hits * 0.05)
+    cred = max(0.0, min(1.0, cred))
+
+    composite = 0.45 * rel + 0.55 * cred
+    return {"reliability": round(rel, 2), "credibility": round(cred, 2), "composite": round(composite, 2)}
 
 
 def filter_and_rank_results(
@@ -1287,17 +1290,18 @@ def filter_and_rank_results(
 
     scored = []
     for r in filtered:
-        quality = score_source_quality(r, domain=domain, source_strategy=source_strategy)
+        quality_dict = score_source_quality(r, domain=domain, source_strategy=source_strategy)
+        quality = quality_dict["composite"]
         relevance = bm25_scores.get(r.get("url", ""), 0.5)
         if tier in ("research", "contested"):
             composite = 0.55 * quality + 0.45 * relevance
         else:
             composite = 0.4 * quality + 0.6 * relevance
-        scored.append((composite, quality, r))
+        scored.append((composite, quality_dict, r))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    for _, quality, r in scored:
-        r["_quality_score"] = round(quality, 2)
+    for _, quality_dict, r in scored:
+        r["_quality"] = quality_dict
     return [r for _, _, r in scored]
 
 
@@ -1400,8 +1404,8 @@ def _chesterton_evaluate_sources(query: str, fetched: list[tuple], domain: str =
     except Exception:
         result = {}
         for idx, src_domain, content, r in fetched:
-            quality = score_source_quality(r, domain=domain)
-            result[idx] = _chesterton_react(src_domain, quality, content)
+            quality_dict = score_source_quality(r, domain=domain)
+            result[idx] = _chesterton_react(src_domain, quality_dict["composite"], content)
         return result
 
 
@@ -3206,7 +3210,7 @@ def _deep_research(
     source_cap = 5 if tier == "research" else 3
     if len(merged) > source_cap:
         _qdomain = entity_type or "general"
-        merged = sorted(merged, key=lambda r: score_source_quality(r, domain=_qdomain), reverse=True)
+        merged = sorted(merged, key=lambda r: score_source_quality(r, domain=_qdomain)["composite"], reverse=True)
     sources_to_read = merged[:source_cap]
 
     # Authoritative domain fallback (unchanged from before)
@@ -3696,7 +3700,7 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
             source_count = len(deep_sources)
             print_status(f"↳ synthesizing {source_count} source{'s' if source_count != 1 else ''}...")
             _quality_note = ""
-            if any(r.get("_quality_score", 0.5) >= 0.7 for r in results[:3]):
+            if any(r.get("_quality", {}).get("composite", 0.5) >= 0.7 for r in results[:3]):
                 _quality_note = "\nNote: weight findings from sources with specific data, named researchers, and cited methodology more heavily than those with vague claims or marketing language.\n"
             prompt = base_prompt + f"\n\nFull article content from {source_count} source(s):{_quality_note}\n{deep_content}"
             # Select system prompt — evaluative queries get independence-focused voice

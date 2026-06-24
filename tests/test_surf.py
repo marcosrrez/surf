@@ -8,6 +8,7 @@ from surf import read_flow, parse_related_topics
 from surf import classify_intent, open_in_browser
 from surf import _classify_tier
 from surf import _confidence_gate
+from surf import score_source_quality
 import json
 import os
 from unittest.mock import patch, MagicMock
@@ -2526,3 +2527,36 @@ class TestKeyring:
                 assert config["ANTHROPIC_API_KEY"] == "file-key"
         finally:
             surf_config.CONFIG_PATH = original
+
+
+class TestSourceQualityTwoAxis:
+    def test_returns_dict_with_two_axes(self):
+        result = {"domain": "nature.com", "url": "https://nature.com/articles/123", "snippet": "A study of 500 participants found...", "title": "Research findings"}
+        score = score_source_quality(result, domain="science")
+        assert isinstance(score, dict)
+        assert "reliability" in score
+        assert "credibility" in score
+        assert "composite" in score
+        assert 0.0 <= score["reliability"] <= 1.0
+        assert 0.0 <= score["credibility"] <= 1.0
+        assert 0.0 <= score["composite"] <= 1.0
+
+    def test_spam_domain_scores_zero_on_both_axes(self):
+        result = {"domain": "quickapedia.com", "url": "https://quickapedia.com/health", "snippet": "Top 10 tips", "title": "Tips"}
+        score = score_source_quality(result)
+        assert score["reliability"] == 0.0
+        assert score["credibility"] == 0.0
+        assert score["composite"] == 0.0
+
+    def test_high_reliability_low_credibility(self):
+        # Nature domain (reliable) but snippet is a thin editorial with no data
+        result = {"domain": "nature.com", "url": "https://nature.com/opinion/123", "snippet": "In our opinion, this matters for society.", "title": "Opinion: Why this matters"}
+        score = score_source_quality(result, domain="science")
+        assert score["reliability"] >= 0.6  # nature.com is reliable
+        assert score["credibility"] < score["reliability"]  # but this piece has no evidence
+
+    def test_low_reliability_has_data(self):
+        # Unknown blog but snippet is full of data
+        result = {"domain": "randomhealth.blog", "url": "https://randomhealth.blog/fasting", "snippet": "A 2024 study of 20,000 adults found 91% higher cardiovascular mortality risk according to researchers at AHA.", "title": "Fasting study results"}
+        score = score_source_quality(result, domain="medical")
+        assert score["credibility"] > score["reliability"]  # content is data-rich even though source is unknown
