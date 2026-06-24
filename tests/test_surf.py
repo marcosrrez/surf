@@ -8,7 +8,7 @@ from surf import read_flow, parse_related_topics
 from surf import classify_intent, open_in_browser
 from surf import _classify_tier
 from surf import _confidence_gate
-from surf import score_source_quality
+from surf import score_source_quality, score_content_depth
 import json
 import os
 from unittest.mock import patch, MagicMock
@@ -2593,3 +2593,49 @@ class TestRecencySignal:
         result = {"domain": "example.com", "url": "https://example.com/article", "snippet": "This article discusses general health topics.", "title": "Health tips"}
         score = score_source_quality(result)
         assert score["credibility"] == 0.5  # baseline, no signals
+
+
+class TestContentDepthScoring:
+    def test_long_structured_content_scores_high(self):
+        content = (
+            "# Introduction\n\n"
+            + "This is a detailed paragraph with data published in 2024. " * 80
+            + "\n\n## Methodology\n\n"
+            + "We conducted a randomized controlled trial with 500 participants using statistical analysis. " * 50
+            + "\n\n## Results\n\n"
+            + "The findings show 40% improvement with a p-value of 0.01 and confidence interval. " * 50
+            + "\n\n## Limitations\n\n"
+            + "One limitation is the sample size. However, future research should address this caveat. " * 20
+        )
+        score = score_content_depth(content)
+        assert score >= 0.7
+
+    def test_short_listicle_scores_low(self):
+        content = "1. Tip one\n2. Tip two\n3. Tip three\n4. Tip four\n5. Tip five"
+        score = score_content_depth(content)
+        assert score <= 0.3
+
+    def test_moderate_content_scores_mid(self):
+        content = "This article covers the topic. " * 40 + "\n\n" + "Another point is made here. " * 30
+        score = score_content_depth(content)
+        assert 0.3 <= score <= 0.7
+
+    def test_content_with_methodology_gets_boost(self):
+        with_method = "## Methodology\nWe conducted a randomized controlled trial with 200 participants over 12 months. " + "Details follow with careful analysis. " * 100
+        without_method = "Here are some general thoughts about the topic. " * 100
+        assert score_content_depth(with_method) > score_content_depth(without_method)
+
+    def test_empty_content_returns_zero(self):
+        assert score_content_depth("") == 0.0
+        assert score_content_depth(None) == 0.0
+
+    def test_score_clamped_0_to_1(self):
+        # Even pathologically long/rich content should not exceed 1.0
+        content = "# Intro\n## Methodology\n## Results\n## Discussion\n" + "We conducted randomized controlled trial with 500 participants and p-value 0.01 and confidence interval. " * 200
+        score = score_content_depth(content)
+        assert 0.0 <= score <= 1.0
+
+    def test_limitation_acknowledgment_boosts(self):
+        with_limits = "One limitation of this study is the small sample size. However, despite the caveats, future research should address this. " + "More text here with additional context. " * 100
+        without_limits = "This is a definitive and comprehensive guide. " * 100
+        assert score_content_depth(with_limits) > score_content_depth(without_limits)

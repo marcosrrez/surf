@@ -1274,6 +1274,62 @@ def score_source_quality(result: dict, domain: str = "general", source_strategy:
     return {"reliability": round(rel, 2), "credibility": round(cred, 2), "composite": round(composite, 2)}
 
 
+# ── Content depth scoring (post-fetch) ──────────────────────────────────────
+
+_DEPTH_METHODOLOGY_SIGNALS = frozenset([
+    "methodology", "method", "participants", "sample size", "randomized",
+    "controlled trial", "we conducted", "we analyzed", "we measured",
+    "data collection", "statistical analysis", "p-value", "confidence interval",
+])
+_DEPTH_LIMITATION_SIGNALS = frozenset([
+    "limitation", "caveat", "however", "although", "despite",
+    "future research", "this study does not", "one weakness",
+    "should be interpreted with caution", "cannot conclude",
+])
+
+
+def score_content_depth(content: str) -> float:
+    """Score 0.0-1.0 for fetched page content depth. Zero LLM cost."""
+    if not content:
+        return 0.0
+    words = content.split()
+    word_count = len(words)
+    content_lower = content.lower()
+
+    score = 0.3  # baseline
+
+    # Word count tiers
+    if word_count >= 2000:
+        score += 0.25
+    elif word_count >= 1000:
+        score += 0.15
+    elif word_count >= 500:
+        score += 0.05
+    elif word_count < 200:
+        score -= 0.15
+
+    # Heading density (structure)
+    headings = len(re.findall(r"^#{1,3}\s|\n[A-Z][A-Z\s]{3,}[A-Z]\n", content, re.MULTILINE))
+    if headings >= 3:
+        score += 0.10
+    elif headings == 0 and word_count > 500:
+        score -= 0.05
+
+    # Methodology / shows its work
+    method_hits = sum(1 for s in _DEPTH_METHODOLOGY_SIGNALS if s in content_lower)
+    score += min(0.15, method_hits * 0.04)
+
+    # Acknowledges limitations
+    limit_hits = sum(1 for s in _DEPTH_LIMITATION_SIGNALS if s in content_lower)
+    score += min(0.10, limit_hits * 0.05)
+
+    # Factual density in body
+    factual_hits = len(_FACTUAL_DENSITY_RE.findall(content_lower[:3000]))
+    score += min(0.10, factual_hits * 0.01)
+
+    return max(0.0, min(1.0, score))
+
+
 def filter_and_rank_results(
     query: str,
     results: list[dict],
@@ -3290,6 +3346,12 @@ def _deep_research(
     if fetched:
         commentary = _chesterton_evaluate_sources(query, fetched, _qdomain)
         for idx, domain, content, r in fetched:
+            depth = score_content_depth(content)
+            # Merge content depth into quality dict
+            if "_quality" in r:
+                r["_quality"]["depth"] = depth
+                r["_quality"]["credibility"] = round(0.6 * r["_quality"]["credibility"] + 0.4 * depth, 2)
+                r["_quality"]["composite"] = round(0.45 * r["_quality"]["reliability"] + 0.55 * r["_quality"]["credibility"], 2)
             comment = commentary.get(idx, "")
             if comment:
                 print(f"\033[90m↳ [{idx + 1}] {domain} — {comment}\033[0m")
