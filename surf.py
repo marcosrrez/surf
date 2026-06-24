@@ -212,6 +212,7 @@ from surf_store import (
     _snapshot_path, _save_search_snapshot, _load_search_snapshot,
     _obsidian_vault_path, _make_note_slug, _make_frontmatter,
     _obsidian_save as _obsidian_save_raw, _obsidian_find_related,
+    _vault_retrieve, _format_vault_context,
     _obsidian_link_related, _obsidian_session_id,
     _preferences_path, _read_preferences, _write_preferences,
 )
@@ -235,10 +236,35 @@ def _get_search_backend() -> callable:
     return ddg_search
 
 
-def _obsidian_save(query, response, sources, session_id):
+def _obsidian_save(query, response, sources, session_id, sparked_by="", deep_dive_of="", depth=""):
     """Wrapper that passes _identify_entity_type to the store module."""
-    return _obsidian_save_raw(query, response, sources, session_id, identify_entity_type_fn=_identify_entity_type)
+    return _obsidian_save_raw(
+        query, response, sources, session_id,
+        identify_entity_type_fn=_identify_entity_type,
+        sparked_by=sparked_by, deep_dive_of=deep_dive_of, depth=depth,
+    )
 
+
+def _vault_only_search(query: str) -> None:
+    """Search only the user's vault — no web queries."""
+    vault_notes, _ = _vault_retrieve(query, max_notes=10, max_chars=12000)
+    if not vault_notes:
+        print(f"{C_META}No matching vault notes for \"{query}\".{C_RESET}")
+        print(f"{C_META}Try a regular search: surf {query}{C_RESET}")
+        return
+    vault_ctx = _format_vault_context(vault_notes)
+    n = len(vault_notes)
+    _dates = [nd["date"] for nd in vault_notes]
+    _range = f"{min(_dates)}–{max(_dates)}" if len(_dates) > 1 else _dates[0]
+    print_header(f"Vault: {query.capitalize()}", f"{n} note{'s' if n != 1 else ''} ({_range})")
+    prefs = _read_preferences()
+    prompt = ""
+    if prefs:
+        prompt += f"[User preferences]\n{prefs}\n[End preferences]\n\n"
+    prompt += f"{vault_ctx}\n\nQuestion: {query}\n\nSynthesize from the vault notes above. Highlight patterns, contradictions, and gaps across the research."
+    stream = stream_ai(prompt, VAULT_ONLY_SYSTEM, max_tokens=2048)
+    response = stream_to_terminal(stream)
+    save_session_entry(f"vault: {query}", "vault", _truncate_at_sentence(response, 300))
 
 
 # Matches: nasa.gov, nasa.gov/path, www.nasa.gov, http://nasa.gov,
@@ -477,6 +503,25 @@ Voice rules:
 - When data is partial, say so with character: "I've got Group C nailed down — the other eleven are keeping their secrets." Then stop — don't pad.
 - Use contractions. Write like a person, not a report.
 - TIER GATE: For short factual queries (a score, a date, a name, a definition) — answer plainly in 1-2 sentences. Reserve the opinionated voice for analytical or multi-faceted questions."""
+
+VAULT_CONTEXT_INSTRUCTION = """When prior vault research is provided above:
+- Build on it — don't repeat what the user already knows
+- Highlight what's NEW in today's web results compared to prior research
+- Flag any CONTRADICTIONS between vault findings and current sources
+- Surface CONNECTIONS across topics the user may not have noticed
+- If prior research is comprehensive and web adds nothing new, say so"""
+
+VAULT_ONLY_SYSTEM = """You synthesize a user's accumulated research on a topic. Same voice as always — sharp, direct, opinionated when the evidence warrants it.
+
+Format rules (use exactly):
+- First line: "▸ TL;DR  " followed by one sentence synthesizing what they know
+- Blank line
+- 2-4 paragraphs connecting findings across their notes
+- Highlight patterns, contradictions, and knowledge gaps
+- Use "•" for bullet points, never dashes or asterisks
+- Use **bold** for key terms
+
+Do not fabricate findings not present in their notes. If they've only scratched the surface, say so."""
 
 FULL_ARTICLE_SYSTEM = """You are a precise article formatter. Given a webpage's text, present the COMPLETE article content — do not summarize, condense, or omit anything from the article itself.
 
@@ -3126,12 +3171,13 @@ def _deep_search_loop(
     combined_content = "\n\n---\n\n".join(all_content)
 
     prefs = _read_preferences()
-    vault_ctx = _obsidian_find_related(query)
+    _deep_vault_notes, _deep_sparked_by = _vault_retrieve(query)
+    _deep_vault_ctx = _format_vault_context(_deep_vault_notes)
     preamble = ""
     if prefs:
         preamble += f"[User preferences]\n{prefs}\n[End preferences]\n\n"
-    if vault_ctx:
-        preamble += f"{vault_ctx}\n\n"
+    if _deep_vault_ctx:
+        preamble += f"{_deep_vault_ctx}\n\n{VAULT_CONTEXT_INSTRUCTION}\n\n"
 
     final_prompt = (
         f"{preamble}"
@@ -3198,7 +3244,7 @@ def _search_with_retry(query: str, entity_type: str | None = None, search_fn: ca
     return best, queries_tried
 
 
-def search_flow(query: str, interactive: bool = True, json_output: bool = False, deep: bool = False, source_filter: list[str] | None = None) -> tuple[list[dict], str]:
+def search_flow(query: str, interactive: bool = True, json_output: bool = False, deep: bool = False, source_filter: list[str] | None = None, fresh: bool = False, intent: dict | None = None) -> tuple[list[dict], str]:
     """
     Run the search flow: search → AI synthesis → display results.
     Returns (results, response_text).
@@ -3213,22 +3259,36 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
         if _specialized is not None:
             return _specialized
 
-    tier = _classify_tier(query)
+    # Intent-driven tier — use assess_intent if provided, fall back to keyword heuristics
+    if intent and intent.get("tier"):
+        tier = intent["tier"]
+    else:
+        tier = _classify_tier(query)
 
-    # Evaluative intent detection — only for contested/research tier
+    # Use reformulated query from intent engine when available
     eval_context = None
-    if tier in ("contested", "research") and _is_evaluative_query(query, tier):
+    if intent and intent.get("source_strategy") in ("academic", "authoritative", "official"):
+        eval_context = {"is_evaluative": True, "source_signals": [], "avoid_signals": []}
+    elif tier in ("contested", "research") and _is_evaluative_query(query, tier):
         eval_context = _evaluate_query_intent(query)
-        source_hint = " ".join(eval_context.get("source_signals", [])[:3])
+
+    if intent and intent.get("reformulated_query") and intent["reformulated_query"] != query:
+        clean_query = intent["reformulated_query"]
+        ddg_query = _enrich_ddg_query(clean_query, tier=tier)
+    elif eval_context and eval_context.get("source_signals"):
+        source_hint = " ".join(eval_context["source_signals"][:3])
         clean_query = _clean_conversational_query(query)
         ddg_query = _enrich_ddg_query(clean_query, tier=tier, source_hint=source_hint)
     else:
         clean_query = _clean_conversational_query(query)
         ddg_query = _enrich_ddg_query(clean_query, tier=tier)
 
+    _entity_domain = intent.get("domain", "") if intent else ""
+    _entity_type = _entity_domain if _entity_domain in SOURCE_HIERARCHY else _identify_entity_type(query)
+
     print_status(f"↳ searching: \"{ddg_query[:55]}\"...")
     try:
-        results, _queries_tried = _search_with_retry(ddg_query, entity_type=_identify_entity_type(query))
+        results, _queries_tried = _search_with_retry(ddg_query, entity_type=_entity_type)
         if tier in ("research", "contested") and results:
             alt_query = (
                 f"{ddg_query} analysis expert opinion"
@@ -3306,8 +3366,9 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
     if len(results) > 1:
         results = _bm25_rank(query, results)
 
-    # Compute entity type once — used by confidence gate, deep research, and fix_entity_mismatch
-    _entity_type = _identify_entity_type(query)
+    # Compute entity type — prefer intent-derived domain, fall back to keyword heuristic
+    if not _entity_type:
+        _entity_type = _identify_entity_type(query)
 
     # Adaptive confidence gate — may escalate tier based on snippet quality
     tier = _confidence_gate(query, results, tier, entity_type=_entity_type)
@@ -3316,7 +3377,10 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
     if deep and results:
         synthesis, all_sources, step_log = _deep_search_loop(query, results, tier)
         save_session_entry(query, "deep_search", _truncate_at_sentence(synthesis, 300))
-        _obsidian_save(query, synthesis, all_sources, session_id=_obsidian_session_id())
+        _deep_note = _obsidian_save(
+            query, synthesis, all_sources, session_id=_obsidian_session_id(),
+            sparked_by=_deep_sparked_by, depth="exploration",
+        )
         record_feature_use("search")
         if json_output:
             _output_json(query, synthesis, [s["domain"] for s in all_sources], intent="deep_search")
@@ -3332,7 +3396,8 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
             coverage_note=f"Deep search: {len(step_log)} steps, {len(all_sources)} sources",
         )
         if interactive:
-            _handle_results_input(all_sources, context=synthesis, meta=_meta)
+            _deep_stem = os.path.splitext(os.path.basename(_deep_note))[0] if _deep_note else ""
+            _handle_results_input(all_sources, context=synthesis, meta=_meta, parent_note_stem=_deep_stem)
         return all_sources, synthesis
 
     # Self-evaluating source check: try one more targeted search when sources are thin.
@@ -3367,13 +3432,16 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
     if session_ctx:
         base_prompt = f"{session_ctx}\n\n{base_prompt}"
 
-    vault_ctx = _obsidian_find_related(query)
+    if not fresh:
+        vault_notes, _sparked_by_stem = _vault_retrieve(query)
+        vault_ctx = _format_vault_context(vault_notes)
+    else:
+        vault_notes, _sparked_by_stem, vault_ctx = [], "", ""
     if vault_ctx:
-        base_prompt = f"{vault_ctx}\n\n{base_prompt}"
-        # Metadata zone: show vault is being used — users should always know this
-        _vd = re.search(r'\[Prior research from ([^\]]+)\]', vault_ctx)
-        _vault_label = f" from {_vd.group(1)}" if _vd else ""
-        print(f"{C_META}{GLYPH_META} drawing from vault note{_vault_label}{C_RESET}")
+        base_prompt = f"{vault_ctx}\n\n{VAULT_CONTEXT_INSTRUCTION}\n\n{base_prompt}"
+        _dates = [n["date"] for n in vault_notes]
+        _range = f"{min(_dates)}–{max(_dates)}" if len(_dates) > 1 else _dates[0]
+        print(f"{C_META}{GLYPH_META} drawing from {len(vault_notes)} vault note{'s' if len(vault_notes) != 1 else ''} ({_range}){C_RESET}")
 
     # Preferences: user's research profile — always injected, highest priority context
     prefs = _read_preferences()
@@ -3462,7 +3530,11 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
     if "▸ TL;DR" in summary:
         summary = summary.split("▸ TL;DR")[-1].strip()
     save_session_entry(query, "search", _truncate_at_sentence(summary, 300))
-    _obsidian_save(query, response, results, session_id=_obsidian_session_id())
+    _depth = "exploration" if vault_notes else "lookup"
+    _last_vault_note = _obsidian_save(
+        query, response, results, session_id=_obsidian_session_id(),
+        sparked_by=_sparked_by_stem, depth=_depth,
+    )
     record_feature_use("search")  # counts toward automation tip threshold
 
     if json_output:
@@ -3504,7 +3576,8 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
     _save_search_snapshot(query, response, results)
 
     if interactive:
-        _handle_results_input(results, context=response, meta=_meta)
+        _parent_stem = os.path.splitext(os.path.basename(_last_vault_note))[0] if _last_vault_note else ""
+        _handle_results_input(results, context=response, meta=_meta, parent_note_stem=_parent_stem)
 
     return results, response
 
@@ -3513,6 +3586,7 @@ def _classify_and_dispatch(
     results: list[dict],
     meta: "_SearchMeta | None",
     context: str,
+    parent_note_stem: str = "",
 ) -> "tuple[list[dict], str, _SearchMeta | None, bool]":
     """
     Classify user input and dispatch to the right handler.
@@ -3552,14 +3626,14 @@ def _classify_and_dispatch(
             idx = int(cl[1:]) - 1
             if 0 <= idx < len(results):
                 record_feature_use("summary")
-                read_flow(results[idx]["url"], interactive=True, ai_summary=True)
+                read_flow(results[idx]["url"], interactive=True, ai_summary=True, parent_note_stem=parent_note_stem)
                 return results, context, meta, True
             return results, context, meta, False
         if cl.isdigit():
             idx = int(cl) - 1
             if 0 <= idx < len(results):
                 record_feature_use("reader")
-                read_flow(results[idx]["url"], interactive=True, ai_summary=False)
+                read_flow(results[idx]["url"], interactive=True, ai_summary=False, parent_note_stem=parent_note_stem)
                 return results, context, meta, True
             if results:
                 print(f"\033[90mPick 1-{len(results)} to read an article\033[0m")
@@ -3619,7 +3693,7 @@ def _classify_and_dispatch(
     return results, new_context or context, new_meta, False
 
 
-def _handle_results_input(results: list[dict], context: str = "", meta: "_SearchMeta | None" = None) -> None:
+def _handle_results_input(results: list[dict], context: str = "", meta: "_SearchMeta | None" = None, parent_note_stem: str = "") -> None:
     """Wait for user input and dispatch via _classify_and_dispatch."""
     while True:
         try:
@@ -3631,7 +3705,7 @@ def _handle_results_input(results: list[dict], context: str = "", meta: "_Search
             continue
 
         _add_to_history(choice)
-        results, context, meta, should_break = _classify_and_dispatch(choice, results, meta, context)
+        results, context, meta, should_break = _classify_and_dispatch(choice, results, meta, context, parent_note_stem=parent_note_stem)
         if should_break:
             break
 
@@ -3790,7 +3864,7 @@ def _is_homepage_url(url: str) -> bool:
     return p.path in ("", "/", "//") or (p.path.rstrip("/") == "" and not p.query)
 
 
-def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_output: bool = False) -> str:
+def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_output: bool = False, parent_note_stem: str = "") -> str:
     """
     Run the read flow: fetch URL → extract text → Groq → display.
     Returns the Groq response text (or raw extracted text in raw mode).
@@ -3900,7 +3974,10 @@ def read_flow(url: str, interactive: bool = True, ai_summary: bool = True, json_
     save_session_entry(url, "url", _truncate_at_sentence(summary, 300))
 
     # Save article read to Obsidian vault
-    _obs_note_path = _obsidian_save(title or url, summary, [], session_id=_obsidian_session_id())
+    _obs_note_path = _obsidian_save(
+        title or url, summary, [], session_id=_obsidian_session_id(),
+        deep_dive_of=parent_note_stem, depth="deep-dive" if parent_note_stem else "lookup",
+    )
     if _obs_note_path:
         print(f"\033[90m↳ saved to vault\033[0m")
 
@@ -4080,6 +4157,132 @@ def _handle_article_input(url: str, related: list[str], context: str, note_path:
                 context = new_response
         # empty input: loop again
 
+# ─── Intent Engine ────────────────────────────────────────────────────────────
+
+_INSTANT_PATTERNS = re.compile(
+    r"^\d[\d\s\+\-\*/\.\(\)]+$"
+    r"|^convert\s"
+    r"|^translate\s"
+    r"|^\d+\s*(?:kg|lb|km|mi|cm|inch|ft|oz|g|c|f|celsius|fahrenheit)\s+(?:to|in)\s"
+    r"|^what is \d",
+    re.IGNORECASE,
+)
+
+ASSESS_INTENT_SYSTEM = """You assess search intent. Think step by step, then return JSON.
+
+STEP 1 — Understand the query:
+- What is the user actually asking? Resolve pronouns ("this", "that", "it") using session context if provided.
+- Emotional register: curious / urgent / skeptical / worried / academic
+- Is this time-sensitive? (about recent/current events, scores, prices, news)
+- Domain: sports / finance / medical / science / tech / legal / news / general
+  If ambiguous, note it: "ambiguous: X or Y"
+- Task type: lookup (single fact) / analysis (how/why) / comparison (A vs B) / decision (should I) / troubleshooting (fix/debug) / emotional (worried/stressed)
+
+STEP 2 — Based on your understanding, return ONLY this JSON (no explanation, no markdown):
+{
+  "route": "search" or "instant" or "transactional" or "navigation",
+  "tier": "snippet" or "current" or "research" or "contested",
+  "domain": string (one of: sports, finance, medical, science, tech, legal, news, general),
+  "source_strategy": "any" or "authoritative" or "academic" or "official",
+  "answer_depth": "concise" or "analytical" or "comprehensive" or "empathetic",
+  "reformulated_query": "optimized search terms — strip filler, add precision",
+  "confidence": 0.0 to 1.0,
+  "open_url": null or string URL for transactional/navigation
+}
+
+Rules:
+- route "instant": math, translations, unit conversions, simple definitions
+- route "transactional": booking flights/hotels, buying — include open_url with best deep link
+- route "navigation": user wants a specific website — include open_url
+- tier "snippet": simple factual lookups, definitions
+- tier "current": anything about recent events, scores, today, this week, latest, prices
+- tier "research": how/why questions, mechanisms, peer review, academic, deep explanations
+- tier "contested": comparisons, evaluations, "should I", "best X", "is X safe", opinions
+- source_strategy "academic": when user asks for research, studies, peer review, evidence
+- source_strategy "authoritative": medical safety, legal questions, financial decisions
+- source_strategy "official": government data, regulations, official stats
+- answer_depth "empathetic": when user expresses worry, stress, personal struggle
+- answer_depth "concise": simple facts, definitions, one-answer questions
+- answer_depth "analytical": how/why, mechanisms, explanations
+- answer_depth "comprehensive": complex multi-faceted topics, deep research
+- reformulated_query: remove filler ("find me", "can you", "I want to know"), keep domain terms
+- confidence: lower when query is ambiguous or context-dependent"""
+
+_ASSESS_FALLBACK = {
+    "route": "search",
+    "tier": "snippet",
+    "domain": "general",
+    "source_strategy": "any",
+    "answer_depth": "analytical",
+    "reformulated_query": "",
+    "confidence": 0.5,
+    "open_url": None,
+}
+
+
+def assess_intent(query: str, vault_depth: int = 0, session_context: str = "") -> dict:
+    """Unified intent assessment — replaces classify_intent + _classify_tier + _evaluate_query_intent.
+
+    Two-stage decomposition in one 8b LLM call:
+    Stage 1: understand the query (reasoning)
+    Stage 2: structured JSON output (extraction)
+    """
+    if _INSTANT_PATTERNS.search(query):
+        return {**_ASSESS_FALLBACK, "route": "instant", "tier": "snippet",
+                "answer_depth": "concise", "confidence": 0.95,
+                "reformulated_query": query}
+
+    context_block = ""
+    if session_context:
+        context_block += f"\nRecent session:\n{session_context}\n"
+    if vault_depth > 0:
+        context_block += f"\nUser has {vault_depth} prior vault notes on related topics.\n"
+
+    prompt = f"Query: \"{query}\"\n{context_block}"
+
+    try:
+        chunks = list(stream_groq(prompt, ASSESS_INTENT_SYSTEM, model=CLASSIFIER_MODEL, max_tokens=300))
+        raw = "".join(chunks).strip()
+        json_start = raw.find("{")
+        json_end = raw.rfind("}") + 1
+        if json_start >= 0 and json_end > json_start:
+            raw = raw[json_start:json_end]
+        result = json.loads(raw)
+        validated = {}
+        validated["route"] = result.get("route", "search") if result.get("route") in ("search", "instant", "transactional", "navigation") else "search"
+        validated["tier"] = result.get("tier", "snippet") if result.get("tier") in ("snippet", "current", "research", "contested") else "snippet"
+        validated["domain"] = result.get("domain", "general") or "general"
+        validated["source_strategy"] = result.get("source_strategy", "any") if result.get("source_strategy") in ("any", "authoritative", "academic", "official") else "any"
+        validated["answer_depth"] = result.get("answer_depth", "analytical") if result.get("answer_depth") in ("concise", "analytical", "comprehensive", "empathetic") else "analytical"
+        validated["reformulated_query"] = result.get("reformulated_query", "") or query
+        validated["confidence"] = min(1.0, max(0.0, float(result.get("confidence", 0.5))))
+        validated["open_url"] = result.get("open_url")
+        # Post-validation coherence rules
+        if validated["tier"] in ("current", "research", "contested") and validated["route"] == "instant":
+            validated["route"] = "search"
+        if validated["route"] == "transactional" and not validated["open_url"]:
+            validated["route"] = "search"
+        q_lower = query.lower()
+        if validated["route"] == "instant" and validated["domain"] in ("finance", "sports", "news"):
+            validated["route"] = "search"
+            validated["tier"] = "current"
+        if validated["route"] == "instant" and any(w in q_lower for w in ("weather", "forecast", "temperature")):
+            validated["route"] = "search"
+            validated["tier"] = "current"
+        if validated["route"] == "instant" and any(w in q_lower for w in ("stock", "price", "shares", "market cap")):
+            validated["route"] = "search"
+            validated["tier"] = "current"
+        if validated["answer_depth"] == "empathetic" and validated["route"] == "instant":
+            validated["route"] = "search"
+        if validated["route"] == "instant" and any(w in q_lower for w in ("best ", "top ", "recommend", "comparison", "vs ", "versus ")):
+            validated["route"] = "search"
+            validated["tier"] = "contested"
+        return validated
+    except Exception:
+        return {**_ASSESS_FALLBACK, "reformulated_query": query}
+
+
+# Legacy classifier — kept for backward compatibility during transition
 CLASSIFIER_SYSTEM = """You are an intent classifier. Given a user query, return ONLY a JSON object — no explanation, no markdown, no code block. Just raw JSON.
 
 Schema:
@@ -4112,10 +4315,7 @@ _INTENT_FALLBACK = {
 }
 
 def classify_intent(query: str) -> dict:
-    """
-    Classify the user's intent using a fast small model.
-    Falls back to informational on any error.
-    """
+    """Legacy classifier — kept for backward compatibility."""
     try:
         chunks = list(stream_groq(query, CLASSIFIER_SYSTEM, model=CLASSIFIER_MODEL))
         raw = "".join(chunks).strip()
@@ -5325,6 +5525,8 @@ def main():
                         help="Save search to a named research thread")
     parser.add_argument("--sources", type=str, default=None, metavar="LIST",
                         help="Restrict to sources (e.g. 'arxiv,nature,bbc')")
+    parser.add_argument("-f", "--fresh", action="store_true",
+                        help="Skip vault context — search the web with fresh eyes")
     parser.add_argument("setup", nargs="?", const="setup",
                         help="Interactive configuration wizard")
     args = parser.parse_args()
@@ -5417,6 +5619,15 @@ def main():
 
     query = " ".join(args.input)
     _add_to_history(query)
+
+    # Vault-only search: vault: prefix
+    if query.lower().startswith("vault:"):
+        _vault_query = query[6:].strip()
+        if _vault_query:
+            _vault_only_search(_vault_query)
+        else:
+            print(f"{C_META}Usage: surf vault: <query>{C_RESET}")
+        return
 
     # Stdin pipe: cat file | surf "explain this"
     piped_content = _read_stdin()
@@ -5517,12 +5728,13 @@ def main():
             read_flow(query, interactive=not json_output, json_output=json_output)
             return
 
+        _session_ctx = format_session_context()
+        _vault_depth = len(_vault_retrieve(query, max_notes=10, max_chars=0)[0]) if not args.fresh else 0
         with Spinner("understanding your intent..."):
-            intent = classify_intent(query)
+            intent = assess_intent(query, vault_depth=_vault_depth, session_context=_session_ctx)
 
-        if intent["intent"] == "instant":
+        if intent["route"] == "instant":
             print_header(query.capitalize())
-            # No snippets — use a lightweight prompt without citation instructions
             instant_system = (
                 "Answer in one sentence maximum — often just a word or number is right. "
                 "Calculations: output the number only, e.g. '51'. "
@@ -5533,7 +5745,7 @@ def main():
             stream = stream_ai(f"{query}", instant_system)
             stream_to_terminal(stream)
 
-        elif intent["intent"] == "transactional" and intent.get("open_url"):
+        elif intent["route"] == "transactional" and intent.get("open_url"):
             # Search DDG for context
             try:
                 with Spinner("searching for options..."):
@@ -5586,7 +5798,7 @@ def main():
                     else:
                         print(f"\033[90mPick a number between 1 and {len(booking_sites)}\033[0m")
 
-        elif intent["intent"] == "navigation" and intent.get("open_url"):
+        elif intent["route"] == "navigation" and intent.get("open_url"):
             open_in_browser(intent["open_url"])
 
         else:
@@ -5601,7 +5813,7 @@ def main():
                     print(f"{C_META}{GLYPH_META} thread \"{args.thread}\" {GLYPH_SEPARATOR} {len(thread['entries'])} prior entries{C_RESET}")
 
             source_filter = _parse_source_list(args.sources) if args.sources else None
-            results, response = search_flow(query, interactive=not json_output, json_output=json_output, deep=args.deep, source_filter=source_filter)
+            results, response = search_flow(query, interactive=not json_output, json_output=json_output, deep=args.deep, source_filter=source_filter, fresh=args.fresh, intent=intent)
 
             # --thread: save results to thread
             if args.thread and response:
