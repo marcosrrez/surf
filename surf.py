@@ -1182,6 +1182,125 @@ def _edit_distance(a: str, b: str) -> int:
     return prev[-1]
 
 
+# ── Source quality scoring (Chesterton brain) ─────────────────────────────────
+
+_FACTUAL_DENSITY_RE = re.compile(
+    r"\d{4}"           # years
+    r"|\d+\.?\d*%"     # percentages
+    r"|\$[\d,.]+"      # dollar amounts
+    r"|\d+\.?\d*\s*(?:million|billion|trillion|percent|kg|lb|mg)"
+)
+_ATTRIBUTION_PHRASES = frozenset([
+    "according to", "study found", "research shows", "data shows",
+    "survey says", "researchers found", "analysis shows", "report found",
+    "published in", "peer-reviewed", "clinical trial",
+])
+_LISTICLE_RE = re.compile(r"^(?:top\s+)?\d+\s+(?:best|ways|things|reasons|tips|signs)", re.IGNORECASE)
+
+_QUALITY_DOMAIN_BOOSTS: dict[str, tuple[str, ...]] = {
+    "medical":  ("pubmed", "nih.gov", "mayoclinic", "nejm.org", "lancet", "bmj.com", "cochrane"),
+    "science":  ("nature.com", "science.org", "arxiv.org", "pmc.ncbi", "scientificamerican"),
+    "academic": ("arxiv.org", "scholar.google", "semanticscholar", "pmc.ncbi", "jstor"),
+    "finance":  ("sec.gov", "bloomberg.com", "ft.com", "wsj.com", "reuters.com"),
+    "legal":    ("law.cornell.edu", "justia.com", "courtlistener", "oyez.org"),
+    "tech":     ("arstechnica.com", "ieee.org", "acm.org", "wired.com"),
+}
+_ALLOWLISTED_DOMAINS = frozenset([
+    "en.wikipedia.org", "stackoverflow.com", "stackexchange.com",
+    "github.com", "docs.python.org", "developer.mozilla.org",
+])
+
+
+def score_source_quality(result: dict, domain: str = "general", source_strategy: str = "any") -> float:
+    """Score 0.0 (junk) to 1.0 (treasure) from snippet + URL signals. Zero LLM cost."""
+    url = (result.get("url", "") + " " + result.get("domain", "")).lower()
+    snippet = (result.get("snippet", "") + " " + result.get("title", "")).lower()
+    rdomain = result.get("domain", "").lower()
+
+    if rdomain in _SPAM_DOMAINS:
+        return 0.0
+    if rdomain in _ALLOWLISTED_DOMAINS:
+        return 0.7
+
+    score = 0.5
+
+    # Demotes
+    if any(s in url for s in _AFFILIATE_URL_SIGNALS):
+        score -= 0.30
+    if any(s in snippet for s in _COMPANY_PROMO_SIGNALS):
+        score -= 0.15
+    marketing_hits = sum(1 for p in _MARKETING_VOCAB if p in snippet)
+    if marketing_hits >= 2:
+        score -= 0.15
+    if _LISTICLE_RE.search(result.get("title", "")):
+        score -= 0.10
+
+    # Boosts
+    factual_hits = len(_FACTUAL_DENSITY_RE.findall(snippet))
+    score += min(0.20, factual_hits * 0.05)
+    attr_hits = sum(1 for p in _ATTRIBUTION_PHRASES if p in snippet)
+    score += min(0.15, attr_hits * 0.08)
+    if any(s in url for s in _REGULATORY_DOMAIN_SIGNALS):
+        score += 0.20
+    data_hits = sum(1 for s in _DATA_SNIPPET_SIGNALS if s in snippet)
+    score += min(0.15, data_hits * 0.05)
+
+    # Domain-specific authority boost
+    if domain in _QUALITY_DOMAIN_BOOSTS:
+        if any(d in url for d in _QUALITY_DOMAIN_BOOSTS[domain]):
+            score += 0.20
+    # Source strategy boost
+    if source_strategy == "academic" and any(d in url for d in ("arxiv", "pubmed", "pmc.ncbi", "scholar", "jstor")):
+        score += 0.15
+    if source_strategy == "authoritative" and any(d in url for d in (".gov", ".edu", "reuters", "apnews")):
+        score += 0.15
+    if source_strategy == "official" and ".gov" in url:
+        score += 0.20
+
+    return max(0.0, min(1.0, score))
+
+
+def filter_and_rank_results(
+    query: str,
+    results: list[dict],
+    intent: dict | None = None,
+) -> list[dict]:
+    """Filter spam, score quality, rank by quality × relevance. Intent-gated."""
+    if not results:
+        return results
+
+    tier = intent.get("tier", "snippet") if intent else "snippet"
+    domain = intent.get("domain", "general") if intent else "general"
+    source_strategy = intent.get("source_strategy", "any") if intent else "any"
+
+    filtered = [r for r in results if r.get("domain", "") not in _SPAM_DOMAINS]
+    if not filtered:
+        return filtered
+
+    if tier == "snippet":
+        return _bm25_rank(query, filtered)
+
+    bm25_ranked = _bm25_rank(query, filtered)
+    bm25_scores = {}
+    for i, r in enumerate(bm25_ranked):
+        bm25_scores[r.get("url", "")] = 1.0 - (i / max(len(bm25_ranked), 1))
+
+    scored = []
+    for r in filtered:
+        quality = score_source_quality(r, domain=domain, source_strategy=source_strategy)
+        relevance = bm25_scores.get(r.get("url", ""), 0.5)
+        if tier in ("research", "contested"):
+            composite = 0.55 * quality + 0.45 * relevance
+        else:
+            composite = 0.4 * quality + 0.6 * relevance
+        scored.append((composite, quality, r))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    for _, quality, r in scored:
+        r["_quality_score"] = round(quality, 2)
+    return [r for _, _, r in scored]
+
+
 # ── End classical algorithms ────────────────────────────────────────────────
 
 
@@ -2966,7 +3085,7 @@ def _deep_research(
         }[tier]
         try:
             raw_angle = ddg_search(f"{enriched_query} {angle_suffix}", num_results=4)
-            second_angle_results = _filter_results(raw_angle)
+            second_angle_results = [r for r in raw_angle if r.get("domain", "") not in _SPAM_DOMAINS]
         except Exception:
             pass
 
@@ -2981,6 +3100,9 @@ def _deep_research(
 
     # Source cap: research gets up to 5; all other deep tiers stay at 3
     source_cap = 5 if tier == "research" else 3
+    if len(merged) > source_cap:
+        _qdomain = entity_type or "general"
+        merged = sorted(merged, key=lambda r: score_source_quality(r, domain=_qdomain), reverse=True)
     sources_to_read = merged[:source_cap]
 
     # Authoritative domain fallback (unchanged from before)
@@ -3362,9 +3484,9 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
         ts = datetime.now().strftime("%B %d, %Y %H:%M")
         print(f"\033[90mFetched {ts}\033[0m\n")
 
-    # BM25 rerank: sort by relevance to query before deep reading
+    # Quality × relevance rerank — intent-gated (snippet tier = BM25 only)
     if len(results) > 1:
-        results = _bm25_rank(query, results)
+        results = filter_and_rank_results(query, results, intent=intent)
 
     # Compute entity type — prefer intent-derived domain, fall back to keyword heuristic
     if not _entity_type:
@@ -3463,7 +3585,10 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
         if deep_content:
             source_count = len(deep_sources)
             print_status(f"↳ synthesizing {source_count} source{'s' if source_count != 1 else ''}...")
-            prompt = base_prompt + f"\n\nFull article content from {source_count} source(s):\n{deep_content}"
+            _quality_note = ""
+            if any(r.get("_quality_score", 0.5) >= 0.7 for r in results[:3]):
+                _quality_note = "\nNote: weight findings from sources with specific data, named researchers, and cited methodology more heavily than those with vague claims or marketing language.\n"
+            prompt = base_prompt + f"\n\nFull article content from {source_count} source(s):{_quality_note}\n{deep_content}"
             # Select system prompt — evaluative queries get independence-focused voice
             if eval_context and eval_context.get("is_evaluative"):
                 system = SEARCH_SYSTEM_EVALUATIVE
