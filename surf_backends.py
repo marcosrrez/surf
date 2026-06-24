@@ -250,9 +250,47 @@ def tavily_search(
         return []
 
 
-def _get_search_backend() -> callable:
-    """Return best available search backend: Tavily > Brave > DDG."""
+def searxng_search(query: str, num_results: int = 8) -> list[dict]:
+    """Search via self-hosted SearXNG. Unlimited, free, no API key needed."""
+    from urllib.parse import urlparse
     config = surf_config.load_config()
+    base_url = config.get("SEARXNG_URL", os.environ.get("SEARXNG_URL", ""))
+    if not base_url:
+        return []
+    try:
+        r = requests.get(
+            f"{base_url.rstrip('/')}/search",
+            params={
+                "q": query,
+                "format": "json",
+                "engines": "google,bing,duckduckgo,brave",
+                "pageno": 1,
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        results = []
+        for item in data.get("results", [])[:num_results]:
+            url = item.get("url", "")
+            parsed = urlparse(url)
+            domain = parsed.netloc.removeprefix("www.") if parsed.netloc else ""
+            results.append({
+                "title": item.get("title", ""),
+                "url": url,
+                "domain": domain,
+                "snippet": item.get("content", "")[:300],
+            })
+        return results
+    except Exception:
+        return []
+
+
+def _get_search_backend() -> callable:
+    """Return best available search backend: SearXNG > Tavily > Brave > DDG."""
+    config = surf_config.load_config()
+    if config.get("SEARXNG_URL") or os.environ.get("SEARXNG_URL"):
+        return searxng_search
     if config.get("TAVILY_API_KEY") or os.environ.get("TAVILY_API_KEY"):
         return tavily_search
     if config.get("BRAVE_API_KEY") or os.environ.get("BRAVE_API_KEY"):
