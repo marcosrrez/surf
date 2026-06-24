@@ -1345,7 +1345,7 @@ _COMMENTARY_SPECIAL = {
 
 
 def _chesterton_react(domain: str, quality: float, content_preview: str) -> str:
-    """One-line Chesterton-voiced reaction to a source, driven by quality score."""
+    """Fallback: one-line template reaction when LLM commentary fails."""
     content_lower = content_preview[:800].lower()
     for trigger, comment in _COMMENTARY_SPECIAL.items():
         if trigger in domain.lower() or trigger in content_lower:
@@ -1356,6 +1356,53 @@ def _chesterton_react(domain: str, quality: float, content_preview: str) -> str:
         return _random.choice(_COMMENTARY_MID)
     else:
         return _random.choice(_COMMENTARY_LOW)
+
+
+_CHESTERTON_EVAL_SYSTEM = """You are G.K. Chesterton evaluating research sources. For each source, write ONE sentence (max 15 words) reacting to the ACTUAL CONTENT — not just the source name.
+
+Voice: witty, direct, generous when deserved, devastating when not. You attack the quality of thinking, never the person. You delight in genuine evidence and dismiss vagueness with dry humor.
+
+React to what you actually SEE in the content:
+- Specific data, methodology, sample sizes → praise the rigor
+- Vague claims, no evidence, listicle format → dismiss with wit
+- A surprising finding buried in the text → highlight it with delight
+- Marketing language, self-promotion → note it dryly
+- Genuine insight or careful reasoning → acknowledge it warmly
+
+Return ONLY numbered lines matching the source numbers. Example:
+1. A study of 560 participants with actual methodology — now this is scholarship.
+2. Three paragraphs without a single data point — remarkable restraint in avoiding evidence.
+3. Buried in paragraph four is a finding that reframes the question entirely."""
+
+
+def _chesterton_evaluate_sources(query: str, fetched: list[tuple], domain: str = "general") -> dict[int, str]:
+    """One 8b LLM call to generate content-aware Chesterton reactions for all sources."""
+    source_previews = []
+    for idx, src_domain, content, r in fetched:
+        preview = content[:400].replace("\n", " ").strip()
+        source_previews.append(f"[{idx + 1}] {src_domain}:\n{preview}")
+
+    prompt = f"Query: \"{query}\"\n\nSources to evaluate:\n\n" + "\n\n".join(source_previews)
+
+    try:
+        chunks = list(stream_groq(prompt, _CHESTERTON_EVAL_SYSTEM, model=CLASSIFIER_MODEL, max_tokens=200))
+        raw = "".join(chunks).strip()
+        commentary = {}
+        for line in raw.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            match = re.match(r"^(\d+)[.\)]\s*(.+)", line)
+            if match:
+                idx = int(match.group(1)) - 1
+                commentary[idx] = match.group(2).strip()
+        return commentary
+    except Exception:
+        result = {}
+        for idx, src_domain, content, r in fetched:
+            quality = score_source_quality(r, domain=domain)
+            result[idx] = _chesterton_react(src_domain, quality, content)
+        return result
 
 
 # ── End classical algorithms ────────────────────────────────────────────────
@@ -3217,15 +3264,24 @@ def _deep_research(
                      if r.get("url", "").startswith("http")]
 
     _qdomain = entity_type or "general"
+    print_status(f"↳ reading {len(valid_sources)} sources...")
+    fetched = []
     with ThreadPoolExecutor(max_workers=min(5, len(valid_sources))) as executor:
         for result in executor.map(_read_one_source, valid_sources):
             if result:
-                idx, domain, content, r = result
-                quality = score_source_quality(r, domain=_qdomain)
-                comment = _chesterton_react(domain, quality, content)
+                fetched.append(result)
+    clear_status()
+
+    if fetched:
+        commentary = _chesterton_evaluate_sources(query, fetched, _qdomain)
+        for idx, domain, content, r in fetched:
+            comment = commentary.get(idx, "")
+            if comment:
                 print(f"\033[90m↳ [{idx + 1}] {domain} — {comment}\033[0m")
-                combined.append(f"[{idx + 1}] {domain}\n{content[:2000]}")
-                sources_read.append(r)
+            else:
+                print(f"\033[90m↳ [{idx + 1}] {domain}\033[0m")
+            combined.append(f"[{idx + 1}] {domain}\n{content[:2000]}")
+            sources_read.append(r)
 
     return "\n\n---\n\n".join(combined), sources_read
 
