@@ -1,12 +1,19 @@
-# surf
+<p align="center">
+  <img src="assets/banner.png" alt="surf — search that learns" width="800">
+</p>
 
-**Search that learns.** Terminal-native AI search with a memory.
+<p align="center">
+  <strong>Terminal-native AI search with a memory.</strong><br>
+  One command. Clean answer. Sources evaluated for quality. The more you search, the smarter it gets.
+</p>
 
-One command. Clean answer. Sources evaluated for quality, not just listed. The more you search, the smarter it gets.
-
-```
-Google finds pages. Perplexity summarizes them. surf finds truth.
-```
+<p align="center">
+  <a href="#install">Install</a> &middot;
+  <a href="#usage">Usage</a> &middot;
+  <a href="#how-it-works">How it works</a> &middot;
+  <a href="#cost">Cost</a> &middot;
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
 
 ---
 
