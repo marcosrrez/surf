@@ -1301,6 +1301,63 @@ def filter_and_rank_results(
     return [r for _, _, r in scored]
 
 
+# ── Chesterton commentary (live source evaluation) ───────────────────────────
+
+import random as _random
+
+_COMMENTARY_HIGH = [
+    "now here is proper evidence",
+    "a source that actually shows its work",
+    "refreshingly specific — data, not opinion",
+    "this is what we came for",
+    "splendid — someone who looked at the evidence before forming a view",
+    "a genuinely thorough piece",
+    "the rare article that earns its length",
+    "admirable work — clear reasoning, specific claims",
+]
+_COMMENTARY_MID = [
+    "passable, though hardly illuminating",
+    "the usual competent summary",
+    "adequate — it tells us what happened, if not why",
+    "serviceable enough — let us see what the next offers",
+    "not bad, not remarkable — the journalistic middle ground",
+]
+_COMMENTARY_LOW = [
+    "I shall graciously ignore what passes for depth here",
+    "another listicle masquerading as analysis",
+    "one expects so little from a headline like this — and receives less",
+    "this reads less like research and more like a press release",
+    "the pure modernist snob: all fashion, no substance",
+    "every sentence here is an opinion dressed up as a fact",
+    "dull — and dullness is the one unforgivable sin of writing",
+]
+_COMMENTARY_SPECIAL = {
+    "systematic review": "a systematic review — the gold standard of evidence",
+    "peer-reviewed": "peer-reviewed work — someone took this seriously enough to scrutinize it",
+    "meta-analysis": "a meta-analysis — the patient work of gathering what others have scattered",
+    "clinical trial": "a clinical trial — real patients, real data, real stakes",
+    "arxiv.org": "consulting the arxiv — where scholars share before the journals catch up",
+    "wikipedia.org": "ah, Wikipedia — the encyclopedia that Chesterton would have adored and distrusted equally",
+    "reddit.com": "Reddit — where the common man occasionally outperforms the expert",
+    "nature.com": "Nature — one does not argue with the venue, only the findings",
+    "pubmed": "PubMed — the library that actually matters",
+}
+
+
+def _chesterton_react(domain: str, quality: float, content_preview: str) -> str:
+    """One-line Chesterton-voiced reaction to a source, driven by quality score."""
+    content_lower = content_preview[:800].lower()
+    for trigger, comment in _COMMENTARY_SPECIAL.items():
+        if trigger in domain.lower() or trigger in content_lower:
+            return comment
+    if quality >= 0.7:
+        return _random.choice(_COMMENTARY_HIGH)
+    elif quality >= 0.4:
+        return _random.choice(_COMMENTARY_MID)
+    else:
+        return _random.choice(_COMMENTARY_LOW)
+
+
 # ── End classical algorithms ────────────────────────────────────────────────
 
 
@@ -3159,19 +3216,16 @@ def _deep_research(
     valid_sources = [(i, r) for i, r in enumerate(sources_to_read[:source_cap])
                      if r.get("url", "").startswith("http")]
 
-    domains_reading = [r.get("domain", "").removeprefix("www.") for _, r in valid_sources[:3]]
-    sys.stdout.write(f"\r\033[90m↳ reading {' · '.join(domains_reading)}{GLYPH_ELLIPSIS}\033[0m" + " " * 10)
-    sys.stdout.flush()
-
+    _qdomain = entity_type or "general"
     with ThreadPoolExecutor(max_workers=min(5, len(valid_sources))) as executor:
         for result in executor.map(_read_one_source, valid_sources):
             if result:
                 idx, domain, content, r = result
+                quality = score_source_quality(r, domain=_qdomain)
+                comment = _chesterton_react(domain, quality, content)
+                print(f"\033[90m↳ [{idx + 1}] {domain} — {comment}\033[0m")
                 combined.append(f"[{idx + 1}] {domain}\n{content[:2000]}")
                 sources_read.append(r)
-
-    sys.stdout.write("\r" + " " * 70 + "\r")
-    sys.stdout.flush()
 
     return "\n\n---\n\n".join(combined), sources_read
 
