@@ -1196,6 +1196,29 @@ _ATTRIBUTION_PHRASES = frozenset([
     "published in", "peer-reviewed", "clinical trial",
 ])
 _LISTICLE_RE = re.compile(r"^(?:top\s+)?\d+\s+(?:best|ways|things|reasons|tips|signs)", re.IGNORECASE)
+_CLICKBAIT_PHRASES_RE = re.compile(
+    r"you won't believe"
+    r"|shocking"
+    r"|doctors hate"
+    r"|one (?:simple|weird) trick"
+    r"|this (?:one|simple) (?:trick|hack)"
+    r"|what happened next"
+    r"|mind.?blowing"
+    r"|!!!+"
+    r"|😱|🤯|💥",
+    re.IGNORECASE,
+)
+_CLICKBAIT_CAPS_RE = re.compile(r"\b[A-Z]{5,}\b")
+_AUTHOR_RE = re.compile(r"\bby\s+(?:dr\.?\s+)?[A-Z][a-z]+\s+[A-Z][a-z]+|(?:MD|PhD|MPH|RN|JD|Professor)\b", re.IGNORECASE)
+_INSTITUTION_SIGNALS = frozenset([
+    "university", "institute", "hospital", "medical school", "college",
+    "national academy", "harvard", "stanford", "mit", "oxford", "cambridge",
+    "johns hopkins", "mayo clinic", "cdc", "who ", "nih", "fda",
+])
+_VAGUE_CLAIMS = frozenset([
+    "many experts", "some people say", "it is believed", "studies show",
+    "research suggests", "experts agree", "wellness journey", "holistic approach",
+])
 
 _QUALITY_DOMAIN_BOOSTS: dict[str, tuple[str, ...]] = {
     "medical":  ("pubmed", "nih.gov", "mayoclinic", "nejm.org", "lancet", "bmj.com", "cochrane"),
@@ -1268,6 +1291,23 @@ def score_source_quality(result: dict, domain: str = "general", source_strategy:
             cred += 0.05
         elif _newest <= _current_year - 5:
             cred -= 0.10
+    # Clickbait: sensationalist title patterns
+    title = result.get("title", "")
+    clickbait_hits = len(_CLICKBAIT_PHRASES_RE.findall(title)) + len(_CLICKBAIT_CAPS_RE.findall(title))
+    if clickbait_hits >= 1:
+        cred -= 0.15
+    if clickbait_hits >= 2:
+        cred -= 0.10
+    # E-E-A-T: author expertise and institutional affiliation
+    title_and_snippet = title + " " + result.get("snippet", "")
+    if _AUTHOR_RE.search(title_and_snippet):
+        cred += 0.08
+    inst_hits = sum(1 for s in _INSTITUTION_SIGNALS if s in snippet)
+    cred += min(0.10, inst_hits * 0.05)
+    # Vague unsourced claims
+    vague_hits = sum(1 for s in _VAGUE_CLAIMS if s in snippet)
+    if vague_hits >= 2:
+        cred -= 0.10
     cred = max(0.0, min(1.0, cred))
 
     composite = 0.45 * rel + 0.55 * cred
@@ -1429,25 +1469,18 @@ def _chesterton_react(domain: str, quality: float, content_preview: str) -> str:
         return _random.choice(_COMMENTARY_LOW)
 
 
-_CHESTERTON_EVAL_SYSTEM = """You are G.K. Chesterton evaluating research sources. For each source, write ONE sentence (max 15 words) reacting to the ACTUAL CONTENT — not just the source name.
+_CHESTERTON_EVAL_SYSTEM = """You are G.K. Chesterton evaluating research sources. For each source, write ONE sentence (max 15 words) reacting to the ACTUAL CONTENT — not just the source name. End each line with a quality score [N/10].
 
-Voice: witty, direct, generous when deserved, devastating when not. You attack the quality of thinking, never the person. You delight in genuine evidence and dismiss vagueness with dry humor.
+Voice: witty, direct, generous when deserved, devastating when not. React to what you SEE in the content — specific data, methodology, vague claims, marketing language, surprising findings.
 
-React to what you actually SEE in the content:
-- Specific data, methodology, sample sizes → praise the rigor
-- Vague claims, no evidence, listicle format → dismiss with wit
-- A surprising finding buried in the text → highlight it with delight
-- Marketing language, self-promotion → note it dryly
-- Genuine insight or careful reasoning → acknowledge it warmly
-
-Return ONLY numbered lines matching the source numbers. Example:
-1. A study of 560 participants with actual methodology — now this is scholarship.
-2. Three paragraphs without a single data point — remarkable restraint in avoiding evidence.
-3. Buried in paragraph four is a finding that reframes the question entirely."""
+Return ONLY numbered lines. Example:
+1. A study of 560 participants with actual methodology — now this is scholarship. [9/10]
+2. Three paragraphs without a single data point — remarkable avoidance of evidence. [2/10]
+3. Buried in paragraph four is a finding that reframes the question entirely. [7/10]"""
 
 
-def _chesterton_evaluate_sources(query: str, fetched: list[tuple], domain: str = "general") -> dict[int, str]:
-    """One 8b LLM call to generate content-aware Chesterton reactions for all sources."""
+def _chesterton_evaluate_sources(query: str, fetched: list[tuple], domain: str = "general") -> dict[int, dict]:
+    """One 8b LLM call — returns {idx: {"comment": str, "llm_score": float}} per source."""
     source_previews = []
     for idx, src_domain, content, r in fetched:
         preview = content[:400].replace("\n", " ").strip()
@@ -1456,9 +1489,9 @@ def _chesterton_evaluate_sources(query: str, fetched: list[tuple], domain: str =
     prompt = f"Query: \"{query}\"\n\nSources to evaluate:\n\n" + "\n\n".join(source_previews)
 
     try:
-        chunks = list(stream_groq(prompt, _CHESTERTON_EVAL_SYSTEM, model=CLASSIFIER_MODEL, max_tokens=200))
+        chunks = list(stream_groq(prompt, _CHESTERTON_EVAL_SYSTEM, model=CLASSIFIER_MODEL, max_tokens=250))
         raw = "".join(chunks).strip()
-        commentary = {}
+        commentary: dict[int, dict] = {}
         for line in raw.split("\n"):
             line = line.strip()
             if not line:
@@ -1466,13 +1499,17 @@ def _chesterton_evaluate_sources(query: str, fetched: list[tuple], domain: str =
             match = re.match(r"^(\d+)[.\)]\s*(.+)", line)
             if match:
                 idx = int(match.group(1)) - 1
-                commentary[idx] = match.group(2).strip()
+                text = match.group(2).strip()
+                score_match = re.search(r"\[(\d+)/10\]", text)
+                llm_score = int(score_match.group(1)) / 10.0 if score_match else 0.5
+                clean_text = re.sub(r"\s*\[\d+/10\]", "", text)
+                commentary[idx] = {"comment": clean_text, "llm_score": llm_score}
         return commentary
     except Exception:
-        result = {}
+        result: dict[int, dict] = {}
         for idx, src_domain, content, r in fetched:
             quality_dict = score_source_quality(r, domain=domain)
-            result[idx] = _chesterton_react(src_domain, quality_dict["composite"], content)
+            result[idx] = {"comment": _chesterton_react(src_domain, quality_dict["composite"], content), "llm_score": 0.5}
         return result
 
 
@@ -3346,13 +3383,16 @@ def _deep_research(
     if fetched:
         commentary = _chesterton_evaluate_sources(query, fetched, _qdomain)
         for idx, domain, content, r in fetched:
+            entry = commentary.get(idx, {})
+            comment = entry.get("comment", "") if isinstance(entry, dict) else str(entry)
+            llm_score = entry.get("llm_score", 0.5) if isinstance(entry, dict) else 0.5
             depth = score_content_depth(content)
-            # Merge content depth into quality dict
             if "_quality" in r:
+                content_score = 0.5 * depth + 0.5 * llm_score
                 r["_quality"]["depth"] = depth
-                r["_quality"]["credibility"] = round(0.6 * r["_quality"]["credibility"] + 0.4 * depth, 2)
+                r["_quality"]["llm_score"] = llm_score
+                r["_quality"]["credibility"] = round(0.4 * r["_quality"]["credibility"] + 0.6 * content_score, 2)
                 r["_quality"]["composite"] = round(0.45 * r["_quality"]["reliability"] + 0.55 * r["_quality"]["credibility"], 2)
-            comment = commentary.get(idx, "")
             if comment:
                 print(f"\033[90m↳ [{idx + 1}] {domain} — {comment}\033[0m")
             else:
