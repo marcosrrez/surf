@@ -2560,3 +2560,36 @@ class TestSourceQualityTwoAxis:
         result = {"domain": "randomhealth.blog", "url": "https://randomhealth.blog/fasting", "snippet": "A 2024 study of 20,000 adults found 91% higher cardiovascular mortality risk according to researchers at AHA.", "title": "Fasting study results"}
         score = score_source_quality(result, domain="medical")
         assert score["credibility"] > score["reliability"]  # content is data-rich even though source is unknown
+
+
+class TestRecencySignal:
+    def test_recent_date_boosts_credibility(self):
+        result = {"domain": "example.com", "url": "https://example.com/article", "snippet": "Published June 2026. A study found that 40% of participants...", "title": "New research"}
+        score = score_source_quality(result)
+        assert score["credibility"] >= 0.6
+
+    def test_old_date_no_boost(self):
+        result = {"domain": "example.com", "url": "https://example.com/article", "snippet": "Published 2018. This article discusses general health.", "title": "Health tips"}
+        score = score_source_quality(result)
+        score_no_date = score_source_quality({"domain": "example.com", "url": "https://example.com/other", "snippet": "This article discusses general health.", "title": "Health tips"})
+        assert score["credibility"] <= score_no_date["credibility"] + 0.01  # old date doesn't boost
+
+    def test_current_year_in_snippet_boosts(self):
+        import time
+        year = time.strftime("%Y")
+        result = {"domain": "example.com", "url": "https://example.com/article", "snippet": f"Updated {year}. According to researchers, the data shows 25% improvement.", "title": "Research update"}
+        score = score_source_quality(result)
+        assert score["credibility"] >= 0.65
+
+    def test_very_old_date_penalizes(self):
+        """Content 5+ years old should get a slight credibility penalty."""
+        result = {"domain": "example.com", "url": "https://example.com/article", "snippet": "Published 2019. This article discusses general health.", "title": "Health tips"}
+        score = score_source_quality(result)
+        score_no_date = score_source_quality({"domain": "example.com", "url": "https://example.com/other", "snippet": "This article discusses general health.", "title": "Health tips"})
+        assert score["credibility"] < score_no_date["credibility"]  # old content penalized
+
+    def test_no_year_no_change(self):
+        """Snippets without any year should not be affected by recency."""
+        result = {"domain": "example.com", "url": "https://example.com/article", "snippet": "This article discusses general health topics.", "title": "Health tips"}
+        score = score_source_quality(result)
+        assert score["credibility"] == 0.5  # baseline, no signals

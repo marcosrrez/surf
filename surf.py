@@ -1257,6 +1257,17 @@ def score_source_quality(result: dict, domain: str = "general", source_strategy:
     cred += min(0.20, attr_hits * 0.10)
     data_hits = sum(1 for s in _DATA_SNIPPET_SIGNALS if s in snippet)
     cred += min(0.15, data_hits * 0.05)
+    # Recency: boost for current/recent year, neutral for older
+    _current_year = int(time.strftime("%Y"))
+    _years_found = [int(y) for y in re.findall(r"\b(20[12]\d)\b", snippet)]
+    if _years_found:
+        _newest = max(_years_found)
+        if _newest >= _current_year:
+            cred += 0.10
+        elif _newest >= _current_year - 1:
+            cred += 0.05
+        elif _newest <= _current_year - 5:
+            cred -= 0.10
     cred = max(0.0, min(1.0, cred))
 
     composite = 0.45 * rel + 0.55 * cred
