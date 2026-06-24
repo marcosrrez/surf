@@ -5200,20 +5200,16 @@ _S = "\033[1;95m" # bold bright magenta — SURF letters
 _T = "\033[97m"   # bright white — tagline
 _R = C_RESET
 
+_BA = "\033[38;5;75m"  # brand blue accent
 _SETUP_BANNER = (
     f"\n"
-    f"{_W}  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~{_R}\n"
-    f"{_W}  ~{_R}                                                          {_W}~{_R}\n"
-    f"{_W}  ~{_R}   {_S} ____  _   _ ____  ___  {_R}                         {_W}~{_R}\n"
-    f"{_W}  ~{_R}   {_S}/ ___|| | | |  _ \\|  _| {_R}                         {_W}~{_R}\n"
-    f"{_W}  ~{_R}   {_S}\\___ \\| | | | |_) | |_  {_R}                         {_W}~{_R}\n"
-    f"{_W}  ~{_R}   {_S} ___) | |_| |  _ <|  __|{_R}                         {_W}~{_R}\n"
-    f"{_W}  ~{_R}   {_S}|____/ \\___/|_| \\_\\_|   {_R}                         {_W}~{_R}\n"
-    f"{_W}  ~{_R}                                                          {_W}~{_R}\n"
-    f"{_W}  ~{_R}   {_T}AI-powered search for your terminal{_R}                {_W}~{_R}\n"
-    f"{_W}  ~{_R}   {_T}setup wizard  ·  q to exit anytime{_R}                 {_W}~{_R}\n"
-    f"{_W}  ~{_R}                                                          {_W}~{_R}\n"
-    f"{_W}  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~{_R}\n"
+    f"  {_W}surf{_R}\n"
+    f"  {C_META}search that learns{_R}\n"
+    f"\n"
+    f"  {_BA}{'~' * 44}{_R}\n"
+    f"\n"
+    f"  {C_META}setup  ·  q to exit anytime{_R}\n"
+    f"\n"
 )
 
 
@@ -5362,13 +5358,15 @@ def _run_preferences_conversation() -> None:
 
     if existing_key:
         masked = "*" * 12 + existing_key[-4:]
-        print(f"{C_BRAND}━━ Claude API key ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
+        print(f"  {_BA}{'~' * 30}{C_RESET}")
+        print()
         print()
         print(f"  {C_SPEED_FAST}✓{C_RESET}  {C_META}Already configured: {masked}{C_RESET}")
         print(f"  {C_META}Press Enter to keep it, or paste a new key to replace it.{C_RESET}")
         print()
     else:
-        print(f"{C_BRAND}━━ Claude API key ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
+        print(f"  {_BA}{'~' * 30}{C_RESET}")
+        print()
         print()
         print(f"  {C_META}1. open → {_link('https://console.anthropic.com/settings/keys', 'console.anthropic.com/settings/keys')} (cmd+click){C_RESET}")
         print(f"  {C_META}2. click \"Create Key\", name it \"surf\", copy it{C_RESET}")
@@ -5383,15 +5381,15 @@ def _run_preferences_conversation() -> None:
     try:
         key = surf_input("Enter to keep · q to exit").strip()
     except (KeyboardInterrupt, EOFError):
-        print(f"\n{C_META}{GLYPH_META} setup cancelled.{C_RESET}\n")
+        print(f"\n{C_META}{GLYPH_META} no worries — run 'surf setup' whenever you're ready.{C_RESET}\n")
         return
 
     if key.lower() == "q":
-        print(f"\n{C_META}{GLYPH_META} setup exited. run 'surf setup' anytime to continue.{C_RESET}\n")
+        print(f"\n{C_META}{GLYPH_META} no worries — run 'surf setup' whenever you're ready.{C_RESET}\n")
         return
 
     if key and key.startswith("sk-ant"):
-        print(f"\n{C_SPEED_FAST}{GLYPH_META} Claude connected ✓{C_RESET}  {C_META}haiku-4.5 · $0.0004/query{C_RESET}\n")
+        print(f"\n  {_BA}{GLYPH_META}{C_RESET} connected — deep research, source scoring, vault memory unlocked.\n")
         _save_config_key("ANTHROPIC_API_KEY", key)
     elif key and not existing_key:
         print(f"\n{C_META}{GLYPH_META} key saved — surf will let you know if it doesn't authenticate.{C_RESET}\n")
@@ -5403,9 +5401,10 @@ def _run_preferences_conversation() -> None:
 
     # Preferences conversation
     vspace(SPACE_SM)
-    print(f"{C_BRAND}━━ Let's tune surf to how you think ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
+    print(f"  {_BA}{'~' * 30}{C_RESET}")
     print()
-    print(f"  {C_META}Three questions. Press Enter to skip any, or type q to exit.{C_RESET}")
+    print(f"  {C_META}three questions to tune surf to how you think.{C_RESET}")
+    print(f"  {C_META}Enter to skip any, q to exit.{C_RESET}")
     print()
 
     answers = {}
@@ -5423,10 +5422,10 @@ def _run_preferences_conversation() -> None:
         try:
             val = surf_input("type or Enter to skip").strip()
         except (KeyboardInterrupt, EOFError):
-            print(f"\n{C_META}{GLYPH_META} setup cancelled.{C_RESET}\n")
+            print(f"\n{C_META}{GLYPH_META} no worries — run 'surf setup' whenever you're ready.{C_RESET}\n")
             return
         if val.lower() == "q":
-            print(f"\n{C_META}{GLYPH_META} setup exited. run 'surf setup' anytime to continue.{C_RESET}\n")
+            print(f"\n{C_META}{GLYPH_META} no worries — run 'surf setup' whenever you're ready.{C_RESET}\n")
             return
         answers[key_name] = val
         print()
@@ -5461,31 +5460,33 @@ def _run_preferences_conversation() -> None:
     # First-win: demo search based on what they told us
     vspace(SPACE_SM)
     demo_query = _generate_demo_query(answers.get("work", ""))
-    print(f"{C_BRAND}━━ Let's try it ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
+    print(f"  {_BA}{'~' * 30}{C_RESET}")
     print()
     if demo_query:
-        print(f"  {C_META}Based on your profile, a question surf thinks you'd care about:{C_RESET}")
-        print(f"\n  {C_INTERACTIVE}→{C_RESET}  {demo_query}\n")
+        print(f"  {C_META}based on your profile — a question surf thinks you'd care about:{C_RESET}")
+        print(f"\n  {_BA}{GLYPH_META}{C_RESET}  {demo_query}\n")
         print(f"  {C_INTERACTIVE}y{C_RESET}  search this")
         print(f"  {C_INTERACTIVE}q{C_RESET}  quit setup")
-        print(f"  {C_INTERACTIVE}↵{C_RESET}  or type your own first search")
+        print(f"  {C_INTERACTIVE}↵{C_RESET}  or type your own")
         print()
         try:
             first = surf_input("y, q, or type a question").strip()
         except (KeyboardInterrupt, EOFError):
             first = "q"
         if first.lower() == "q":
-            print(f"\n{C_META}{GLYPH_META} all set. run 'surf [anything]' to start searching.{C_RESET}\n")
+            print(f"\n  {_BA}{'~' * 44}{C_RESET}\n")
+            print(f"  \033[1;97mready.\033[0m  {C_META}every search gets smarter from here.{C_RESET}\n")
             return
         query_to_run = demo_query if first.lower() == "y" else (first or demo_query)
     else:
-        print(f"  {C_META}What do you want to search first? (q to exit){C_RESET}\n")
+        print(f"  {C_META}what do you want to search first?{C_RESET}\n")
         try:
             query_to_run = surf_input("type a question or q to exit").strip()
         except (KeyboardInterrupt, EOFError):
             query_to_run = ""
         if query_to_run.lower() == "q":
-            print(f"\n{C_META}{GLYPH_META} all set. run 'surf [anything]' to start searching.{C_RESET}\n")
+            print(f"\n  {_BA}{'~' * 44}{C_RESET}\n")
+            print(f"  \033[1;97mready.\033[0m  {C_META}every search gets smarter from here.{C_RESET}\n")
             return
 
     if query_to_run:
@@ -5498,30 +5499,27 @@ def _first_run_interstitial(query: str) -> None:
     First-ever surf run: search first (on Groq), then offer Claude setup.
     The user sees value before being asked for anything.
     """
-    print(f"\n{C_META}{GLYPH_META} first time? let's do this search, then take 90 seconds to set up.{C_RESET}\n")
+    print(f"\n{C_META}{GLYPH_META} first search — let's see what surf can do.{C_RESET}\n")
 
-    # Run the actual search — Groq fallback works without config
     results, response = search_flow(query, interactive=False)
 
     if not results:
-        # Search failed — go straight to setup
         _run_preferences_conversation()
         return
 
-    # Offer the Claude upgrade
     vspace(SPACE_SM)
-    print(f"{C_META}{GLYPH_META} that was surf on Groq (free, public). add a Claude key for:{C_RESET}\n")
-    print(f"  {C_INTERACTIVE}•{C_RESET}  {C_META}private synthesis  (your queries don't train any model){C_RESET}")
-    print(f"  {C_INTERACTIVE}•{C_RESET}  {C_META}deeper research    (reads full articles, not just snippets){C_RESET}")
-    print(f"  {C_INTERACTIVE}•{C_RESET}  {C_META}Obsidian vault     (every search becomes a linked note){C_RESET}")
+    print(f"{C_META}{GLYPH_META} that was surf on a free provider. add a Claude key to unlock:{C_RESET}\n")
+    print(f"  {_BA}{GLYPH_META}{C_RESET}  {C_META}source quality scoring — finds evidence, not SEO{C_RESET}")
+    print(f"  {_BA}{GLYPH_META}{C_RESET}  {C_META}deeper research — reads full articles, evaluates quality live{C_RESET}")
+    print(f"  {_BA}{GLYPH_META}{C_RESET}  {C_META}knowledge memory — surf learns from your research over time{C_RESET}")
     print()
-    print(f"  {C_INTERACTIVE}a{C_RESET}  add Claude key now — 60 seconds")
-    print(f"  {C_INTERACTIVE}s{C_RESET}  skip — keep using Groq")
+    print(f"  {C_INTERACTIVE}a{C_RESET}  add Claude key now")
+    print(f"  {C_INTERACTIVE}s{C_RESET}  skip — keep using the free provider")
     print(f"  {C_INTERACTIVE}q{C_RESET}  quit")
     print()
 
     try:
-        choice = surf_input("a to set up Claude, s to skip").lower().strip()
+        choice = surf_input("a to set up, s to skip").lower().strip()
     except (KeyboardInterrupt, EOFError):
         choice = "q"
 
@@ -5530,9 +5528,8 @@ def _first_run_interstitial(query: str) -> None:
     if choice == "a":
         _run_preferences_conversation()
     else:
-        # Mark as seen so we don't show again
         _mark_first_run_complete()
-        print(f"\n{C_META}{GLYPH_META} using Groq. run 'surf setup' anytime to add Claude.{C_RESET}\n")
+        print(f"\n{C_META}{GLYPH_META} no worries — run 'surf setup' whenever you're ready.{C_RESET}\n")
 
 
 def _setup_prompt(label: str, current: str, secret: bool = False) -> str:
@@ -5573,10 +5570,10 @@ def _run_setup() -> None:
 
     print(_SETUP_BANNER)
 
-    # ── Section 1: API Keys ───────────────────────────────────────────────────
-    print(f"{C_BOLD}1. API Keys{C_RESET}")
-    print(f"{C_META}  Claude is the primary provider. Others are free fallbacks.{C_RESET}")
-    print(f"{C_META}  Get Claude key: claude.ai/settings → API Keys{C_RESET}")
+    print(f"  {_BA}{'~' * 30}{C_RESET}")
+    print()
+    print(f"  {C_META}Claude is the primary provider. Others are free fallbacks.{C_RESET}")
+    print(f"  {C_META}Get Claude key: claude.ai/settings → API Keys{C_RESET}")
     print()
 
     cfg["ANTHROPIC_API_KEY"] = _setup_prompt(
@@ -5610,8 +5607,9 @@ def _run_setup() -> None:
     )
     print()
 
-    # ── Section 2: Research preferences ───────────────────────────────────────
-    print(f"{C_BOLD}2. Research preferences{C_RESET}")
+    print(f"  {_BA}{'~' * 30}{C_RESET}")
+    print()
+    print(f"  {C_META}research preferences{C_RESET}")
     print()
 
     current_model = cfg.get("SYNTHESIS_MODEL", "haiku")
@@ -5627,10 +5625,10 @@ def _run_setup() -> None:
         cfg["SYNTHESIS_MODEL"] = choice
     print()
 
-    # ── Section 3: Obsidian vault ─────────────────────────────────────────────
-    print(f"{C_BOLD}3. Obsidian vault{C_RESET}")
-    print(f"{C_META}  Save every search as a linked markdown note in your Obsidian vault.{C_RESET}")
-    print(f"{C_META}  Your research stays local — private, searchable, wiki-linked.{C_RESET}")
+    print(f"  {_BA}{'~' * 30}{C_RESET}")
+    print()
+    print(f"  {C_META}knowledge vault — save every search as a linked note{C_RESET}")
+    print(f"  {C_META}your research stays local — private, searchable, wiki-linked{C_RESET}")
     print()
 
     detected = _detect_obsidian_vaults()
@@ -5685,9 +5683,9 @@ def _run_setup() -> None:
                     print(f"  {C_META}Could not create folder — skipping{C_RESET}")
     print()
 
-    # ── Section 4: Claude budget ───────────────────────────────────────────────
-    print(f"{C_BOLD}4. Claude monthly budget{C_RESET}")
-    print(f"{C_META}  Default is $1.00/month. Increase for heavier use.{C_RESET}")
+    print(f"  {_BA}{'~' * 30}{C_RESET}")
+    print()
+    print(f"  {C_META}Claude monthly budget — default $1.00/month{C_RESET}")
     print()
     current_budget = str(CLAUDE_MONTHLY_BUDGET)
     print(f"  {C_BOLD}Monthly budget (USD){C_RESET}")
@@ -5724,7 +5722,9 @@ def _run_setup() -> None:
         f.writelines(lines)
 
     # ── Summary ───────────────────────────────────────────────────────────────
-    print(f"{C_BRAND}━━ Configuration saved to {config_path} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
+    print(f"  {_BA}{'~' * 44}{C_RESET}")
+    print()
+    print(f"  {C_META}saved to {config_path}{C_RESET}")
     print()
 
     def _status(key: str, label: str) -> None:
@@ -5743,7 +5743,8 @@ def _run_setup() -> None:
     _status("SYNTHESIS_MODEL", "Synthesis model")
     _status("OBSIDIAN_VAULT", "Obsidian vault")
     print()
-    print(f"  Run {C_INTERACTIVE}surf what is a black hole{C_RESET} to try it out.")
+    print()
+    print(f"  \033[1;97mready.\033[0m  {C_META}every search gets smarter from here.{C_RESET}")
     print()
 
 
