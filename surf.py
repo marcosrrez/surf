@@ -480,7 +480,7 @@ def _fetch_sub_pages(html: str, base_url: str, max_pages: int = 3) -> tuple[str,
 SEARCH_SYSTEM = """You are a sharp, well-read research assistant with genuine opinions. You find topics interesting and it shows. You lead with the most surprising or counterintuitive finding, not the most obvious one. You state your read clearly — not "sources suggest" but what you actually think the evidence shows. You are honest about what you don't know, and you say so with wit rather than disclaimers.
 
 Format rules (use exactly):
-- First line: "▸ TL;DR  " followed by one concise sentence answer
+- First line: "▸ TL;DR  " followed by ONE sentence — a headline, not a paragraph. If you need a semicolon, you've written too much
 - Blank line
 - 2-4 short paragraphs of detail using plain text
 - Use "•" for bullet points, never dashes or asterisks
@@ -514,7 +514,7 @@ VAULT_CONTEXT_INSTRUCTION = """When prior vault research is provided above:
 VAULT_ONLY_SYSTEM = """You synthesize a user's accumulated research on a topic. Same voice as always — sharp, direct, opinionated when the evidence warrants it.
 
 Format rules (use exactly):
-- First line: "▸ TL;DR  " followed by one sentence synthesizing what they know
+- First line: "▸ TL;DR  " followed by ONE sentence synthesizing what they know — a headline, not a paragraph
 - Blank line
 - 2-4 paragraphs connecting findings across their notes
 - Highlight patterns, contradictions, and knowledge gaps
@@ -551,7 +551,7 @@ Output the complete article content only, formatted for clean terminal reading."
 READ_SYSTEM = """You are a precise content extractor summarizing a webpage.
 
 Format rules (use exactly):
-- First line: "▸ TL;DR  " followed by one concise sentence
+- First line: "▸ TL;DR  " followed by ONE sentence — a headline, not a paragraph. If you need a semicolon, you've written too much
 - Blank line
 - 3-6 paragraphs preserving key facts and structure
 - Use "•" for bullet points, never dashes or asterisks
@@ -1797,11 +1797,14 @@ WEATHER_TEMPORAL = {
 
 # Academic: specific enough that presence alone is sufficient
 ACADEMIC_SIGNALS = {
-    "peer reviewed", "peer-reviewed", "clinical trial", "meta-analysis",
+    "peer reviewed", "peer-reviewed", "peer review", "clinical trial", "meta-analysis",
     "systematic review", "research on", "published paper", "arxiv",
     "pubmed", "what does the science say", "what does the research say",
     "scientific consensus", "randomized controlled", "rct",
     "evidence for", "evidence against", "studies show",
+    "find me a study", "find me studies", "find me articles", "find me research",
+    "peer review article", "journal article", "academic research",
+    "scholarly", "literature review", "empirical evidence",
 }
 
 # Financial: signal OR recognized ticker/company name
@@ -1927,12 +1930,14 @@ SOURCE_HIERARCHY = {
     "news":     ["reuters.com", "apnews.com", "bbc.com", "nytimes.com",
                  "theguardian.com"],
     "legal":    ["law.cornell.edu", "oyez.org", "courtlistener.com", "justia.com"],
+    "academic": ["pubmed.ncbi.nlm.nih.gov", "pmc.ncbi.nlm.nih.gov", "arxiv.org",
+                 "scholar.google.com", "semanticscholar.org", "jstor.org"],
 }
 
 SEARCH_SYSTEM_EVALUATIVE = """You are a precise research assistant evaluating a company, product, or service based on independent third-party sources.
 
 Format rules:
-- First line: "▸ TL;DR  " followed by one honest verdict sentence — name the entity and the conclusion
+- First line: "▸ TL;DR  " followed by ONE verdict sentence — name the entity and conclusion. If you need a semicolon, you've written too much
 - Blank line
 - 2-4 sections with **bold headers** organized as: independent ratings/data, user complaints or praise, regulatory or legal record, company claims (clearly labeled)
 - Use "•" for bullets; cite sources inline as [1], [2], etc.
@@ -2099,7 +2104,7 @@ def _evaluate_query_intent(query: str) -> dict:
 SEARCH_SYSTEM_CURRENT = """You are a sharp analyst synthesizing today's news with genuine opinions. You lead with what's actually surprising or significant — not just what happened, but what it means. You state your read clearly. When coverage is thin or contradictory, you say so in one sentence and explain why.
 
 Format rules:
-- First line: "▸ TL;DR  " followed by one concrete, specific sentence — include names, numbers, dates
+- First line: "▸ TL;DR  " followed by ONE sentence with names, numbers, dates — a headline, not a paragraph. If you need a semicolon, you've written too much
 - Blank line
 - 2-4 sections, each with a **bold header** on its own line followed by 1-2 paragraphs
 - Section headers should reflect what's actually in the content (e.g., **What's happening**, **Why it matters**, **What's next**)
@@ -2122,7 +2127,7 @@ Voice rules:
 SEARCH_SYSTEM_RESEARCH = """You are a knowledgeable analyst explaining complex topics with genuine intellectual engagement. You make the interesting parts interesting. You synthesize across sources and state where you land — not "scholars debate" but what the evidence actually shows and where real uncertainty remains.
 
 Format rules:
-- First line: "▸ TL;DR  " followed by one clear, direct sentence
+- First line: "▸ TL;DR  " followed by ONE sentence — a headline, not a paragraph. If you need a semicolon, you've written too much
 - Blank line
 - 3-5 sections, each with a **bold header** on its own line followed by 1-2 paragraphs
 - Section headers should be meaningful (e.g., **How it works**, **Why it matters**, **Key implications**)
@@ -3393,12 +3398,13 @@ def _deep_research(
                 r["_quality"]["llm_score"] = llm_score
                 r["_quality"]["credibility"] = round(0.4 * r["_quality"]["credibility"] + 0.6 * content_score, 2)
                 r["_quality"]["composite"] = round(0.45 * r["_quality"]["reliability"] + 0.55 * r["_quality"]["credibility"], 2)
-            if comment:
-                print(f"\033[90m↳ [{idx + 1}] {domain} — {comment}\033[0m")
-            else:
-                print(f"\033[90m↳ [{idx + 1}] {domain}\033[0m")
+            if comment and sys.stdout.isatty():
+                print_status(f"↳ [{idx + 1}] {domain} — {comment}")
+                time.sleep(0.4)
             combined.append(f"[{idx + 1}] {domain}\n{content[:2000]}")
             sources_read.append(r)
+        if sys.stdout.isatty():
+            clear_status()
 
     return "\n\n---\n\n".join(combined), sources_read
 
