@@ -1,53 +1,58 @@
 # surf
 
-**AI-powered search in your terminal.** One command, clean answer, sources cited. No browser, no login, no subscription.
+**Search that learns.** Terminal-native AI search with a memory.
+
+One command. Clean answer. Sources evaluated for quality, not just listed. The more you search, the smarter it gets.
 
 ```
-surf what is the UEFA Champions League final venue 2026
-surf latest news on AI
-surf AAPL stock price
-surf peer reviewed studies on omega-3 and cognition
-surf weather in Austin tomorrow
-```
-
-```
-$ surf who won the 2026 Champions League final
-
-▸ TL;DR  Real Madrid defeated Manchester City 2–1 in the 2026 Champions League
-  final, held at the Metropolitano Stadium in Madrid on May 30, 2026.
-  Vinicius Jr. scored the winner in the 87th minute.
-
-  The match was settled in the final minutes after City leveled through
-  Erling Haaland's 71st minute header. Madrid's victory marks their 16th
-  European Cup title...
-
-  ─────────────────────────────────────────────────────
-  1  Champions League 2026 Final — UEFA.com
-  2  Real Madrid vs Man City match report — BBC Sport
-  3  Vinicius Jr. winner — The Athletic
-
-  read in terminal: 1–3   open in browser: o1–o3   summary: s1–s3
-
-› who scored first?
-▸ TL;DR  Rodrygo opened the scoring for Real Madrid in the 34th minute...
+Google finds pages. Perplexity summarizes them. surf finds truth.
 ```
 
 ---
 
-## Why
+## See it in action
 
-Every AI search tool today asks you to stop and switch contexts — open a browser, navigate, wait, copy, paste back.
+```bash
+$ surf is intermittent fasting safe long-term
 
-Developers live in terminals. surf brings the answer to where you already are. It searches the web, synthesizes a clean TL;DR, and streams it live — then shows numbered sources you can read in-terminal or open in a browser with `cmd+click`.
+↳ reading 5 sources...
+↳ [1] pmc.ncbi.nlm.nih.gov — a systematic review, the gold standard of evidence
+↳ [3] nature.com — Nature: one does not argue with the venue, only the findings
+↳ [5] healthblog.com — remarkable restraint in avoiding evidence
 
-**What makes surf different:**
-- **Terminal-native** — lives in your shell, composes with pipes and scripts
-- **Conversational** — follow-up questions carry full context; push back ("try harder"), correct ("no, I meant 2022"), or expand scope ("what about the other groups?") and surf adapts
-- **Specialized APIs** — live weather forecasts, real-time stock prices, PubMed/arXiv academic papers, and Wikipedia facts bypass DDG and go straight to authoritative sources
-- **No account or subscription** — bring your own API key; free fallbacks (Groq, Gemini) kick in automatically
-- **Privacy** — nothing stored except your session context; no tracking
-- **Automation-ready** — `surf "CVEs for nginx 1.24" --json >> digest.txt`
-- **Open source**
+▸ TL;DR  Long-term safety remains unproven — a Cochrane review finds no
+  advantage over standard calorie restriction, and observational data links
+  extreme time restriction to 91% higher cardiovascular mortality risk.
+
+  Your prior vault research covered weight loss mechanisms. What's new:
+  the refeeding phase — not the fast itself — may drive any health benefits...
+
+  Sources: pmc.ncbi.nlm.nih.gov · nature.com · utsouthwestern.edu
+  ────────────────────────────────────────────────────
+  1  Cochrane systematic review: IF vs calorie restriction
+  2  Nature Communications: refeeding metabolism study
+  3  AHA Newsroom: cardiovascular risk data
+
+  read in terminal: 1–3   open in browser: o1–o3   summary: s1–s3
+```
+
+Notice: surf evaluated each source's quality live, cited a Cochrane review over SEO blogs, and built on research you did last week.
+
+---
+
+## What makes surf different
+
+**Search that remembers.** Every search saves to a personal knowledge base. When you search a topic again, surf draws from your accumulated research — highlighting what's new, flagging contradictions, surfacing connections across topics you've explored.
+
+**Sources scored, not just listed.** surf evaluates source quality on two axes — reliability (is this source trustworthy?) and credibility (does this specific piece show evidence?). PubMed outranks health blogs. Cochrane reviews outrank listicles. SEO farms get ignored.
+
+**Semantic intent understanding.** surf understands *what you want*, not just the words you typed. "Is this safe?" triggers contested-tier evaluation with authoritative sources. "What happened today?" triggers current-events mode. "Translate hello to Japanese" gets an instant answer with no web search.
+
+**Terminal-native.** Lives in your shell. Composes with pipes and scripts. `surf "CVEs for nginx 1.24" --json >> digest.txt`. No browser, no login, no context switch.
+
+**Nearly free.** Claude Haiku at $1/month covers ~2,500 searches. Free fallbacks (Groq, Cerebras, Gemini) kick in automatically when the budget runs out.
+
+**Private.** Your knowledge base stays on your machine. No tracking. No account required.
 
 ---
 
@@ -59,13 +64,13 @@ cd ~/surf
 bash install.sh
 ```
 
-`install.sh` creates the virtualenv, installs dependencies, and puts `surf` in `/usr/local/bin`. Then:
+Then:
 
 ```bash
 surf what is a black hole
 ```
 
-**Manual setup (if you prefer):**
+**Manual setup:**
 
 ```bash
 git clone https://github.com/marcosrrez/surf ~/surf
@@ -79,22 +84,27 @@ alias surf='~/surf/.venv/bin/python3 ~/surf/surf.py'  # add to ~/.zshrc
 
 ## Configure
 
-surf needs at least one API key. Claude is the recommended starting point — $1/month covers ~2,500 queries.
+surf needs at least one API key. Claude is recommended — $1/month covers ~2,500 queries.
+
+```bash
+surf setup
+```
+
+Or manually:
 
 ```bash
 mkdir -p ~/.config/surf
 cat > ~/.config/surf/config << 'EOF'
-# Required: at least one of these
 ANTHROPIC_API_KEY=your-key-here    # claude.ai/settings — $1/mo for ~2500 queries
 
-# Optional free fallbacks (used when Claude budget runs out)
-GROQ_API_KEY=your-key-here        # console.groq.com — free, fast
-GEMINI_API_KEY=your-key-here      # aistudio.google.com — free
-CEREBRAS_API_KEY=your-key-here    # inference.cerebras.ai — free
+# Optional free fallbacks
+# GROQ_API_KEY=your-key-here       # console.groq.com — free
+# CEREBRAS_API_KEY=your-key-here   # inference.cerebras.ai — free
+# GEMINI_API_KEY=your-key-here     # aistudio.google.com — free
 EOF
 ```
 
-**Provider chain:** Claude → Groq → Cerebras → Gemini → local Ollama. surf automatically falls back through the chain if a provider hits its rate limit or your Claude budget runs out.
+**Provider chain:** Claude → Groq → Cerebras → Gemini → local Ollama. surf falls back automatically.
 
 ---
 
@@ -103,127 +113,91 @@ EOF
 ```bash
 # Search anything
 surf what causes inflation
-surf latest news on Iran
-surf who invented the telephone
+surf latest AI news
+surf who won the game last night
 
-# Specialized queries — surf routes these to dedicated APIs
+# Specialized queries — routed to dedicated APIs
 surf weather in Denver tomorrow          # Open-Meteo live forecast
 surf NVDA stock price                    # Yahoo Finance real-time data
-surf peer reviewed studies on statins    # PubMed + arXiv search
-surf what is the Coriolis effect         # Wikipedia entity lookup
+surf peer reviewed studies on anxiety    # PubMed + arXiv search
+surf what is the Higgs boson             # Wikipedia entity lookup
 
-# Read any URL (full article, stripped to text)
+# Deep research mode
+surf --deep effects of social media on adolescent mental health
+
+# Search your personal knowledge base
+surf vault: what do I know about attachment theory?
+
+# Fresh search (skip vault context)
+surf --fresh anxiety in relationships
+
+# Read any URL
 surf https://arstechnica.com/science/2026/...
-surf en.wikipedia.org/wiki/Black_hole
 
 # Automation
 surf "CVEs for nginx 1.24" --json | jq .tldr
-surf "current EURUSD rate" --json >> fx_log.jsonl
-
-# Check Claude spend
-surf --usage
 ```
 
 ### Interactive commands
 
-After a search result appears:
+After a search result:
 
 | Key | Action |
 |-----|--------|
-| `1–9` | Read full article in terminal (reader mode) |
+| `1–9` | Read full article in terminal |
 | `s1–s9` | Quick AI summary |
 | `o1–o9` | Open in browser |
-| Type a question | Follow-up with full session context |
+| Type a question | Follow-up with full context |
 | `n` | New search |
 | `q` | Quit |
 
-**Conversational inputs surf understands:**
+### Conversational inputs
 
 | What you type | What surf does |
 |---------------|----------------|
-| "why did that happen?" | Follow-up using previous context |
-| "no, I meant 2022" | Discards prior context, fresh search |
-| "try harder" / "you missed some" | Broadens the search, tries again |
-| "what about groups A through G?" | Parallel searches, streamed as they land |
-| "cool" / "thanks" | Brief acknowledgment, stays in session |
-
-Source links and domain names are **cmd+clickable** in any modern terminal (iTerm2, Terminal.app, Warp).
-
----
-
-## Examples
-
-```bash
-# Deep research session
-$ surf CRISPR off-target effects clinical trials
-▸ TL;DR  Off-target edits remain the central safety concern in CRISPR clinical
-  trials. A 2025 systematic review of 14 trials found off-target rates below 0.1%
-  in therapeutic doses, but longitudinal data beyond 36 months is still sparse...
-[sources from PubMed + arXiv]
-
-› what do critics say about the safety data?
-▸ TL;DR  The main critique is that current detection methods (GUIDE-seq, CIRCLE-seq)
-  only catch edits at known off-target sites — novel sites may go undetected...
-
-# Scope expansion (runs 6 searches in parallel, streams results as they land)
-› what about the other major gene editing approaches?
-↳ searching: "zinc finger nucleases clinical safety 2025"...
-↳ searching: "TALENs off-target clinical trial data"...
-↳ searching: "base editing prime editing safety comparison"...
-
-# Pipe output
-$ surf "WWDC 2026 announcements" --json > wwdc.json
-
-# Check your Claude budget
-$ surf --usage
-Claude usage — 2026-06
-  ████░░░░░░░░░░░░░░░░  $0.22 / $1.00
-  540 queries  ·  $0.78 remaining
-  ≈ 1,900 queries left this month
-```
+| "why did that happen?" | Follow-up using prior context |
+| "no, I meant 2022" | Fresh search with correction |
+| "try harder" | Broadens search, retries |
+| "what about the others?" | Parallel searches, streamed live |
 
 ---
 
 ## How it works
 
-**Query routing:** surf classifies each query before searching. Specialized queries skip DDG entirely:
-- `weather in Austin tomorrow` → Open-Meteo live hourly forecast
-- `AAPL stock price` → Yahoo Finance real-time price card with sparkline
-- `peer reviewed studies on X` → PubMed + arXiv parallel search
-- `what is the Higgs boson` → Wikipedia entity lookup with disambiguation
+### Intent engine
 
-**Web search:** Everything else goes to DuckDuckGo (no tracking). Top results (titles + snippets) go to Claude Haiku for synthesis. For research/current-events queries, surf fetches full article content before synthesizing.
+surf classifies every query semantically — not with keyword matching, but with an 8B model that understands what you actually want:
 
-**Conversational engine:** surf classifies every input — follow-up, correction, redirect, scope expansion, or casual — and responds accordingly. "Try harder" triggers a broader retry; "what about all the others?" fans out into parallel searches.
+- Simple facts → instant answer, no web search
+- Current events → real-time sources, freshness-weighted
+- Research questions → deep reading, academic sources prioritized
+- Contested topics → multiple perspectives, evaluative voice
+- Transactional → booking deep-links, price comparisons
 
-**Session memory:** surf remembers your last 4 hours of searches, so follow-ups like "who replaced her?" resolve correctly without re-stating context.
+### Source quality (the Chesterton brain)
 
-**Article reader:** `1` reads the full article in-terminal with AI formatting. Full article mode, not a summary — Claude Haiku formats it as clean prose with a TL;DR header.
+Every source is scored on two axes (NATO Admiralty model):
 
----
+- **Reliability** — is this source generally trustworthy? (.gov, PubMed, Nature → high. SEO blog → low)
+- **Credibility** — does this specific piece show evidence? (data, methodology, citations → high. Marketing copy, listicles → low)
 
-## Cost
+For research queries, surf reads the actual content and evaluates depth: word count, heading structure, methodology signals, limitation acknowledgment, factual density. Sources that show their work rank above those that don't.
 
-With Claude Haiku 4.5 as the primary provider:
+### Knowledge base (vault)
 
-| Usage | Monthly cost |
-|-------|-------------|
-| ~10 searches/day | ~$0.12 |
-| ~30 searches/day | ~$0.36 |
-| ~80 searches/day | ~$0.96 |
-| Over budget | Falls to free providers (Groq, Gemini) |
+Every search result saves to an Obsidian vault with:
+- Topic-based filenames and 15-category auto-tagging
+- Conversation threading (`sparked_by` links between related searches)
+- Auto-generated topic maps (psychology, finance, sports, etc.)
+- Cross-topic connection detection
 
-Add a free Groq key and you effectively get unlimited searches — Groq handles overflow when Claude's monthly $1 runs out.
+When you search a topic you've researched before, surf injects your prior findings into the prompt — the AI builds on what you already know instead of repeating it.
 
 ---
 
 ## Claude Code integration (MCP)
 
-surf can run as an MCP server inside Claude Code, giving Claude access to live search, weather, stocks, academic papers, Wikipedia, and URL reading — with no extra API keys. Claude Code synthesizes answers using its own subscription.
-
-### Setup
-
-Add this to `~/.claude/settings.json` (adjust the path to wherever you cloned surf):
+surf runs as an MCP server inside Claude Code:
 
 ```json
 {
@@ -236,31 +210,29 @@ Add this to `~/.claude/settings.json` (adjust the path to wherever you cloned su
 }
 ```
 
-Restart Claude Code. You'll see surf listed under MCP servers. Claude will automatically use it when you ask questions that benefit from live data.
+**Tools:** `search`, `weather`, `stock`, `academic`, `factual`, `read_url`. No extra API keys — Claude Code synthesizes using its own subscription.
 
-### Available tools
+---
 
-| Tool | What it does |
-|------|-------------|
-| `search` | DuckDuckGo web search, returns top 10 results |
-| `weather` | Live forecast from Open-Meteo |
-| `stock` | Real-time price from Yahoo Finance |
-| `academic` | PubMed + arXiv paper search |
-| `factual` | Wikipedia entity lookup |
-| `read_url` | Fetch and extract any web page |
+## Cost
 
-**No extra API keys needed.** surf does the data gathering; Claude Code synthesizes the answer.
+| Usage | Monthly cost |
+|-------|-------------|
+| ~10 searches/day | ~$0.12 |
+| ~30 searches/day | ~$0.36 |
+| ~80 searches/day | ~$0.96 |
+| Over budget | Falls to free providers automatically |
 
 ---
 
 ## Requirements
 
 - Python 3.10+
-- macOS (Linux works, Windows untested)
-- API key from [claude.ai](https://claude.ai/settings) (and optionally Groq, Gemini, Cerebras)
+- macOS or Linux
+- API key from [claude.ai](https://claude.ai/settings) (recommended) or any free provider
 
 ---
 
 ## License
 
-MIT
+[MIT](LICENSE)

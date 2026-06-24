@@ -6,7 +6,7 @@ Quality: accuracy, completeness, honesty, source quality, structure.
 Delight: TL;DR sharpness, format cleanliness, conciseness, voice (LLM-judged).
 
 Run:
-  cd ~/termbrowser && .venv/bin/python3 tests/quality/benchmark.py [--quick N] [--category X] [--save] [--report]
+  cd ~/surf && .venv/bin/python3 tests/quality/benchmark.py [--quick N] [--category X] [--save] [--report]
 """
 import sys
 import json
@@ -16,7 +16,7 @@ import argparse
 import os
 from datetime import datetime
 
-sys.path.insert(0, '/Users/marcos/termbrowser')
+sys.path.insert(0, '/Users/marcos/surf')
 
 from surf import (
     ddg_search, stream_groq, build_search_prompt, SEARCH_SYSTEM,
