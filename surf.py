@@ -1372,6 +1372,45 @@ def score_content_depth(content: str) -> float:
 
 _PRIMARY_DATE_RE = re.compile(r"\b(20[12]\d)\b")
 
+_QUALITY_RETRY_THRESHOLD = 0.45
+
+_INTENT_TOPIC_MAP = {"sports": "general", "finance": "finance", "news": "news"}
+
+
+def _quality_retry_search(query: str, intent: dict | None, existing_results: list[dict]) -> list[dict]:
+    """Retry search targeting authoritative sources when initial quality is poor.
+    Uses Tavily advanced (2 credits) + domain targeting. One retry, no loop."""
+    domain = intent.get("domain", "general") if intent else "general"
+    tier = intent.get("tier", "snippet") if intent else "snippet"
+    existing_domains = {r.get("domain", "") for r in existing_results}
+    new_results: list[dict] = []
+
+    auth_domains = SOURCE_HIERARCHY.get(domain, [])
+    topic = _INTENT_TOPIC_MAP.get(domain, "general")
+
+    # Strategy 1: Tavily advanced with authoritative domain targeting
+    if auth_domains:
+        try:
+            targeted = tavily_search(
+                query, num_results=5, search_depth="advanced",
+                include_domains=auth_domains[:6], topic=topic,
+            )
+            new_results.extend(r for r in targeted if r.get("domain", "") not in existing_domains)
+        except Exception:
+            pass
+
+    # Strategy 2: DDG site-targeted fallback if Tavily didn't help enough
+    if len(new_results) < 2 and auth_domains:
+        site_query = query + " " + " ".join(f"site:{d}" for d in auth_domains[:3])
+        try:
+            fallback = ddg_search(site_query, num_results=5)
+            seen = existing_domains | {r.get("domain", "") for r in new_results}
+            new_results.extend(r for r in fallback if r.get("domain", "") not in seen)
+        except Exception:
+            pass
+
+    return new_results
+
 
 def _detect_primary_source(results: list[dict]) -> set[str]:
     """Identify results that appear to be original/primary sources by earliest publication date.
@@ -3751,6 +3790,20 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
     if len(results) > 1:
         results = filter_and_rank_results(query, results, intent=intent)
 
+    # Quality-triggered retry — refuse to settle for weak sources
+    _sources_weak = False
+    if tier in ("current", "research", "contested") and not fresh and results:
+        _top_scores = sorted([r.get("_quality", {}).get("composite", 0.5) for r in results[:3]])
+        _median_quality = _top_scores[len(_top_scores) // 2] if _top_scores else 0.5
+        if _median_quality < _QUALITY_RETRY_THRESHOLD:
+            print_status("↳ sources thin — searching deeper...")
+            _retry = _quality_retry_search(query, intent, results)
+            if _retry:
+                results = filter_and_rank_results(query, _retry + results, intent=intent)
+            clear_status()
+            _post_retry_scores = sorted([r.get("_quality", {}).get("composite", 0.5) for r in results[:3]])
+            _sources_weak = (_post_retry_scores[len(_post_retry_scores) // 2] if _post_retry_scores else 0.5) < _QUALITY_RETRY_THRESHOLD
+
     # Compute entity type — prefer intent-derived domain, fall back to keyword heuristic
     if not _entity_type:
         _entity_type = _identify_entity_type(query)
@@ -3849,7 +3902,9 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
             source_count = len(deep_sources)
             print_status(f"↳ synthesizing {source_count} source{'s' if source_count != 1 else ''}...")
             _quality_note = ""
-            if any(r.get("_quality", {}).get("composite", 0.5) >= 0.7 for r in results[:3]):
+            if _sources_weak:
+                _quality_note = "\nIMPORTANT: The available sources are limited in quality. State clearly what you can confirm from these sources and what remains unverified. Do not suggest the user check other sources — state what you know and what you don't.\n"
+            elif any(r.get("_quality", {}).get("composite", 0.5) >= 0.7 for r in results[:3]):
                 _quality_note = "\nNote: weight findings from sources with specific data, named researchers, and cited methodology more heavily than those with vague claims or marketing language.\n"
             prompt = base_prompt + f"\n\nFull article content from {source_count} source(s):{_quality_note}\n{deep_content}"
             # Select system prompt — evaluative queries get independence-focused voice

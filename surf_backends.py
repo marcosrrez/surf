@@ -207,19 +207,31 @@ def brave_search(query: str, num_results: int = 5) -> list[dict]:
         return []
 
 
-def tavily_search(query: str, num_results: int = 5) -> list[dict]:
-    """Search Tavily and return list of {title, url, domain, snippet}. Same format as ddg_search."""
+def tavily_search(
+    query: str,
+    num_results: int = 5,
+    search_depth: str = "basic",
+    include_domains: list[str] | None = None,
+    topic: str = "general",
+) -> list[dict]:
+    """Search Tavily. Default: basic (1 credit). Use search_depth='advanced' sparingly (2 credits).
+    Free plan: 1,000 credits/month. Reserve advanced + include_domains for quality retries."""
     from urllib.parse import urlparse
     config = surf_config.load_config()
     api_key = config.get("TAVILY_API_KEY", os.environ.get("TAVILY_API_KEY", ""))
     if not api_key:
         return []
+    payload = {
+        "query": query,
+        "max_results": num_results,
+        "api_key": api_key,
+        "search_depth": search_depth,
+        "topic": topic,
+    }
+    if include_domains:
+        payload["include_domains"] = include_domains
     try:
-        r = requests.post(
-            "https://api.tavily.com/search",
-            json={"query": query, "max_results": num_results, "api_key": api_key},
-            timeout=10,
-        )
+        r = requests.post("https://api.tavily.com/search", json=payload, timeout=15)
         r.raise_for_status()
         data = r.json()
         results = []
