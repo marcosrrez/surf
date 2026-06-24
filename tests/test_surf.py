@@ -8,7 +8,7 @@ from surf import read_flow, parse_related_topics
 from surf import classify_intent, open_in_browser
 from surf import _classify_tier
 from surf import _confidence_gate
-from surf import score_source_quality, score_content_depth
+from surf import score_source_quality, score_content_depth, filter_and_rank_results, _term_width
 import json
 import os
 from unittest.mock import patch, MagicMock
@@ -2639,3 +2639,32 @@ class TestContentDepthScoring:
         with_limits = "One limitation of this study is the small sample size. However, despite the caveats, future research should address this. " + "More text here with additional context. " * 100
         without_limits = "This is a definitive and comprehensive guide. " * 100
         assert score_content_depth(with_limits) > score_content_depth(without_limits)
+
+
+class TestPrimarySourceDetection:
+    def test_earliest_date_gets_boost(self):
+        results = [
+            {"domain": "blog.com", "url": "https://blog.com/1", "snippet": "A 2026 summary of recent findings.", "title": "Summary"},
+            {"domain": "journal.org", "url": "https://journal.org/1", "snippet": "Originally published 2023. A landmark study.", "title": "Original study"},
+        ]
+        intent = {"tier": "research", "domain": "science", "source_strategy": "academic"}
+        ranked = filter_and_rank_results("study results", results, intent=intent)
+        # The 2023 source should get a primary source boost
+        journal = next(r for r in ranked if r["domain"] == "journal.org")
+        assert journal.get("_quality", {}).get("credibility", 0) > 0.5
+
+    def test_no_boost_for_snippet_tier(self):
+        results = [
+            {"domain": "a.com", "url": "https://a.com/1", "snippet": "Published 2023.", "title": "Old"},
+            {"domain": "b.com", "url": "https://b.com/1", "snippet": "Published 2026.", "title": "New"},
+        ]
+        intent = {"tier": "snippet", "domain": "general", "source_strategy": "any"}
+        ranked = filter_and_rank_results("test", results, intent=intent)
+        # Snippet tier uses BM25 only — no quality dict
+        assert "_quality" not in ranked[0] or ranked[0].get("_quality") is None
+
+
+class TestLineWidthCapping:
+    def test_term_width_capped_at_82(self):
+        width = _term_width()
+        assert width <= 82

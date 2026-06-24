@@ -1084,7 +1084,7 @@ class Spinner:
 
 
 def _term_width() -> int:
-    return min(shutil.get_terminal_size().columns, 100)
+    return min(shutil.get_terminal_size().columns, 82)
 
 _BOLD_RE = re.compile(r'\*\*(.+?)\*\*')
 
@@ -1370,6 +1370,29 @@ def score_content_depth(content: str) -> float:
     return max(0.0, min(1.0, score))
 
 
+_PRIMARY_DATE_RE = re.compile(r"\b(20[12]\d)\b")
+
+
+def _detect_primary_source(results: list[dict]) -> set[str]:
+    """Identify results that appear to be original/primary sources by earliest publication date.
+
+    When multiple results cover the same topic, the one with the earliest year
+    is likely the primary source. Returns set of URLs that get a primary boost.
+    """
+    dated: list[tuple[int, str]] = []
+    for r in results:
+        snippet = r.get("snippet", "") + " " + r.get("title", "")
+        years = _PRIMARY_DATE_RE.findall(snippet)
+        if years:
+            earliest = min(int(y) for y in years)
+            dated.append((earliest, r.get("url", "")))
+    if len(dated) < 2:
+        return set()
+    dated.sort()
+    earliest_year = dated[0][0]
+    return {url for year, url in dated if year == earliest_year}
+
+
 def filter_and_rank_results(
     query: str,
     results: list[dict],
@@ -1395,9 +1418,14 @@ def filter_and_rank_results(
     for i, r in enumerate(bm25_ranked):
         bm25_scores[r.get("url", "")] = 1.0 - (i / max(len(bm25_ranked), 1))
 
+    primary_urls = _detect_primary_source(filtered) if tier in ("research", "contested") else set()
+
     scored = []
     for r in filtered:
         quality_dict = score_source_quality(r, domain=domain, source_strategy=source_strategy)
+        if r.get("url", "") in primary_urls:
+            quality_dict["credibility"] = min(1.0, quality_dict["credibility"] + 0.10)
+            quality_dict["composite"] = round(0.45 * quality_dict["reliability"] + 0.55 * quality_dict["credibility"], 2)
         quality = quality_dict["composite"]
         relevance = bm25_scores.get(r.get("url", ""), 0.5)
         if tier in ("research", "contested"):
