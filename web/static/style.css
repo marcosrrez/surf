@@ -236,6 +236,21 @@ span.quality-low { color: var(--red); }
   color: var(--text);
 }
 
+/* Chesterton commentary trail */
+#commentary-trail {
+  padding: 8px 0;
+}
+.commentary-line {
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 3px 0;
+  font-style: normal;
+}
+.commentary-line em {
+  font-style: italic;
+  color: var(--text-dim);
+}
+
 /* Follow-up bar */
 #followup-bar {
   margin-top: 12px;

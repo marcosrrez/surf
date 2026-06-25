@@ -150,15 +150,16 @@ async def search(q: str, fresh: bool = False):
         # Deep read for research/contested tiers
         if tier in ("research", "current", "contested"):
             yield f"data: {json.dumps({'type': 'status', 'content': 'Reading sources in depth...'})}\n\n"
-            from surf import extract_text
+            from surf import extract_text, _chesterton_evaluate_sources
+            import requests as req
+            from surf_backends import SSL_CERT, HEADERS
             deep_content = []
-            for r in ranked[:3]:
+            fetched_for_commentary = []
+            for r in ranked[:5]:
                 url = r.get("url", "")
                 if not url or not url.startswith("http"):
                     continue
                 try:
-                    import requests as req
-                    from surf_backends import SSL_CERT, HEADERS
                     resp = req.get(url, headers=HEADERS, verify=SSL_CERT, timeout=8)
                     resp.raise_for_status()
                     html = resp.text
@@ -168,12 +169,23 @@ async def search(q: str, fresh: bool = False):
                         _, content = extract_text(html, max_words=1500, return_title=True)
                     if content and len(content.split()) > 150:
                         rdomain = r.get("domain", "").removeprefix("www.")
-                        depth = _score_content_depth(content)
-                        quality = _score_source_quality(r, domain=domain)
-                        yield f"data: {json.dumps({'type': 'reading', 'content': {'domain': rdomain, 'depth': round(depth, 2), 'quality': quality.get('composite', 0.5)}})}\n\n"
+                        idx = len(deep_content)
+                        fetched_for_commentary.append((idx, rdomain, content, r))
                         deep_content.append(f"[{rdomain}]\n{content[:2000]}")
                 except Exception:
                     continue
+
+            # Chesterton commentary on fetched sources
+            if fetched_for_commentary:
+                try:
+                    commentary = _chesterton_evaluate_sources(query, fetched_for_commentary, domain)
+                    for idx, rdomain, content, r in fetched_for_commentary:
+                        entry = commentary.get(idx, {})
+                        comment = entry.get("comment", "") if isinstance(entry, dict) else str(entry)
+                        quality = _score_source_quality(r, domain=domain)
+                        yield f"data: {json.dumps({'type': 'reading', 'content': {'domain': rdomain, 'comment': comment, 'quality': quality.get('composite', 0.5)}})}\n\n"
+                except Exception:
+                    pass
 
             if deep_content:
                 base_prompt += f"\n\nFull article content from {len(deep_content)} source(s):\n" + "\n\n---\n\n".join(deep_content)

@@ -27,6 +27,7 @@
     <div id="status-line" class="hidden"></div>
     <div id="vault-line" class="hidden"></div>
     <div id="sources-panel" class="hidden"></div>
+    <div id="commentary-trail" class="hidden"></div>
     <div id="answer-panel" class="hidden">
       <div id="answer"></div>
     </div>
@@ -59,6 +60,8 @@ function doSearch(e) {
   document.getElementById('vault-line').classList.add('hidden');
   document.getElementById('answer-panel').classList.add('hidden');
   document.getElementById('followup-bar').classList.add('hidden');
+  document.getElementById('commentary-trail').classList.add('hidden');
+  document.getElementById('commentary-trail').innerHTML = '';
   answerBuffer = '';
 
   const status = document.getElementById('status-line');
@@ -100,7 +103,14 @@ function doSearch(e) {
       case 'reading':
         const r = data.content;
         const q_class = r.quality >= 0.6 ? 'quality-high' : r.quality >= 0.4 ? 'quality-mid' : 'quality-low';
-        status.innerHTML = `<span class="${q_class}">↳</span> reading ${r.domain}`;
+        const trail = document.getElementById('commentary-trail');
+        trail.classList.remove('hidden');
+        if (r.comment) {
+          trail.innerHTML += `<div class="commentary-line"><span class="${q_class}">↳</span> ${r.domain} — <em>${r.comment}</em></div>`;
+        } else {
+          trail.innerHTML += `<div class="commentary-line"><span class="${q_class}">↳</span> reading ${r.domain}</div>`;
+        }
+        status.classList.add('hidden');
         break;
 
       case 'token':
