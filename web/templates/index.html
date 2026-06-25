@@ -14,7 +14,7 @@
       <span id="new-search-btn" class="hidden" onclick="resetSearch()">+ new</span>
     </div>
     <p class="tagline">search that learns</p>
-    <div class="wave">~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</div>
+    <div class="wave"></div>
   </header>
 
   <div id="search-bar">
@@ -32,8 +32,8 @@
     <div id="status-line" class="hidden"></div>
     <div id="vault-line" class="hidden"></div>
     <div id="sources-panel" class="hidden"></div>
-    <div id="commentary-trail" class="hidden"></div>
     <div id="answer-panel" class="hidden">
+      <div id="commentary-trail" class="hidden"></div>
       <div id="answer"></div>
       <div id="answer-actions" class="hidden">
         <button onclick="copyAnswer()" class="action-btn" title="Copy answer">
@@ -117,6 +117,7 @@ function doSearch(e) {
       case 'reading':
         const r = data.content;
         const q_class = r.quality >= 0.6 ? 'quality-high' : r.quality >= 0.4 ? 'quality-mid' : 'quality-low';
+        document.getElementById('answer-panel').classList.remove('hidden');
         const trail = document.getElementById('commentary-trail');
         trail.classList.remove('hidden');
         if (r.comment) {
