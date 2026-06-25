@@ -131,7 +131,10 @@ function doSearch(e) {
   };
 }
 
+let currentSources = [];
+
 function renderSources(sources) {
+  currentSources = sources;
   const panel = document.getElementById('sources-panel');
   panel.classList.remove('hidden');
   panel.innerHTML = sources.map((s, i) => {
@@ -157,11 +160,19 @@ let answerBuffer = '';
 function appendToken(token) {
   answerBuffer += token;
   const answer = document.getElementById('answer');
-  // Render markdown: bold, headers, bullets, TL;DR
   let html = answerBuffer
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/^▸ TL;DR\s*/m, '<span class="tldr-marker">▸ TL;DR</span>  ')
     .replace(/^• /gm, '<span class="bullet">•</span> ')
+    .replace(/\[(\d+)\]/g, (match, num) => {
+      const idx = parseInt(num) - 1;
+      if (idx >= 0 && idx < currentSources.length) {
+        const s = currentSources[idx];
+        const shortDomain = s.domain.replace(/\.com$|\.org$|\.net$/, '');
+        return `<a href="${s.url}" target="_blank" class="cite-chip" title="${s.title}">${shortDomain}</a>`;
+      }
+      return match;
+    })
     .replace(/\n\n/g, '</p><p>')
     .replace(/\n/g, '<br>');
   answer.innerHTML = '<p>' + html + '</p>';
