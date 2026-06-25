@@ -8,252 +8,71 @@
 </head>
 <body>
 <div id="app">
-  <header id="hero" class="visible">
-    <div class="header-row">
-      <h1 onclick="resetSearch()" style="cursor:pointer">surf</h1>
-      <span id="new-search-btn" class="hidden" onclick="resetSearch()">+ new</span>
+
+  <!-- Mobile hamburger -->
+  <button id="hamburger-btn" onclick="toggleSidebar()" aria-label="Toggle sidebar">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+  </button>
+
+  <!-- Left sidebar -->
+  <nav id="sidebar">
+    <div class="sidebar-brand" onclick="resetSearch()">
+      <h2>surf</h2>
+      <span>search that learns</span>
     </div>
-    <p class="tagline">search that learns</p>
-    <div class="wave"></div>
-  </header>
 
-  <div id="search-bar">
-    <form id="search-form" onsubmit="doSearch(event)">
-      <input type="text" id="query" placeholder="ask anything..." autocomplete="off" autofocus onfocus="renderHistory()">
-      <button type="submit" id="search-btn">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-      </button>
-    </form>
-  </div>
+    <div class="sidebar-section-label">tags</div>
+    <div id="tag-list" class="tag-list"></div>
 
-  <div id="history-panel" class="hidden"></div>
+    <div class="sidebar-section-label">history</div>
+    <div id="thread-list"></div>
+  </nav>
 
-  <div id="results" class="hidden">
-    <div id="status-line" class="hidden"></div>
-    <div id="vault-line" class="hidden"></div>
-    <div id="sources-panel" class="hidden"></div>
-    <div id="answer-panel" class="hidden">
-      <div id="commentary-trail" class="hidden"></div>
-      <div id="answer"></div>
-      <div id="answer-actions" class="hidden">
-        <button onclick="copyAnswer()" class="action-btn" title="Copy answer">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-          <span id="copy-label">copy</span>
+  <!-- Sidebar overlay (mobile) -->
+  <div id="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+  <!-- Main content area -->
+  <div id="main">
+    <header id="hero" class="visible">
+      <div class="header-row">
+        <h1 onclick="resetSearch()">surf</h1>
+        <span id="new-search-btn" class="hidden" onclick="resetSearch()">+ new</span>
+      </div>
+      <p class="tagline">search that learns</p>
+      <div class="wave"></div>
+    </header>
+
+    <div id="search-bar">
+      <form id="search-form" onsubmit="doSearch(event)">
+        <textarea id="query" placeholder="ask anything..." autocomplete="off" autofocus rows="1"></textarea>
+        <button type="submit" id="search-btn" aria-label="Search">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+      </form>
+    </div>
+
+    <div id="timeline"></div>
+
+    <div id="followup-bar" class="hidden">
+      <div class="search-form-wrap">
+        <textarea id="followup-input" placeholder="ask a follow-up..." rows="1"></textarea>
+        <button class="followup-submit" onclick="doFollowup(event)" aria-label="Send follow-up">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
         </button>
       </div>
-    </div>
-    <div id="followup-bar" class="hidden">
-      <form onsubmit="doFollowup(event)">
-        <input type="text" id="followup-input" placeholder="ask a follow-up..." autocomplete="off">
-      </form>
     </div>
   </div>
 </div>
 
 <script>
-let currentController = null;
-
-function doSearch(e) {
-  e.preventDefault();
-  const q = document.getElementById('query').value.trim();
-  if (!q) return;
-
-  // Collapse hero, show new search button
-  document.getElementById('hero').classList.remove('visible');
-  document.getElementById('hero').classList.add('collapsed');
-  document.getElementById('new-search-btn').classList.remove('hidden');
-  document.getElementById('answer-actions').classList.add('hidden');
-
-  // Reset panels
-  const results = document.getElementById('results');
-  results.classList.remove('hidden');
-  document.getElementById('answer').innerHTML = '';
-  document.getElementById('sources-panel').innerHTML = '';
-  document.getElementById('sources-panel').classList.add('hidden');
-  document.getElementById('vault-line').classList.add('hidden');
-  document.getElementById('answer-panel').classList.add('hidden');
-  document.getElementById('followup-bar').classList.add('hidden');
-  document.getElementById('commentary-trail').classList.add('hidden');
-  document.getElementById('commentary-trail').innerHTML = '';
-  document.getElementById('history-panel').classList.add('hidden');
-  answerBuffer = '';
-
-  const status = document.getElementById('status-line');
-  status.textContent = 'understanding your intent...';
-  status.classList.remove('hidden');
-
-  // Cancel previous stream
-  if (currentController) currentController.abort();
-  currentController = new AbortController();
-
-  const evtSource = new EventSource(`/api/search?q=${encodeURIComponent(q)}`);
-  let answerStarted = false;
-
-  evtSource.onmessage = function(event) {
-    const data = JSON.parse(event.data);
-
-    switch(data.type) {
-      case 'status':
-        status.textContent = data.content;
-        status.classList.remove('hidden');
-        break;
-
-      case 'intent':
-        const intent = data.content;
-        status.textContent = `${intent.tier} · ${intent.domain} · ${intent.answer_depth}`;
-        break;
-
-      case 'sources':
-        renderSources(data.content);
-        break;
-
-      case 'vault':
-        const vault = data.content;
-        const vaultLine = document.getElementById('vault-line');
-        vaultLine.textContent = `↳ drawing from ${vault.count} vault note${vault.count !== 1 ? 's' : ''}`;
-        vaultLine.classList.remove('hidden');
-        break;
-
-      case 'reading':
-        const r = data.content;
-        const q_class = r.quality >= 0.6 ? 'quality-high' : r.quality >= 0.4 ? 'quality-mid' : 'quality-low';
-        document.getElementById('answer-panel').classList.remove('hidden');
-        const trail = document.getElementById('commentary-trail');
-        trail.classList.remove('hidden');
-        if (r.comment) {
-          trail.innerHTML += `<div class="commentary-line"><span class="${q_class}">↳</span> ${r.domain} — <em>${r.comment}</em></div>`;
-        } else {
-          trail.innerHTML += `<div class="commentary-line"><span class="${q_class}">↳</span> reading ${r.domain}</div>`;
-        }
-        status.classList.add('hidden');
-        break;
-
-      case 'token':
-        if (!answerStarted) {
-          answerStarted = true;
-          status.classList.add('hidden');
-          document.getElementById('answer-panel').classList.remove('hidden');
-        }
-        appendToken(data.content);
-        break;
-
-      case 'error':
-        status.textContent = data.content;
-        status.classList.remove('hidden');
-        evtSource.close();
-        break;
-
-      case 'done':
-        evtSource.close();
-        document.getElementById('followup-bar').classList.remove('hidden');
-        document.getElementById('answer-actions').classList.remove('hidden');
-        document.getElementById('followup-input').focus();
-        const tldr = answerBuffer.split('\n')[0].replace(/▸ TL;DR\s*/, '').replace(/\*\*/g, '');
-        addToHistory(document.getElementById('query').value, tldr);
-        document.getElementById('history-panel').classList.add('hidden');
-        break;
-    }
-  };
-
-  evtSource.onerror = function() {
-    evtSource.close();
-  };
-}
-
-let currentSources = [];
-
-function renderSources(sources) {
-  currentSources = sources;
-  const panel = document.getElementById('sources-panel');
-  panel.classList.remove('hidden');
-  panel.innerHTML = sources.map((s, i) => {
-    const q = s.composite;
-    const bar_class = q >= 0.6 ? 'quality-high' : q >= 0.4 ? 'quality-mid' : 'quality-low';
-    return `
-      <a href="${s.url}" target="_blank" class="source-card">
-        <div class="source-header">
-          <span class="source-num">${i + 1}</span>
-          <span class="source-domain">${s.domain}</span>
-          <span class="quality-bar ${bar_class}" title="Quality: ${(q * 100).toFixed(0)}%">
-            <span class="quality-fill" style="width: ${q * 100}%"></span>
-          </span>
-        </div>
-        <div class="source-title">${s.title}</div>
-      </a>
-    `;
-  }).join('');
-}
-
-let answerBuffer = '';
-
-function appendToken(token) {
-  answerBuffer += token;
-  const answer = document.getElementById('answer');
-  let html = answerBuffer
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/^▸ TL;DR\s*/m, '<span class="tldr-marker">▸ TL;DR</span>  ')
-    .replace(/^• /gm, '<span class="bullet">•</span> ')
-    .replace(/\[(\d+)\]/g, (match, num) => {
-      const idx = parseInt(num) - 1;
-      if (idx >= 0 && idx < currentSources.length) {
-        const s = currentSources[idx];
-        const shortDomain = s.domain.replace(/^www\./, '').replace(/\.com$|\.org$|\.net$/, '');
-        return `<span class="cite-chip" onclick="window.open('${s.url}','_blank')" title="${s.title}">${shortDomain}</span>`;
-      }
-      return match;
-    })
-    .replace(/\[([a-zA-Z][a-zA-Z0-9._-]*)\]/g, (match, name) => {
-      const s = currentSources.find(s => s.domain.toLowerCase().includes(name.toLowerCase()));
-      if (s) {
-        return `<span class="cite-chip" onclick="window.open('${s.url}','_blank')" title="${s.title}">${name}</span>`;
-      }
-      return match;
-    })
-    .replace(/\n\n/g, '</p><p>')
-    .replace(/\n/g, '<br>');
-  answer.innerHTML = '<p>' + html + '</p>';
-  answer.scrollTop = answer.scrollHeight;
-}
+/* ── State ────────────────────────────────────────── */
 
 let searchHistory = JSON.parse(localStorage.getItem('surf_history') || '[]');
+let activeCardId = null;
+let cardCounter = 0;
+let activeTag = null;
 
-function resetSearch() {
-  document.getElementById('hero').classList.add('visible');
-  document.getElementById('hero').classList.remove('collapsed');
-  document.getElementById('new-search-btn').classList.add('hidden');
-  document.getElementById('results').classList.add('hidden');
-  document.getElementById('query').value = '';
-  document.getElementById('query').focus();
-  renderHistory();
-}
-
-function addToHistory(query, tldr) {
-  searchHistory = searchHistory.filter(h => h.query !== query);
-  searchHistory.unshift({ query, tldr: tldr.substring(0, 120), time: Date.now() });
-  searchHistory = searchHistory.slice(0, 20);
-  localStorage.setItem('surf_history', JSON.stringify(searchHistory));
-}
-
-function renderHistory() {
-  const panel = document.getElementById('history-panel');
-  if (!panel) return;
-  if (searchHistory.length === 0) {
-    panel.classList.add('hidden');
-    return;
-  }
-  panel.classList.remove('hidden');
-  panel.innerHTML = '<div class="history-label">recent</div>';
-  searchHistory.slice(0, 5).forEach((h, i) => {
-    const item = document.createElement('div');
-    item.className = 'history-item';
-    item.innerHTML = `<span class="history-query">${escapeHtml(h.query)}</span><span class="history-tldr">${escapeHtml(h.tldr)}</span>`;
-    item.addEventListener('click', () => {
-      document.getElementById('query').value = h.query;
-      doSearch(new Event('submit'));
-    });
-    panel.appendChild(item);
-  });
-}
+/* ── Utility ──────────────────────────────────────── */
 
 function escapeHtml(str) {
   const d = document.createElement('div');
@@ -261,13 +80,625 @@ function escapeHtml(str) {
   return d.innerHTML;
 }
 
-function copyAnswer() {
-  const text = answerBuffer.replace(/\*\*/g, '').replace(/▸ TL;DR\s*/, 'TL;DR: ');
-  navigator.clipboard.writeText(text).then(() => {
-    document.getElementById('copy-label').textContent = 'copied';
-    setTimeout(() => document.getElementById('copy-label').textContent = 'copy', 2000);
+function formatTime(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  const h = d.getHours();
+  const m = d.getMinutes().toString().padStart(2, '0');
+  const ampm = h >= 12 ? 'pm' : 'am';
+  const h12 = h % 12 || 12;
+  if (d.toDateString() === now.toDateString()) return h12 + ':' + m + ampm;
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return 'yesterday';
+  return (d.getMonth() + 1) + '/' + d.getDate();
+}
+
+function getDateGroup(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return 'today';
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return 'yesterday';
+  return 'earlier';
+}
+
+/* ── Markdown rendering ──────────────────────────── */
+
+function renderMarkdown(raw, sources) {
+  let html = raw
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^▸ TL;DR\s*/m, '<span class="tldr-marker">TL;DR</span>  ')
+    .replace(/^• /gm, '<span class="bullet">&bull;</span> ')
+    .replace(/\[(\d+)\]/g, function(match, num) {
+      const idx = parseInt(num) - 1;
+      if (idx >= 0 && idx < sources.length) {
+        const s = sources[idx];
+        const shortDomain = s.domain.replace(/^www\./, '').replace(/\.com$|\.org$|\.net$/, '');
+        return '<span class="cite-chip" onclick="window.open(\'' + escapeHtml(s.url) + '\',\'_blank\')" title="' + escapeHtml(s.title) + '">' + escapeHtml(shortDomain) + '</span>';
+      }
+      return match;
+    })
+    .replace(/\[([a-zA-Z][a-zA-Z0-9._-]*)\]/g, function(match, name) {
+      const s = sources.find(function(src) { return src.domain.toLowerCase().includes(name.toLowerCase()); });
+      if (s) {
+        return '<span class="cite-chip" onclick="window.open(\'' + escapeHtml(s.url) + '\',\'_blank\')" title="' + escapeHtml(s.title) + '">' + escapeHtml(name) + '</span>';
+      }
+      return match;
+    })
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>');
+  return '<p>' + html + '</p>';
+}
+
+/* ── Sidebar ──────────────────────────────────────── */
+
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+}
+
+async function loadSidebarTags() {
+  try {
+    const resp = await fetch('/api/tags');
+    const data = await resp.json();
+    const list = document.getElementById('tag-list');
+    list.innerHTML = '';
+    const tags = data.tags || {};
+    Object.entries(tags).slice(0, 15).forEach(function(entry) {
+      const name = entry[0], count = entry[1];
+      const item = document.createElement('div');
+      item.className = 'tag-item';
+      item.addEventListener('click', function() { filterByTag(name); });
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'tag-name';
+      const hash = document.createElement('span');
+      hash.className = 'tag-hash';
+      hash.textContent = '#';
+      const label = document.createTextNode(' ' + name);
+      nameSpan.appendChild(hash);
+      nameSpan.appendChild(label);
+
+      const countSpan = document.createElement('span');
+      countSpan.className = 'tag-count';
+      countSpan.textContent = count;
+
+      item.appendChild(nameSpan);
+      item.appendChild(countSpan);
+      list.appendChild(item);
+    });
+  } catch (e) {
+    /* tags unavailable */
+  }
+}
+
+function filterByTag(tag) {
+  const items = document.querySelectorAll('.tag-item');
+  if (activeTag === tag) {
+    activeTag = null;
+    items.forEach(function(el) { el.classList.remove('active'); });
+    renderThreadList();
+    return;
+  }
+  activeTag = tag;
+  items.forEach(function(el) {
+    const text = el.querySelector('.tag-name').textContent.trim().replace('#', '').trim();
+    el.classList.toggle('active', text === tag);
+  });
+  renderThreadList();
+}
+
+function renderThreadList() {
+  const container = document.getElementById('thread-list');
+  container.innerHTML = '';
+
+  let items = searchHistory;
+  if (activeTag) {
+    items = items.filter(function(h) {
+      return h.query && h.query.toLowerCase().includes(activeTag.toLowerCase());
+    });
+  }
+
+  const groups = { today: [], yesterday: [], earlier: [] };
+  items.forEach(function(h) {
+    const g = getDateGroup(h.time);
+    if (groups[g]) groups[g].push(h);
+    else groups.earlier.push(h);
+  });
+
+  ['today', 'yesterday', 'earlier'].forEach(function(group) {
+    if (groups[group].length === 0) return;
+    const label = document.createElement('div');
+    label.className = 'thread-group-label';
+    label.textContent = group;
+    container.appendChild(label);
+
+    groups[group].forEach(function(h) {
+      const item = document.createElement('div');
+      item.className = 'thread-item';
+      item.addEventListener('click', function() { loadCachedOrSearch(h.query); });
+
+      const q = document.createElement('span');
+      q.className = 'thread-query';
+      q.textContent = h.query;
+
+      const p = document.createElement('span');
+      p.className = 'thread-preview';
+      p.textContent = h.tldr || '';
+
+      item.appendChild(q);
+      item.appendChild(p);
+      container.appendChild(item);
+    });
   });
 }
+
+/* ── History / cache ──────────────────────────────── */
+
+function addToHistory(query, data) {
+  searchHistory = searchHistory.filter(function(h) { return h.query !== query; });
+  const tldr = (data.answer || '').split('\n')[0].replace(/▸ TL;DR\s*/, '').replace(/\*\*/g, '').substring(0, 120);
+  searchHistory.unshift({
+    query: query,
+    tldr: tldr,
+    sources: data.sources || [],
+    commentary: data.commentary || [],
+    answer: data.answer || '',
+    intent: data.intent || {},
+    time: Date.now()
+  });
+  searchHistory = searchHistory.slice(0, 50);
+  localStorage.setItem('surf_history', JSON.stringify(searchHistory));
+  renderThreadList();
+}
+
+function getCachedResult(query) {
+  const entry = searchHistory.find(function(h) { return h.query === query; });
+  if (!entry || !entry.answer) return null;
+  const age = Date.now() - entry.time;
+  const tier = (entry.intent && entry.intent.tier) || 'snippet';
+  /* For current-events, cache valid 10 min; for research, 24h */
+  if (tier === 'current' && age > 10 * 60 * 1000) return null;
+  if (age > 24 * 60 * 60 * 1000) return null;
+  return entry;
+}
+
+function loadCachedOrSearch(query) {
+  const cached = getCachedResult(query);
+  if (cached) {
+    renderCachedCard(cached);
+    /* Close sidebar on mobile */
+    document.getElementById('sidebar').classList.remove('open');
+  } else {
+    document.getElementById('query').value = query;
+    doSearch(new Event('submit'));
+    document.getElementById('sidebar').classList.remove('open');
+  }
+}
+
+/* ── Card creation ────────────────────────────────── */
+
+function createCard(query) {
+  cardCounter++;
+  const cardId = 'card-' + cardCounter;
+
+  /* Collapse all existing cards */
+  document.querySelectorAll('.research-card').forEach(function(el) {
+    el.classList.add('collapsed');
+  });
+
+  const card = document.createElement('div');
+  card.className = 'research-card';
+  card.id = cardId;
+  card.dataset.query = query;
+
+  /* Header */
+  const header = document.createElement('div');
+  header.className = 'card-header';
+  header.addEventListener('click', function() { toggleCard(cardId); });
+
+  const querySpan = document.createElement('span');
+  querySpan.className = 'card-query';
+  querySpan.textContent = query;
+
+  const timeSpan = document.createElement('span');
+  timeSpan.className = 'card-time';
+  timeSpan.textContent = formatTime(Date.now());
+
+  const toggle = document.createElement('span');
+  toggle.className = 'card-toggle';
+  toggle.textContent = '▼';
+
+  header.appendChild(querySpan);
+  header.appendChild(timeSpan);
+  header.appendChild(toggle);
+
+  /* Body */
+  const body = document.createElement('div');
+  body.className = 'card-body';
+
+  const status = document.createElement('div');
+  status.className = 'card-status';
+  status.id = cardId + '-status';
+  status.textContent = 'understanding your intent...';
+
+  const intentDiv = document.createElement('div');
+  intentDiv.className = 'card-intent hidden';
+  intentDiv.id = cardId + '-intent';
+
+  const sourcesDiv = document.createElement('div');
+  sourcesDiv.className = 'card-sources hidden';
+  sourcesDiv.id = cardId + '-sources';
+
+  const commentaryDiv = document.createElement('div');
+  commentaryDiv.className = 'card-commentary hidden';
+  commentaryDiv.id = cardId + '-commentary';
+
+  const answerDiv = document.createElement('div');
+  answerDiv.className = 'card-answer';
+  answerDiv.id = cardId + '-answer';
+
+  const vaultDiv = document.createElement('div');
+  vaultDiv.className = 'card-vault hidden';
+  vaultDiv.id = cardId + '-vault';
+
+  const actionsDiv = document.createElement('div');
+  actionsDiv.className = 'card-actions';
+  actionsDiv.id = cardId + '-actions';
+
+  body.appendChild(status);
+  body.appendChild(intentDiv);
+  body.appendChild(sourcesDiv);
+  body.appendChild(commentaryDiv);
+  body.appendChild(answerDiv);
+  body.appendChild(vaultDiv);
+  body.appendChild(actionsDiv);
+
+  /* Collapsed preview */
+  const preview = document.createElement('div');
+  preview.className = 'card-collapsed-preview';
+  preview.id = cardId + '-preview';
+
+  card.appendChild(header);
+  card.appendChild(body);
+  card.appendChild(preview);
+
+  /* Prepend to timeline */
+  const timeline = document.getElementById('timeline');
+  timeline.insertBefore(card, timeline.firstChild);
+
+  activeCardId = cardId;
+  return cardId;
+}
+
+function toggleCard(cardId) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  if (card.classList.contains('collapsed')) {
+    /* Expand this card, collapse all others */
+    document.querySelectorAll('.research-card').forEach(function(el) {
+      el.classList.add('collapsed');
+    });
+    card.classList.remove('collapsed');
+  } else {
+    card.classList.add('collapsed');
+  }
+}
+
+function renderCachedCard(entry) {
+  /* Collapse hero */
+  document.getElementById('hero').classList.remove('visible');
+  document.getElementById('hero').classList.add('collapsed');
+  document.getElementById('new-search-btn').classList.remove('hidden');
+
+  const cardId = createCard(entry.query);
+  const sources = entry.sources || [];
+  const commentary = entry.commentary || [];
+
+  /* Hide status */
+  const status = document.getElementById(cardId + '-status');
+  status.classList.add('hidden');
+
+  /* Intent */
+  if (entry.intent && entry.intent.tier) {
+    renderCardIntent(cardId, entry.intent);
+  }
+
+  /* Sources */
+  if (sources.length > 0) {
+    renderCardSources(cardId, sources);
+  }
+
+  /* Commentary */
+  if (commentary.length > 0) {
+    const trail = document.getElementById(cardId + '-commentary');
+    trail.classList.remove('hidden');
+    commentary.forEach(function(c) {
+      const line = document.createElement('div');
+      line.className = 'commentary-line';
+      const qclass = c.quality >= 0.6 ? 'quality-high' : c.quality >= 0.4 ? 'quality-mid' : 'quality-low';
+      const arrow = document.createElement('span');
+      arrow.className = qclass;
+      arrow.textContent = '↳';
+      line.appendChild(arrow);
+      if (c.comment) {
+        line.appendChild(document.createTextNode(' ' + c.domain + ' — '));
+        const em = document.createElement('em');
+        em.textContent = c.comment;
+        line.appendChild(em);
+      } else {
+        line.appendChild(document.createTextNode(' reading ' + c.domain));
+      }
+      trail.appendChild(line);
+    });
+  }
+
+  /* Answer */
+  if (entry.answer) {
+    const answerDiv = document.getElementById(cardId + '-answer');
+    answerDiv.innerHTML = renderMarkdown(entry.answer, sources);
+  }
+
+  /* Actions */
+  renderCardActions(cardId, entry.answer, entry.intent);
+
+  /* Preview */
+  setCardPreview(cardId, entry.answer);
+
+  /* Show follow-up */
+  document.getElementById('followup-bar').classList.remove('hidden');
+  document.getElementById('followup-input').focus();
+
+  /* Check if refresh is warranted for current-tier cached results */
+  if (entry.intent && entry.intent.tier === 'current') {
+    const age = Date.now() - entry.time;
+    if (age > 10 * 60 * 1000) {
+      const actions = document.getElementById(cardId + '-actions');
+      const refreshBtn = document.createElement('button');
+      refreshBtn.className = 'action-btn refresh-btn';
+      refreshBtn.textContent = 'refresh (stale)';
+      refreshBtn.addEventListener('click', function() {
+        document.getElementById('query').value = entry.query;
+        doSearch(new Event('submit'), true);
+      });
+      actions.insertBefore(refreshBtn, actions.firstChild);
+    }
+  }
+}
+
+/* ── Card sub-renderers ───────────────────────────── */
+
+function renderCardIntent(cardId, intent) {
+  const div = document.getElementById(cardId + '-intent');
+  if (!div) return;
+  div.classList.remove('hidden');
+  div.innerHTML = '';
+  [intent.tier, intent.domain, intent.answer_depth].filter(Boolean).forEach(function(label) {
+    const badge = document.createElement('span');
+    badge.className = 'intent-badge';
+    badge.textContent = label;
+    div.appendChild(badge);
+  });
+}
+
+function renderCardSources(cardId, sources) {
+  const panel = document.getElementById(cardId + '-sources');
+  if (!panel) return;
+  panel.classList.remove('hidden');
+  panel.innerHTML = '';
+  sources.forEach(function(s, i) {
+    const q = s.composite || 0.5;
+    const barClass = q >= 0.6 ? 'quality-high' : q >= 0.4 ? 'quality-mid' : 'quality-low';
+    const link = document.createElement('a');
+    link.href = s.url;
+    link.target = '_blank';
+    link.className = 'source-card';
+    link.innerHTML =
+      '<div class="source-header">' +
+        '<span class="source-num">' + (i + 1) + '</span>' +
+        '<span class="source-domain">' + escapeHtml(s.domain) + '</span>' +
+        '<span class="quality-bar ' + barClass + '">' +
+          '<span class="quality-fill" style="width: ' + (q * 100) + '%"></span>' +
+        '</span>' +
+      '</div>' +
+      '<div class="source-title">' + escapeHtml(s.title) + '</div>';
+    panel.appendChild(link);
+  });
+}
+
+function renderCardActions(cardId, answerText, intent) {
+  const actions = document.getElementById(cardId + '-actions');
+  if (!actions) return;
+  actions.classList.add('visible');
+  actions.innerHTML = '';
+
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'action-btn';
+  copyBtn.innerHTML =
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' +
+    '<span>copy</span>';
+  copyBtn.addEventListener('click', function() {
+    const text = (answerText || '').replace(/\*\*/g, '').replace(/▸ TL;DR\s*/, 'TL;DR: ');
+    navigator.clipboard.writeText(text).then(function() {
+      copyBtn.querySelector('span').textContent = 'copied';
+      setTimeout(function() { copyBtn.querySelector('span').textContent = 'copy'; }, 2000);
+    });
+  });
+  actions.appendChild(copyBtn);
+}
+
+function setCardPreview(cardId, answerText) {
+  const preview = document.getElementById(cardId + '-preview');
+  if (!preview || !answerText) return;
+  let tldr = answerText.split('\n')[0].replace(/▸ TL;DR\s*/, '').replace(/\*\*/g, '').substring(0, 140);
+  const badge = document.createElement('span');
+  badge.className = 'tldr-badge';
+  badge.textContent = 'TL;DR';
+  preview.innerHTML = '';
+  preview.appendChild(badge);
+  preview.appendChild(document.createTextNode(tldr));
+}
+
+/* ── Search ───────────────────────────────────────── */
+
+let currentEvtSource = null;
+
+function doSearch(e, forceFresh) {
+  e.preventDefault();
+  const q = document.getElementById('query').value.trim();
+  if (!q) return;
+
+  /* Collapse hero */
+  document.getElementById('hero').classList.remove('visible');
+  document.getElementById('hero').classList.add('collapsed');
+  document.getElementById('new-search-btn').classList.remove('hidden');
+  document.getElementById('followup-bar').classList.add('hidden');
+
+  /* Check cache (unless forceFresh) */
+  if (!forceFresh) {
+    const cached = getCachedResult(q);
+    if (cached) {
+      renderCachedCard(cached);
+      return;
+    }
+  }
+
+  /* Close previous stream */
+  if (currentEvtSource) {
+    currentEvtSource.close();
+    currentEvtSource = null;
+  }
+
+  /* Create card */
+  const cardId = createCard(q);
+  let answerBuffer = '';
+  let currentSources = [];
+  let currentCommentary = [];
+  let currentIntent = {};
+  let answerStarted = false;
+
+  const freshParam = forceFresh ? '&fresh=true' : '';
+  const evtSource = new EventSource('/api/search?q=' + encodeURIComponent(q) + freshParam);
+  currentEvtSource = evtSource;
+
+  evtSource.onmessage = function(event) {
+    const data = JSON.parse(event.data);
+    const statusEl = document.getElementById(cardId + '-status');
+
+    switch (data.type) {
+      case 'status':
+        if (statusEl) {
+          statusEl.textContent = data.content;
+          statusEl.classList.remove('hidden');
+        }
+        break;
+
+      case 'intent':
+        currentIntent = data.content;
+        renderCardIntent(cardId, currentIntent);
+        if (statusEl) {
+          statusEl.textContent = currentIntent.tier + ' · ' + currentIntent.domain + ' · ' + (currentIntent.answer_depth || '');
+        }
+        break;
+
+      case 'sources':
+        currentSources = data.content;
+        renderCardSources(cardId, currentSources);
+        break;
+
+      case 'vault':
+        var vault = data.content;
+        var vaultEl = document.getElementById(cardId + '-vault');
+        if (vaultEl) {
+          vaultEl.classList.remove('hidden');
+          vaultEl.textContent = '↳ drawing from ' + vault.count + ' vault note' + (vault.count !== 1 ? 's' : '');
+        }
+        break;
+
+      case 'reading':
+        var r = data.content;
+        currentCommentary.push(r);
+        var qclass = r.quality >= 0.6 ? 'quality-high' : r.quality >= 0.4 ? 'quality-mid' : 'quality-low';
+        var trail = document.getElementById(cardId + '-commentary');
+        if (trail) {
+          trail.classList.remove('hidden');
+          var line = document.createElement('div');
+          line.className = 'commentary-line';
+          var arrow = document.createElement('span');
+          arrow.className = qclass;
+          arrow.textContent = '↳';
+          line.appendChild(arrow);
+          if (r.comment) {
+            line.appendChild(document.createTextNode(' ' + r.domain + ' — '));
+            var em = document.createElement('em');
+            em.textContent = r.comment;
+            line.appendChild(em);
+          } else {
+            line.appendChild(document.createTextNode(' reading ' + r.domain));
+          }
+          trail.appendChild(line);
+        }
+        if (statusEl) statusEl.classList.add('hidden');
+        break;
+
+      case 'token':
+        if (!answerStarted) {
+          answerStarted = true;
+          if (statusEl) statusEl.classList.add('hidden');
+        }
+        answerBuffer += data.content;
+        var answerEl = document.getElementById(cardId + '-answer');
+        if (answerEl) {
+          answerEl.innerHTML = renderMarkdown(answerBuffer, currentSources);
+          answerEl.scrollTop = answerEl.scrollHeight;
+        }
+        break;
+
+      case 'error':
+        if (statusEl) {
+          statusEl.textContent = data.content;
+          statusEl.classList.remove('hidden');
+          statusEl.style.animation = 'none';
+          statusEl.style.color = 'var(--red)';
+        }
+        evtSource.close();
+        currentEvtSource = null;
+        break;
+
+      case 'done':
+        evtSource.close();
+        currentEvtSource = null;
+        if (statusEl) statusEl.classList.add('hidden');
+
+        /* Show follow-up bar */
+        document.getElementById('followup-bar').classList.remove('hidden');
+        document.getElementById('followup-input').focus();
+
+        /* Render actions */
+        renderCardActions(cardId, answerBuffer, currentIntent);
+
+        /* Set collapsed preview */
+        setCardPreview(cardId, answerBuffer);
+
+        /* Save to history */
+        addToHistory(q, {
+          sources: currentSources,
+          commentary: currentCommentary,
+          answer: answerBuffer,
+          intent: currentIntent
+        });
+        break;
+    }
+  };
+
+  evtSource.onerror = function() {
+    evtSource.close();
+    currentEvtSource = null;
+  };
+}
+
+/* ── Follow-up ────────────────────────────────────── */
 
 function doFollowup(e) {
   e.preventDefault();
@@ -278,13 +709,37 @@ function doFollowup(e) {
   doSearch(e);
 }
 
-// Enter key on input
-document.getElementById('query').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') doSearch(e);
-});
+/* ── Reset ────────────────────────────────────────── */
 
-// Show history on load
-renderHistory();
+function resetSearch() {
+  document.getElementById('hero').classList.add('visible');
+  document.getElementById('hero').classList.remove('collapsed');
+  document.getElementById('new-search-btn').classList.add('hidden');
+  document.getElementById('followup-bar').classList.add('hidden');
+  document.getElementById('query').value = '';
+  document.getElementById('query').focus();
+  /* Close sidebar on mobile */
+  document.getElementById('sidebar').classList.remove('open');
+}
+
+/* ── Textarea key handling ────────────────────────── */
+
+function setupTextarea(el, submitFn) {
+  el.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      submitFn(e);
+    }
+  });
+}
+
+/* ── Init ─────────────────────────────────────────── */
+
+setupTextarea(document.getElementById('query'), doSearch);
+setupTextarea(document.getElementById('followup-input'), doFollowup);
+
+loadSidebarTags();
+renderThreadList();
 </script>
 </body>
 </html>
