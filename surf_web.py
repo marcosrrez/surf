@@ -179,8 +179,29 @@ async def search(q: str, fresh: bool = False):
         search_fn = _get_search_backend()
         results = []
         search_query = reformulated or query
+
+        # Date injection for current-events queries — the #1 fix for stale results
+        if tier == "current":
+            today = time.strftime("%B %d %Y")
+            year = time.strftime("%Y")
+            if year not in search_query:
+                search_query = f"{search_query} {today}"
+            # Also try Tavily with news topic if available
+            try:
+                from surf_backends import tavily_search as _tavily
+                news_results = _tavily(search_query, num_results=5, topic="news")
+                if news_results:
+                    results.extend(news_results)
+            except Exception:
+                pass
+
         try:
-            results = search_fn(search_query, num_results=10)
+            main_results = search_fn(search_query, num_results=10)
+            seen_urls = {r.get("url") for r in results}
+            for r in main_results:
+                if r.get("url") not in seen_urls:
+                    results.append(r)
+                    seen_urls.add(r.get("url"))
             if len(results) < 3 or all(len(r.get("snippet", "")) < 50 for r in results):
                 yield f"data: {json.dumps({'type': 'status', 'content': 'First pass thin — trying a different angle...'})}\n\n"
                 try:
@@ -291,7 +312,7 @@ async def search(q: str, fresh: bool = False):
             if deep_content:
                 quality_note = ""
                 if _sources_weak:
-                    quality_note = "\nIMPORTANT: The available sources are limited in quality. State clearly what you can confirm and what remains unverified. Do not suggest the user check other sources.\n"
+                    quality_note = "\nIMPORTANT: The available sources are limited. State clearly what you found and what you could not find. NEVER tell the user to go check another website — if you couldn't find it, say so directly and stop. No hedging, no suggestions to visit ESPN or FIFA.com.\n"
                 elif any(r.get("_quality", {}).get("composite", 0.5) >= 0.7 for r in ranked[:3]):
                     quality_note = "\nNote: weight findings from sources with specific data, named researchers, and cited methodology more heavily than those with vague claims or marketing language.\n"
                 base_prompt += f"\n\nFull article content from {len(deep_content)} source(s):{quality_note}\n" + "\n\n---\n\n".join(deep_content)
