@@ -5403,40 +5403,102 @@ def _generate_preferences_from_answers(answers: dict) -> None:
         print(f"{C_META}{GLYPH_META} could not generate preferences — skipping.{C_RESET}\n")
 
 
-def _run_preferences_conversation() -> None:
-    """
-    Three-question preferences setup. Claude writes preferences.md from the answers.
-    Ends with a demo search so setup closes with surf working, not just configured.
-    Type 'q' or press Ctrl+C at any point to exit gracefully.
-    """
-    print(_SETUP_BANNER)
+_PROVIDER_CONFIGS = {
+    "1": {
+        "name": "Claude", "key_name": "ANTHROPIC_API_KEY",
+        "url": "console.anthropic.com/settings/keys",
+        "desc": "$1/mo, best research quality",
+        "prefix": "sk-ant",
+    },
+    "2": {
+        "name": "OpenRouter", "key_name": "OPENROUTER_API_KEY",
+        "url": "openrouter.ai/keys",
+        "desc": "hundreds of models, one key",
+        "base_url": "https://openrouter.ai/api/v1",
+    },
+    "3": {
+        "name": "Groq", "key_name": "GROQ_API_KEY",
+        "url": "console.groq.com",
+        "desc": "free, fast",
+        "prefix": "gsk_",
+    },
+    "4": {
+        "name": "Ollama", "key_name": None,
+        "url": "ollama.com",
+        "desc": "local, private, free",
+    },
+    "5": {
+        "name": "Custom", "key_name": "CUSTOM_API_KEY",
+        "desc": "any OpenAI-compatible API",
+    },
+}
 
-    existing_key = load_config().get("ANTHROPIC_API_KEY", "")
 
-    if existing_key:
-        masked = "*" * 12 + existing_key[-4:]
-        print(f"  {_BA}{'~' * 30}{C_RESET}")
-        print()
-        print()
-        print(f"  {C_SPEED_FAST}✓{C_RESET}  {C_META}Already configured: {masked}{C_RESET}")
-        print(f"  {C_META}Press Enter to keep it, or paste a new key to replace it.{C_RESET}")
-        print()
-    else:
-        print(f"  {_BA}{'~' * 30}{C_RESET}")
-        print()
-        print()
-        print(f"  {C_META}1. open → {_link('https://console.anthropic.com/settings/keys', 'console.anthropic.com/settings/keys')} (cmd+click){C_RESET}")
-        print(f"  {C_META}2. click \"Create Key\", name it \"surf\", copy it{C_RESET}")
-        print(f"  {C_META}3. paste it here{C_RESET}")
-        print()
-        print(f"  {C_META}cost: ~$0.0004/search · free $5 credit on signup · hard cap: $1/month{C_RESET}")
-        print()
-
-    print(f"  {C_META}(press Enter to skip, type q to exit setup){C_RESET}")
+def _run_provider_picker() -> None:
+    """Interactive provider picker for new users. Skips if config already has keys."""
+    print(f"  {_BA}{'~' * 30}{C_RESET}")
+    print()
+    print(f"  {C_META}which AI provider do you want to use?{C_RESET}")
+    print()
+    print(f"  {C_INTERACTIVE}1{C_RESET}  Claude      {C_META}{_PROVIDER_CONFIGS['1']['desc']:30s} {_PROVIDER_CONFIGS['1']['url']}{C_RESET}")
+    print(f"  {C_INTERACTIVE}2{C_RESET}  OpenRouter  {C_META}{_PROVIDER_CONFIGS['2']['desc']:30s} {_PROVIDER_CONFIGS['2']['url']}{C_RESET}")
+    print(f"  {C_INTERACTIVE}3{C_RESET}  Groq        {C_META}{_PROVIDER_CONFIGS['3']['desc']:30s} {_PROVIDER_CONFIGS['3']['url']}{C_RESET}")
+    print(f"  {C_INTERACTIVE}4{C_RESET}  Ollama      {C_META}{_PROVIDER_CONFIGS['4']['desc']:30s} {_PROVIDER_CONFIGS['4']['url']}{C_RESET}")
+    print(f"  {C_INTERACTIVE}5{C_RESET}  Custom      {C_META}{_PROVIDER_CONFIGS['5']['desc']}{C_RESET}")
     print()
 
     try:
-        key = surf_input("Enter to keep · q to exit").strip()
+        choice = surf_input("pick a number").strip()
+    except (KeyboardInterrupt, EOFError):
+        print(f"\n{C_META}{GLYPH_META} no worries — run 'surf setup' whenever you're ready.{C_RESET}\n")
+        return
+
+    if choice.lower() == "q":
+        print(f"\n{C_META}{GLYPH_META} no worries — run 'surf setup' whenever you're ready.{C_RESET}\n")
+        return
+
+    provider = _PROVIDER_CONFIGS.get(choice)
+    if not provider:
+        print(f"\n{C_META}{GLYPH_META} defaulting to Claude.{C_RESET}\n")
+        provider = _PROVIDER_CONFIGS["1"]
+
+    if provider["name"] == "Ollama":
+        _save_config_key("OLLAMA_BASE", "http://localhost:11434")
+        print(f"\n  {_BA}{GLYPH_META}{C_RESET} Ollama configured at localhost:11434.")
+        print(f"  {C_META}make sure Ollama is running: ollama serve{C_RESET}\n")
+        return
+
+    if provider["name"] == "Custom":
+        print(f"\n  {C_META}enter your API base URL (e.g. https://api.together.xyz/v1){C_RESET}")
+        try:
+            base = surf_input("base URL").strip()
+        except (KeyboardInterrupt, EOFError):
+            return
+        if base:
+            _save_config_key("CUSTOM_BASE_URL", base)
+        print(f"  {C_META}enter your API key{C_RESET}")
+        try:
+            key = surf_input("API key").strip()
+        except (KeyboardInterrupt, EOFError):
+            return
+        if key:
+            _save_config_key("CUSTOM_API_KEY", key)
+        print(f"  {C_META}enter the model name (e.g. meta-llama/Llama-3-70b){C_RESET}")
+        try:
+            model = surf_input("model").strip()
+        except (KeyboardInterrupt, EOFError):
+            return
+        if model:
+            _save_config_key("CUSTOM_MODEL", model)
+        print(f"\n  {_BA}{GLYPH_META}{C_RESET} custom provider configured.\n")
+        return
+
+    # Standard API key provider (Claude, OpenRouter, Groq)
+    url = provider.get("url", "")
+    print(f"\n  {C_META}paste your API key from {_link(f'https://{url}', url)} (cmd+click){C_RESET}")
+    print()
+    try:
+        key = surf_input("API key").strip()
     except (KeyboardInterrupt, EOFError):
         print(f"\n{C_META}{GLYPH_META} no worries — run 'surf setup' whenever you're ready.{C_RESET}\n")
         return
@@ -5445,16 +5507,73 @@ def _run_preferences_conversation() -> None:
         print(f"\n{C_META}{GLYPH_META} no worries — run 'surf setup' whenever you're ready.{C_RESET}\n")
         return
 
-    if key and key.startswith("sk-ant"):
-        print(f"\n  {_BA}{GLYPH_META}{C_RESET} connected — deep research, source scoring, vault memory unlocked.\n")
-        _save_config_key("ANTHROPIC_API_KEY", key)
-    elif key and not existing_key:
-        print(f"\n{C_META}{GLYPH_META} key saved — surf will let you know if it doesn't authenticate.{C_RESET}\n")
-        _save_config_key("ANTHROPIC_API_KEY", key)
-    elif not key and existing_key:
-        print(f"\n{C_META}{GLYPH_META} keeping existing key.{C_RESET}\n")
+    if key:
+        _save_config_key(provider["key_name"], key)
+        if provider.get("base_url"):
+            _save_config_key("OPENROUTER_BASE_URL", provider["base_url"])
+        print(f"\n  {_BA}{GLYPH_META}{C_RESET} {provider['name']} connected.\n")
     else:
-        print(f"\n{C_META}{GLYPH_META} skipping Claude key. you can add it later via 'surf setup'.{C_RESET}\n")
+        print(f"\n{C_META}{GLYPH_META} skipped. run 'surf setup' anytime.{C_RESET}\n")
+
+
+def _run_preferences_conversation() -> None:
+    """
+    Three-question preferences setup. Claude writes preferences.md from the answers.
+    Ends with a demo search so setup closes with surf working, not just configured.
+    Type 'q' or press Ctrl+C at any point to exit gracefully.
+    """
+    print(_SETUP_BANNER)
+
+    config = load_config()
+    has_any_key = any(config.get(k) for k in [
+        "ANTHROPIC_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY", "CEREBRAS_API_KEY", "CUSTOM_API_KEY",
+    ])
+
+    if has_any_key:
+        # Existing user — show what's configured, offer to change
+        existing_key = config.get("ANTHROPIC_API_KEY", "")
+        if existing_key:
+            masked = "*" * 12 + existing_key[-4:]
+            print(f"  {_BA}{'~' * 30}{C_RESET}")
+            print()
+            print(f"  {C_SPEED_FAST}✓{C_RESET}  {C_META}Already configured: {masked}{C_RESET}")
+            print(f"  {C_META}Press Enter to keep it, or paste a new key to replace it.{C_RESET}")
+            print()
+        else:
+            provider_name = next((k.split("_")[0].title() for k in [
+                "OPENROUTER_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "CEREBRAS_API_KEY",
+            ] if config.get(k)), "a provider")
+            print(f"  {_BA}{'~' * 30}{C_RESET}")
+            print()
+            print(f"  {C_SPEED_FAST}✓{C_RESET}  {C_META}Using {provider_name}{C_RESET}")
+            print(f"  {C_META}Press Enter to keep, or paste a Claude key to upgrade.{C_RESET}")
+            print()
+
+        print(f"  {C_META}(press Enter to skip, type q to exit setup){C_RESET}")
+        print()
+
+        try:
+            key = surf_input("Enter to keep · q to exit").strip()
+        except (KeyboardInterrupt, EOFError):
+            print(f"\n{C_META}{GLYPH_META} no worries — run 'surf setup' whenever you're ready.{C_RESET}\n")
+            return
+
+        if key.lower() == "q":
+            print(f"\n{C_META}{GLYPH_META} no worries — run 'surf setup' whenever you're ready.{C_RESET}\n")
+            return
+
+        if key and key.startswith("sk-ant"):
+            print(f"\n  {_BA}{GLYPH_META}{C_RESET} connected — deep research, source scoring, vault memory unlocked.\n")
+            _save_config_key("ANTHROPIC_API_KEY", key)
+        elif key:
+            print(f"\n{C_META}{GLYPH_META} key saved.{C_RESET}\n")
+            _save_config_key("ANTHROPIC_API_KEY", key)
+        else:
+            print(f"\n{C_META}{GLYPH_META} keeping current config.{C_RESET}\n")
+    else:
+        # New user — show provider picker
+        _run_provider_picker()
 
     # Preferences conversation
     vspace(SPACE_SM)
