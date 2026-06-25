@@ -9,7 +9,10 @@
 <body>
 <div id="app">
   <header id="hero" class="visible">
-    <h1 onclick="resetSearch()" style="cursor:pointer">surf</h1>
+    <div class="header-row">
+      <h1 onclick="resetSearch()" style="cursor:pointer">surf</h1>
+      <span id="new-search-btn" class="hidden" onclick="resetSearch()">+ new</span>
+    </div>
     <p class="tagline">search that learns</p>
     <div class="wave">~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</div>
   </header>
@@ -32,6 +35,12 @@
     <div id="commentary-trail" class="hidden"></div>
     <div id="answer-panel" class="hidden">
       <div id="answer"></div>
+      <div id="answer-actions" class="hidden">
+        <button onclick="copyAnswer()" class="action-btn" title="Copy answer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span id="copy-label">copy</span>
+        </button>
+      </div>
     </div>
     <div id="followup-bar" class="hidden">
       <form onsubmit="doFollowup(event)">
@@ -49,9 +58,11 @@ function doSearch(e) {
   const q = document.getElementById('query').value.trim();
   if (!q) return;
 
-  // Collapse hero
+  // Collapse hero, show new search button
   document.getElementById('hero').classList.remove('visible');
   document.getElementById('hero').classList.add('collapsed');
+  document.getElementById('new-search-btn').classList.remove('hidden');
+  document.getElementById('answer-actions').classList.add('hidden');
 
   // Reset panels
   const results = document.getElementById('results');
@@ -134,8 +145,8 @@ function doSearch(e) {
       case 'done':
         evtSource.close();
         document.getElementById('followup-bar').classList.remove('hidden');
+        document.getElementById('answer-actions').classList.remove('hidden');
         document.getElementById('followup-input').focus();
-        // Save to history
         const tldr = answerBuffer.split('\n')[0].replace(/▸ TL;DR\s*/, '').replace(/\*\*/g, '');
         addToHistory(document.getElementById('query').value, tldr);
         document.getElementById('history-panel').classList.add('hidden');
@@ -208,6 +219,7 @@ let searchHistory = JSON.parse(localStorage.getItem('surf_history') || '[]');
 function resetSearch() {
   document.getElementById('hero').classList.add('visible');
   document.getElementById('hero').classList.remove('collapsed');
+  document.getElementById('new-search-btn').classList.add('hidden');
   document.getElementById('results').classList.add('hidden');
   document.getElementById('query').value = '';
   document.getElementById('query').focus();
@@ -229,13 +241,31 @@ function renderHistory() {
     return;
   }
   panel.classList.remove('hidden');
-  panel.innerHTML = '<div class="history-label">recent</div>' +
-    searchHistory.slice(0, 5).map(h =>
-      `<div class="history-item" onclick="document.getElementById('query').value='${h.query.replace(/'/g,"\\'")}';doSearch(event)">
-        <span class="history-query">${h.query}</span>
-        <span class="history-tldr">${h.tldr}</span>
-      </div>`
-    ).join('');
+  panel.innerHTML = '<div class="history-label">recent</div>';
+  searchHistory.slice(0, 5).forEach((h, i) => {
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    item.innerHTML = `<span class="history-query">${escapeHtml(h.query)}</span><span class="history-tldr">${escapeHtml(h.tldr)}</span>`;
+    item.addEventListener('click', () => {
+      document.getElementById('query').value = h.query;
+      doSearch(new Event('submit'));
+    });
+    panel.appendChild(item);
+  });
+}
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+function copyAnswer() {
+  const text = answerBuffer.replace(/\*\*/g, '').replace(/▸ TL;DR\s*/, 'TL;DR: ');
+  navigator.clipboard.writeText(text).then(() => {
+    document.getElementById('copy-label').textContent = 'copied';
+    setTimeout(() => document.getElementById('copy-label').textContent = 'copy', 2000);
+  });
 }
 
 function doFollowup(e) {

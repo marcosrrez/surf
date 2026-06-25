@@ -57,6 +57,20 @@ header h1 {
 header.collapsed h1 {
   font-size: 1.4rem;
 }
+.header-row {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+#new-search-btn {
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 0.2s;
+}
+#new-search-btn:hover {
+  color: var(--accent);
+}
 .tagline {
   color: var(--text-secondary);
   font-size: 1rem;
@@ -142,8 +156,15 @@ header.collapsed .wave {
   padding: 4px 0 12px;
 }
 
+/* Fade-in animation */
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* Source cards */
 #sources-panel {
+  animation: fadeSlideIn 0.3s ease;
   display: flex;
   gap: 8px;
   overflow-x: auto;
@@ -223,9 +244,36 @@ span.quality-low { color: var(--red); }
 #answer-panel {
   background: var(--bg-surface);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
   border-radius: 8px;
   padding: 24px;
   margin-top: 8px;
+  animation: fadeSlideIn 0.3s ease;
+}
+#answer-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.action-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s;
+}
+.action-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 #answer {
   white-space: pre-wrap;
@@ -275,7 +323,11 @@ span.quality-low { color: var(--red); }
 
 /* Chesterton commentary trail */
 #commentary-trail {
-  padding: 8px 0;
+  padding: 8px 0 0;
+  border-left: 3px solid var(--border);
+  padding-left: 16px;
+  margin-left: 0;
+  animation: fadeSlideIn 0.3s ease;
 }
 .commentary-line {
   color: var(--text-secondary);
