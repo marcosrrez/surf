@@ -109,9 +109,9 @@ async def search(q: str, fresh: bool = False):
 
         search_fn = _get_search_backend()
         try:
-            results = search_fn(reformulated or query)
+            results = search_fn(reformulated or query, num_results=10)
         except Exception:
-            results = ddg_search(reformulated or query)
+            results = ddg_search(reformulated or query, num_results=10)
 
         if not results:
             yield f"data: {json.dumps({'type': 'error', 'content': 'No results found.'})}\n\n"

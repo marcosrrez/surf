@@ -168,8 +168,15 @@ function appendToken(token) {
       const idx = parseInt(num) - 1;
       if (idx >= 0 && idx < currentSources.length) {
         const s = currentSources[idx];
-        const shortDomain = s.domain.replace(/\.com$|\.org$|\.net$/, '');
-        return `<a href="${s.url}" target="_blank" class="cite-chip" title="${s.title}">${shortDomain}</a>`;
+        const shortDomain = s.domain.replace(/^www\./, '').replace(/\.com$|\.org$|\.net$/, '');
+        return `<span class="cite-chip" onclick="window.open('${s.url}','_blank')" title="${s.title}">${shortDomain}</span>`;
+      }
+      return match;
+    })
+    .replace(/\[([a-zA-Z][a-zA-Z0-9._-]*)\]/g, (match, name) => {
+      const s = currentSources.find(s => s.domain.toLowerCase().includes(name.toLowerCase()));
+      if (s) {
+        return `<span class="cite-chip" onclick="window.open('${s.url}','_blank')" title="${s.title}">${name}</span>`;
       }
       return match;
     })
