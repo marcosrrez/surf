@@ -173,7 +173,9 @@ async function loadSidebarTags() {
   }
 }
 
-function filterByTag(tag) {
+let vaultNotesCache = {};
+
+async function filterByTag(tag) {
   const items = document.querySelectorAll('.tag-item');
   if (activeTag === tag) {
     activeTag = null;
@@ -186,13 +188,72 @@ function filterByTag(tag) {
     const text = el.querySelector('.tag-name').textContent.trim().replace('#', '').trim();
     el.classList.toggle('active', text === tag);
   });
+  // Fetch vault notes for this tag
+  if (!vaultNotesCache[tag]) {
+    try {
+      const resp = await fetch('/api/vault-notes?tag=' + encodeURIComponent(tag));
+      const data = await resp.json();
+      vaultNotesCache[tag] = data.notes || [];
+    } catch (e) {
+      vaultNotesCache[tag] = [];
+    }
+  }
   renderThreadList();
+}
+
+function renderThreadItem(container, query, preview, isVault, onClick) {
+  const item = document.createElement('div');
+  item.className = 'thread-item';
+  item.addEventListener('click', onClick);
+
+  const row = document.createElement('div');
+  row.style.display = 'flex';
+  row.style.alignItems = 'center';
+  row.style.gap = '6px';
+
+  if (isVault) {
+    const icon = document.createElement('span');
+    icon.className = 'vault-icon';
+    icon.textContent = '◆';
+    icon.title = 'From vault';
+    row.appendChild(icon);
+  }
+
+  const q = document.createElement('span');
+  q.className = 'thread-query';
+  q.textContent = query;
+  row.appendChild(q);
+
+  const p = document.createElement('span');
+  p.className = 'thread-preview';
+  p.textContent = preview;
+
+  item.appendChild(row);
+  item.appendChild(p);
+  container.appendChild(item);
 }
 
 function renderThreadList() {
   const container = document.getElementById('thread-list');
   container.innerHTML = '';
 
+  // Vault notes for active tag
+  if (activeTag && vaultNotesCache[activeTag] && vaultNotesCache[activeTag].length > 0) {
+    const vaultLabel = document.createElement('div');
+    vaultLabel.className = 'thread-group-label';
+    vaultLabel.textContent = 'vault · #' + activeTag;
+    container.appendChild(vaultLabel);
+
+    vaultNotesCache[activeTag].forEach(function(note) {
+      renderThreadItem(container, note.query, note.date, true, function() {
+        document.getElementById('query').value = note.query;
+        doSearch(new Event('submit'));
+        if (window.innerWidth < 768) toggleSidebar();
+      });
+    });
+  }
+
+  // Local search history
   let items = searchHistory;
   if (activeTag) {
     items = items.filter(function(h) {
@@ -215,21 +276,10 @@ function renderThreadList() {
     container.appendChild(label);
 
     groups[group].forEach(function(h) {
-      const item = document.createElement('div');
-      item.className = 'thread-item';
-      item.addEventListener('click', function() { loadCachedOrSearch(h.query); });
-
-      const q = document.createElement('span');
-      q.className = 'thread-query';
-      q.textContent = h.query;
-
-      const p = document.createElement('span');
-      p.className = 'thread-preview';
-      p.textContent = h.tldr || '';
-
-      item.appendChild(q);
-      item.appendChild(p);
-      container.appendChild(item);
+      renderThreadItem(container, h.query, h.tldr || '', false, function() {
+        loadCachedOrSearch(h.query);
+        if (window.innerWidth < 768) toggleSidebar();
+      });
     });
   });
 }
