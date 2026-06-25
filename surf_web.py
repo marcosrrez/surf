@@ -293,7 +293,8 @@ async def search(q: str, fresh: bool = False):
                         rdomain = r.get("domain", "").removeprefix("www.")
                         idx = len(deep_content)
                         fetched_for_commentary.append((idx, rdomain, content, r))
-                        deep_content.append(f"[{rdomain}]\n{content[:2000]}")
+                        src_num = len(deep_content) + 1
+                        deep_content.append(f"[{src_num}] {rdomain}\n{content[:2000]}")
                 except Exception:
                     continue
 
