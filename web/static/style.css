@@ -249,7 +249,7 @@ span.quality-low { color: var(--red); }
 #answer-panel {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
+  border-left: none;
   border-radius: 10px;
   padding: var(--space-lg);
   margin-top: var(--space-xs);
