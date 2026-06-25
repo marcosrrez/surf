@@ -30,6 +30,11 @@
     <div id="answer-panel" class="hidden">
       <div id="answer"></div>
     </div>
+    <div id="followup-bar" class="hidden">
+      <form onsubmit="doFollowup(event)">
+        <input type="text" id="followup-input" placeholder="ask a follow-up..." autocomplete="off">
+      </form>
+    </div>
   </div>
 </div>
 
@@ -53,6 +58,8 @@ function doSearch(e) {
   document.getElementById('sources-panel').classList.add('hidden');
   document.getElementById('vault-line').classList.add('hidden');
   document.getElementById('answer-panel').classList.add('hidden');
+  document.getElementById('followup-bar').classList.add('hidden');
+  answerBuffer = '';
 
   const status = document.getElementById('status-line');
   status.textContent = 'understanding your intent...';
@@ -113,6 +120,8 @@ function doSearch(e) {
 
       case 'done':
         evtSource.close();
+        document.getElementById('followup-bar').classList.remove('hidden');
+        document.getElementById('followup-input').focus();
         break;
     }
   };
@@ -143,13 +152,29 @@ function renderSources(sources) {
   }).join('');
 }
 
+let answerBuffer = '';
+
 function appendToken(token) {
+  answerBuffer += token;
   const answer = document.getElementById('answer');
-  // Handle markdown-style formatting
-  const text = document.createTextNode(token);
-  answer.appendChild(text);
-  // Auto-scroll
+  // Render markdown: bold, headers, bullets, TL;DR
+  let html = answerBuffer
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^▸ TL;DR\s*/m, '<span class="tldr-marker">▸ TL;DR</span>  ')
+    .replace(/^• /gm, '<span class="bullet">•</span> ')
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>');
+  answer.innerHTML = '<p>' + html + '</p>';
   answer.scrollTop = answer.scrollHeight;
+}
+
+function doFollowup(e) {
+  e.preventDefault();
+  const followup = document.getElementById('followup-input').value.trim();
+  if (!followup) return;
+  document.getElementById('query').value = followup;
+  document.getElementById('followup-input').value = '';
+  doSearch(e);
 }
 
 // Enter key on input

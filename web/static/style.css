@@ -196,7 +196,7 @@ header.collapsed .wave {
 
 /* Quality bar */
 .quality-bar {
-  width: 32px;
+  width: 48px;
   height: 4px;
   background: var(--border);
   border-radius: 2px;
@@ -233,6 +233,55 @@ span.quality-low { color: var(--red); }
   font-size: 14.5px;
   line-height: 1.7;
   color: var(--text);
+}
+
+/* Follow-up bar */
+#followup-bar {
+  margin-top: 12px;
+}
+#followup-bar form {
+  display: flex;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+#followup-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  padding: 12px 16px;
+  outline: none;
+}
+#followup-input::placeholder {
+  color: var(--text-dim);
+}
+
+/* TL;DR and content formatting */
+.tldr-marker {
+  color: var(--accent);
+  font-weight: 700;
+  background: var(--accent-dim);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+#answer strong {
+  color: #fff;
+  font-weight: 600;
+}
+#answer p {
+  margin-bottom: 12px;
+}
+#answer p:first-child {
+  font-size: 15.5px;
+  line-height: 1.6;
+}
+.bullet {
+  color: var(--accent);
+  margin-right: 4px;
 }
 
 /* Responsive */
