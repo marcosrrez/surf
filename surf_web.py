@@ -36,11 +36,17 @@ _SEARCH_SYSTEM_CURRENT = ""
 _SEARCH_SYSTEM_CONTESTED = ""
 
 
+_quality_retry_search = None
+_confidence_gate = None
+_QUALITY_RETRY_THRESHOLD = 0.45
+
+
 def _load_surf():
     global _surf_loaded, _assess_intent, _score_source_quality, _filter_and_rank_results
     global _score_content_depth, _build_search_prompt, _stream_ai
     global _VAULT_CONTEXT_INSTRUCTION, _SEARCH_SYSTEM, _SEARCH_SYSTEM_RESEARCH
     global _SEARCH_SYSTEM_CURRENT, _SEARCH_SYSTEM_CONTESTED
+    global _quality_retry_search, _confidence_gate
     if _surf_loaded:
         return
     import surf
@@ -50,6 +56,8 @@ def _load_surf():
     _score_content_depth = surf.score_content_depth
     _build_search_prompt = surf.build_search_prompt
     _stream_ai = surf.stream_ai
+    _quality_retry_search = surf._quality_retry_search
+    _confidence_gate = surf._confidence_gate
     _VAULT_CONTEXT_INSTRUCTION = surf.VAULT_CONTEXT_INSTRUCTION
     _SEARCH_SYSTEM = surf.SEARCH_SYSTEM
     _SEARCH_SYSTEM_RESEARCH = surf.SEARCH_SYSTEM_RESEARCH
@@ -61,6 +69,66 @@ def _load_surf():
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     return templates.TemplateResponse(request, "index.html")
+
+
+@app.get("/api/tags")
+async def get_tags():
+    """Return vault tag counts for sidebar."""
+    from surf_store import _obsidian_vault_path, _extract_tags
+    vault = _obsidian_vault_path()
+    if not vault:
+        return {"tags": {}}
+    surf_dir = os.path.join(vault, "surf")
+    if not os.path.isdir(surf_dir):
+        return {"tags": {}}
+    import re
+    tag_counts: dict[str, int] = {}
+    for root, _dirs, files in os.walk(surf_dir):
+        if "_topics" in root:
+            continue
+        for fname in files:
+            if not fname.endswith(".md"):
+                continue
+            try:
+                text = open(os.path.join(root, fname), encoding="utf-8").read()
+                for tag in _extract_tags(text):
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+            except Exception:
+                continue
+    return {"tags": dict(sorted(tag_counts.items(), key=lambda x: x[1], reverse=True))}
+
+
+@app.get("/api/vault-notes")
+async def get_vault_notes(tag: str = None):
+    """Return vault notes, optionally filtered by tag."""
+    import re
+    from surf_store import _obsidian_vault_path, _extract_tags
+    vault = _obsidian_vault_path()
+    if not vault:
+        return {"notes": []}
+    surf_dir = os.path.join(vault, "surf")
+    if not os.path.isdir(surf_dir):
+        return {"notes": []}
+    notes = []
+    for root, _dirs, files in os.walk(surf_dir):
+        if "_topics" in root:
+            continue
+        for fname in sorted(files, reverse=True):
+            if not fname.endswith(".md"):
+                continue
+            try:
+                text = open(os.path.join(root, fname), encoding="utf-8").read()
+                tags = _extract_tags(text)
+                if tag and tag not in tags:
+                    continue
+                qm = re.search(r'^query:\s*"(.+)"', text, re.MULTILINE)
+                dm = re.search(r"^date:\s*(\d{4}-\d{2}-\d{2})", text, re.MULTILINE)
+                query_text = qm.group(1) if qm else fname.replace(".md", "")
+                date_text = dm.group(1) if dm else ""
+                notes.append({"query": query_text, "date": date_text, "tags": list(tags), "stem": fname.replace(".md", "")})
+            except Exception:
+                continue
+    return {"notes": notes[:50]}
 
 
 @app.get("/api/search")
@@ -107,11 +175,28 @@ async def search(q: str, fresh: bool = False):
 
         yield f"data: {json.dumps({'type': 'status', 'content': f'Searching: \"{reformulated[:50]}\"...'})}\n\n"
 
+        # Search with retry — up to 2 attempts if first results are thin
         search_fn = _get_search_backend()
+        results = []
+        search_query = reformulated or query
         try:
-            results = search_fn(reformulated or query, num_results=10)
+            results = search_fn(search_query, num_results=10)
+            if len(results) < 3 or all(len(r.get("snippet", "")) < 50 for r in results):
+                yield f"data: {json.dumps({'type': 'status', 'content': 'First pass thin — trying a different angle...'})}\n\n"
+                try:
+                    alt_results = ddg_search(f"{search_query} analysis {time.strftime('%Y')}", num_results=8)
+                    seen = {r.get("domain") for r in results}
+                    for r in alt_results:
+                        if r.get("domain") not in seen:
+                            results.append(r)
+                            seen.add(r.get("domain"))
+                except Exception:
+                    pass
         except Exception:
-            results = ddg_search(reformulated or query, num_results=10)
+            try:
+                results = ddg_search(search_query, num_results=10)
+            except Exception:
+                pass
 
         if not results:
             yield f"data: {json.dumps({'type': 'error', 'content': 'No results found.'})}\n\n"
@@ -119,6 +204,22 @@ async def search(q: str, fresh: bool = False):
 
         # Quality ranking
         ranked = _filter_and_rank_results(query, results, intent=intent)
+
+        # Confidence gate — escalate tier if snippets are weak
+        tier = _confidence_gate(query, ranked, tier)
+
+        # Quality-triggered retry — refuse to settle for weak sources
+        _sources_weak = False
+        if tier in ("current", "research", "contested") and not fresh:
+            top_scores = sorted([r.get("_quality", {}).get("composite", 0.5) for r in ranked[:3]])
+            median_q = top_scores[len(top_scores) // 2] if top_scores else 0.5
+            if median_q < _QUALITY_RETRY_THRESHOLD:
+                yield f"data: {json.dumps({'type': 'status', 'content': 'Sources thin — searching deeper...'})}\n\n"
+                retry = _quality_retry_search(query, intent, ranked)
+                if retry:
+                    ranked = _filter_and_rank_results(query, retry + ranked, intent=intent)
+                post_scores = sorted([r.get("_quality", {}).get("composite", 0.5) for r in ranked[:3]])
+                _sources_weak = (post_scores[len(post_scores) // 2] if post_scores else 0.5) < _QUALITY_RETRY_THRESHOLD
         sources = []
         for r in ranked[:8]:
             q_dict = r.get("_quality", {})
@@ -188,7 +289,12 @@ async def search(q: str, fresh: bool = False):
                     pass
 
             if deep_content:
-                base_prompt += f"\n\nFull article content from {len(deep_content)} source(s):\n" + "\n\n---\n\n".join(deep_content)
+                quality_note = ""
+                if _sources_weak:
+                    quality_note = "\nIMPORTANT: The available sources are limited in quality. State clearly what you can confirm and what remains unverified. Do not suggest the user check other sources.\n"
+                elif any(r.get("_quality", {}).get("composite", 0.5) >= 0.7 for r in ranked[:3]):
+                    quality_note = "\nNote: weight findings from sources with specific data, named researchers, and cited methodology more heavily than those with vague claims or marketing language.\n"
+                base_prompt += f"\n\nFull article content from {len(deep_content)} source(s):{quality_note}\n" + "\n\n---\n\n".join(deep_content)
 
         # Select system prompt
         system = {
@@ -199,13 +305,28 @@ async def search(q: str, fresh: bool = False):
 
         # Stream synthesis
         yield f"data: {json.dumps({'type': 'status', 'content': 'Synthesizing...'})}\n\n"
+        answer_text = ""
         try:
             for chunk in _stream_ai(base_prompt, system, tier=tier):
+                answer_text += chunk
                 yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
 
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        # Save to session memory + vault
+        try:
+            from surf_store import save_session_entry, _truncate_at_sentence
+            summary = answer_text.strip()
+            if "▸ TL;DR" in summary:
+                summary = summary.split("▸ TL;DR")[-1].strip()
+            save_session_entry(query, "web_search", _truncate_at_sentence(summary, 300))
+            sparked = sparked_by if not fresh and vault_notes else ""
+            _obsidian_save(query, answer_text, ranked[:5], session_id=_obsidian_session_id(),
+                          sparked_by=sparked, depth="exploration" if vault_notes else "lookup")
+        except Exception:
+            pass
+
+        yield f"data: {json.dumps({'type': 'done', 'content': {'tier': tier, 'domain': domain}})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
