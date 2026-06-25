@@ -236,6 +236,43 @@ span.quality-low { color: var(--red); }
   color: var(--text);
 }
 
+/* Search history */
+#history-panel {
+  margin-bottom: 16px;
+}
+.history-label {
+  color: var(--text-dim);
+  font-size: 12px;
+  text-transform: lowercase;
+  margin-bottom: 8px;
+}
+.history-item {
+  padding: 10px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+.history-item:hover {
+  border-color: var(--accent);
+}
+.history-query {
+  color: var(--text);
+  font-size: 13px;
+  display: block;
+  margin-bottom: 2px;
+}
+.history-tldr {
+  color: var(--text-dim);
+  font-size: 12px;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Chesterton commentary trail */
 #commentary-trail {
   padding: 8px 0;

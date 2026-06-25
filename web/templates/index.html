@@ -9,19 +9,21 @@
 <body>
 <div id="app">
   <header id="hero" class="visible">
-    <h1>surf</h1>
+    <h1 onclick="resetSearch()" style="cursor:pointer">surf</h1>
     <p class="tagline">search that learns</p>
     <div class="wave">~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</div>
   </header>
 
   <div id="search-bar">
     <form id="search-form" onsubmit="doSearch(event)">
-      <input type="text" id="query" placeholder="ask anything..." autocomplete="off" autofocus>
+      <input type="text" id="query" placeholder="ask anything..." autocomplete="off" autofocus onfocus="renderHistory()">
       <button type="submit" id="search-btn">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
       </button>
     </form>
   </div>
+
+  <div id="history-panel" class="hidden"></div>
 
   <div id="results" class="hidden">
     <div id="status-line" class="hidden"></div>
@@ -62,6 +64,7 @@ function doSearch(e) {
   document.getElementById('followup-bar').classList.add('hidden');
   document.getElementById('commentary-trail').classList.add('hidden');
   document.getElementById('commentary-trail').innerHTML = '';
+  document.getElementById('history-panel').classList.add('hidden');
   answerBuffer = '';
 
   const status = document.getElementById('status-line');
@@ -132,6 +135,10 @@ function doSearch(e) {
         evtSource.close();
         document.getElementById('followup-bar').classList.remove('hidden');
         document.getElementById('followup-input').focus();
+        // Save to history
+        const tldr = answerBuffer.split('\n')[0].replace(/▸ TL;DR\s*/, '').replace(/\*\*/g, '');
+        addToHistory(document.getElementById('query').value, tldr);
+        document.getElementById('history-panel').classList.add('hidden');
         break;
     }
   };
@@ -196,6 +203,41 @@ function appendToken(token) {
   answer.scrollTop = answer.scrollHeight;
 }
 
+let searchHistory = JSON.parse(localStorage.getItem('surf_history') || '[]');
+
+function resetSearch() {
+  document.getElementById('hero').classList.add('visible');
+  document.getElementById('hero').classList.remove('collapsed');
+  document.getElementById('results').classList.add('hidden');
+  document.getElementById('query').value = '';
+  document.getElementById('query').focus();
+  renderHistory();
+}
+
+function addToHistory(query, tldr) {
+  searchHistory = searchHistory.filter(h => h.query !== query);
+  searchHistory.unshift({ query, tldr: tldr.substring(0, 120), time: Date.now() });
+  searchHistory = searchHistory.slice(0, 20);
+  localStorage.setItem('surf_history', JSON.stringify(searchHistory));
+}
+
+function renderHistory() {
+  const panel = document.getElementById('history-panel');
+  if (!panel) return;
+  if (searchHistory.length === 0) {
+    panel.classList.add('hidden');
+    return;
+  }
+  panel.classList.remove('hidden');
+  panel.innerHTML = '<div class="history-label">recent</div>' +
+    searchHistory.slice(0, 5).map(h =>
+      `<div class="history-item" onclick="document.getElementById('query').value='${h.query.replace(/'/g,"\\'")}';doSearch(event)">
+        <span class="history-query">${h.query}</span>
+        <span class="history-tldr">${h.tldr}</span>
+      </div>`
+    ).join('');
+}
+
 function doFollowup(e) {
   e.preventDefault();
   const followup = document.getElementById('followup-input').value.trim();
@@ -209,6 +251,9 @@ function doFollowup(e) {
 document.getElementById('query').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') doSearch(e);
 });
+
+// Show history on load
+renderHistory();
 </script>
 </body>
 </html>
