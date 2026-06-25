@@ -83,9 +83,28 @@ async def search(q: str, fresh: bool = False):
         yield f"data: {json.dumps({'type': 'intent', 'content': intent})}\n\n"
 
         # Search
+        route = intent.get("route", "search")
         tier = intent.get("tier", "snippet")
         domain = intent.get("domain", "general")
         reformulated = intent.get("reformulated_query", query)
+
+        # Instant / conversational — no search needed
+        if route == "instant" or tier == "snippet" and len(query.split()) <= 3:
+            yield f"data: {json.dumps({'type': 'status', 'content': 'Thinking...'})}\n\n"
+            instant_system = (
+                "You are surf — a sharp, friendly search assistant. "
+                "For greetings, respond warmly in one sentence. "
+                "For simple facts, answer directly. "
+                "For translations/math, give just the answer."
+            )
+            try:
+                for chunk in _stream_ai(query, instant_system):
+                    yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
         yield f"data: {json.dumps({'type': 'status', 'content': f'Searching: \"{reformulated[:50]}\"...'})}\n\n"
 
         search_fn = _get_search_backend()
