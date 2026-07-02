@@ -418,6 +418,40 @@ span.quality-low { color: var(--red); }
   to { background-position: -200% 0; }
 }
 
+/* Specialized answer cards (weather, stocks, wikipedia) */
+.answer-card {
+  font-family: var(--font);
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+/* Citation verification (grounding pass) */
+.verification {
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  animation: fadeSlideIn 0.3s ease;
+}
+.verification-claim {
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+  padding-top: var(--space-2xs);
+}
+
+/* Round timing metadata */
+.round-meta {
+  flex: 1;
+  align-self: center;
+  color: var(--text-dim);
+  font-size: var(--fs-2xs);
+}
+
 /* Related searches */
 .related {
   margin-top: var(--space-sm);

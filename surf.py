@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 import re
 import os
 import sys
@@ -578,18 +580,26 @@ CLASSIFIER_MODEL = "llama-3.1-8b-instant"
 # ─── Claude (primary provider) ───────────────────────────────────────────────
 
 CLAUDE_MODEL = "claude-haiku-4-5"
-CLAUDE_SONNET_MODEL = "claude-sonnet-4-6"
+CLAUDE_SONNET_MODEL = "claude-sonnet-5"
 
 def _get_synthesis_model() -> str:
     """
     Return the Claude model for synthesis.
-    Config: SYNTHESIS_MODEL=sonnet uses claude-sonnet-4-6 for research/current tier.
+    Config: SYNTHESIS_MODEL=sonnet uses claude-sonnet-5 for deep tiers.
     Default and all other values: claude-haiku-4-5.
     """
     val = surf_config.load_config().get("SYNTHESIS_MODEL", "haiku").lower().strip()
     return CLAUDE_SONNET_MODEL if val == "sonnet" else CLAUDE_MODEL
 
-CLAUDE_MONTHLY_BUDGET = 1.00            # USD hard cap per calendar month
+CLAUDE_MONTHLY_BUDGET = 5.00            # USD default cap per calendar month (config: CLAUDE_BUDGET)
+
+
+def _claude_budget_limit() -> float:
+    """Monthly spend cap in USD. Users override with CLAUDE_BUDGET in config."""
+    try:
+        return float(surf_config.load_config().get("CLAUDE_BUDGET", CLAUDE_MONTHLY_BUDGET))
+    except (TypeError, ValueError):
+        return CLAUDE_MONTHLY_BUDGET
 _CLAUDE_INPUT_COST  = 1.00 / 1_000_000  # $1.00/MTok
 _CLAUDE_OUTPUT_COST = 5.00 / 1_000_000  # $5.00/MTok
 _CLAUDE_CACHE_WRITE = 1.25 / 1_000_000  # $1.25/MTok (cache creation)
@@ -690,7 +700,7 @@ def _claude_usage_save(data: dict) -> None:
 
 
 def _claude_budget_ok() -> bool:
-    return _claude_usage_load().get("cost_usd", 0.0) < CLAUDE_MONTHLY_BUDGET
+    return _claude_usage_load().get("cost_usd", 0.0) < _claude_budget_limit()
 
 
 def _claude_record(usage) -> float:
@@ -710,7 +720,7 @@ def _claude_record(usage) -> float:
 def claude_monthly_spend() -> str:
     """Return a human-readable spend string, e.g. '$0.34/$1.00'."""
     d = _claude_usage_load()
-    return f"${d.get('cost_usd', 0.0):.2f}/${CLAUDE_MONTHLY_BUDGET:.2f}"
+    return f"${d.get('cost_usd', 0.0):.2f}/${_claude_budget_limit():.2f}"
 
 
 def stream_claude(prompt: str, system: str, max_tokens: int = 2048, tier: str = "snippet"):
@@ -737,7 +747,7 @@ def stream_claude(prompt: str, system: str, max_tokens: int = 2048, tier: str = 
     try:
         client = _anthropic.Anthropic(api_key=api_key)
         with client.messages.stream(
-            model=_get_synthesis_model() if tier in ("research", "current") else CLAUDE_MODEL,
+            model=_get_synthesis_model() if tier in ("research", "current", "contested") else CLAUDE_MODEL,
             max_tokens=max_tokens,
             system=[{
                 "type": "text",
@@ -1368,6 +1378,53 @@ def score_content_depth(content: str) -> float:
     score += min(0.10, factual_hits * 0.01)
 
     return max(0.0, min(1.0, score))
+
+
+# ── Passage selection (query-relevant excerpts instead of head-truncation) ──
+
+_PASSAGE_STOP = frozenset([
+    "the", "a", "an", "and", "or", "but", "for", "with", "about", "what",
+    "when", "where", "which", "who", "why", "how", "does", "did", "will",
+    "would", "should", "could", "can", "are", "is", "was", "were", "been",
+    "this", "that", "these", "those", "from", "into", "than", "then",
+])
+
+
+def _select_relevant_passages(query: str, content: str, max_chars: int = 2500) -> str:
+    """Pick the paragraphs most relevant to the query instead of truncating at max_chars.
+
+    Zero LLM cost: query-term overlap + small boosts for lead position and
+    numeric density, then reassembled in document order so the excerpt reads
+    coherently. Falls back to head-truncation for unstructured pages.
+    """
+    if not content or len(content) <= max_chars:
+        return content
+    paras = [p.strip() for p in re.split(r"\n\s*\n|(?<=[.!?])\n", content) if len(p.strip()) > 80]
+    if len(paras) < 3:
+        return content[:max_chars]
+    q_terms = {w for w in re.findall(r"[a-z0-9]+", query.lower())
+               if len(w) > 2 and w not in _PASSAGE_STOP}
+    if not q_terms:
+        return content[:max_chars]
+    scored = []
+    for i, p in enumerate(paras):
+        p_words = set(re.findall(r"[a-z0-9]+", p.lower()))
+        overlap = len(q_terms & p_words) / len(q_terms)
+        position = 0.15 if i < 2 else 0.0
+        density = min(0.15, len(re.findall(r"\d", p)) * 0.005)
+        scored.append((overlap + position + density, i, p))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    picked: list[tuple[int, str]] = []
+    used = 0
+    for _, i, p in scored:
+        if picked and used + len(p) > max_chars:
+            continue
+        picked.append((i, p))
+        used += len(p)
+        if used >= max_chars:
+            break
+    picked.sort()
+    return "\n\n".join(p for _, p in picked)[:max_chars + 200]
 
 
 _PRIMARY_DATE_RE = re.compile(r"\b(20[12]\d)\b")
@@ -3082,8 +3139,12 @@ _ACADEMIC_STOP = {"the", "a", "an", "is", "are", "was", "were", "for", "on", "in
                   "of", "to", "and", "or", "but", "with", "from", "by", "at", "about"}
 
 
-def _handle_academic(query: str) -> "tuple[str, list[dict], bool] | None":
-    """Search PubMed + arXiv in parallel; return paper cards or Claude synthesis."""
+def _handle_academic(query: str, on_token: "callable | None" = None) -> "tuple[str, list[dict], bool] | None":
+    """Search PubMed + arXiv in parallel; return paper cards or Claude synthesis.
+
+    on_token: when given, complex-query synthesis streams through the callback
+    (and the joined text is returned) instead of writing to the terminal.
+    """
     # Strip request-phrasing preambles — APIs need clean topic terms, not intent
     search_terms = query
     ql = query.lower()
@@ -3164,6 +3225,12 @@ def _handle_academic(query: str) -> "tuple[str, list[dict], bool] | None":
         if prefs:
             prompt = f"[User preferences]\n{prefs}\n[End preferences]\n\n{prompt}"
         stream = stream_ai(prompt, SEARCH_SYSTEM_ACADEMIC)
+        if on_token is not None:
+            parts = []
+            for chunk in stream:
+                parts.append(chunk)
+                on_token(chunk)
+            return "".join(parts), sources, True
         stream_to_terminal(stream, results=sources)
         return None, sources, True
 
@@ -3348,15 +3415,28 @@ def _deep_research(
     results: list[dict],
     enriched_query: str = "",
     entity_type: str | None = None,
+    on_event: "callable | None" = None,
 ) -> tuple[str, list[dict]]:
     """
     Fetch real article content for deep-tier searches.
-    Shows '↳ reading domain.com...' status per source.
+    Shows '↳ reading domain.com...' status per source; when on_event is given,
+    emits {"type": "reading"|"commentary", ...} dicts live instead (web SSE).
     Returns (combined_content, sources_read). Returns ("", []) if all reads fail.
 
-    Source caps: research tier → up to 5; current/contested → up to 3.
-    Quality gate: skip articles under 150 words (was 100).
+    Source caps: research tier → up to 8; current/contested → up to 4.
+    Quality gate: skip articles under 150 words.
+    Each source dict in sources_read gains "_text": the query-relevant passages
+    fed to the model (consumed by _verify_citations). Content labels are dense
+    1..N in sources_read order, so [n] citations in the synthesis always align
+    with the returned source list even when some fetches fail.
     """
+    def _emit(event: dict) -> None:
+        if on_event:
+            try:
+                on_event(event)
+            except Exception:
+                pass
+
     # Second-angle DDG search before building sources_to_read.
     # Surfaces sources the first query missed — especially valuable for research
     # queries that benefit from an expert/analytical angle.
@@ -3382,8 +3462,8 @@ def _deep_research(
             seen_domains.add(d)
             merged.append(r)
 
-    # Source cap: research gets up to 5; all other deep tiers stay at 3
-    source_cap = 5 if tier == "research" else 3
+    # Source cap: research gets up to 8; all other deep tiers get 4
+    source_cap = 8 if tier == "research" else 4
     if len(merged) > source_cap:
         _qdomain = entity_type or "general"
         merged = sorted(merged, key=lambda r: score_source_quality(r, domain=_qdomain)["composite"], reverse=True)
@@ -3433,7 +3513,7 @@ def _deep_research(
             if _is_spa_shell(html):
                 content = _fetch_with_jina(url)
             else:
-                _, content = extract_text(html, max_words=1500, return_title=True)
+                _, content = extract_text(html, max_words=3000, return_title=True)
             if content and len(content.split()) > 150:
                 return (idx, domain, content, r)
         except Exception:
@@ -3446,15 +3526,21 @@ def _deep_research(
     _qdomain = entity_type or "general"
     print_status(f"↳ reading {len(valid_sources)} sources...")
     fetched = []
-    with ThreadPoolExecutor(max_workers=min(5, len(valid_sources))) as executor:
-        for result in executor.map(_read_one_source, valid_sources):
-            if result:
-                fetched.append(result)
+    if valid_sources:
+        with ThreadPoolExecutor(max_workers=min(8, len(valid_sources))) as executor:
+            futures = [executor.submit(_read_one_source, item) for item in valid_sources]
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    fetched.append(result)
+                    _emit({"type": "reading", "domain": result[1],
+                           "quality": result[3].get("_quality", {}).get("composite", 0.5)})
     clear_status()
+    fetched.sort(key=lambda t: t[0])  # deterministic citation order
 
     if fetched:
         commentary = _chesterton_evaluate_sources(query, fetched, _qdomain)
-        for idx, domain, content, r in fetched:
+        for new_num, (idx, domain, content, r) in enumerate(fetched, start=1):
             entry = commentary.get(idx, {})
             comment = entry.get("comment", "") if isinstance(entry, dict) else str(entry)
             llm_score = entry.get("llm_score", 0.5) if isinstance(entry, dict) else 0.5
@@ -3465,14 +3551,18 @@ def _deep_research(
                 r["_quality"]["llm_score"] = llm_score
                 r["_quality"]["credibility"] = round(0.4 * r["_quality"]["credibility"] + 0.6 * content_score, 2)
                 r["_quality"]["composite"] = round(0.45 * r["_quality"]["reliability"] + 0.55 * r["_quality"]["credibility"], 2)
-            if comment and sys.stdout.isatty():
+            _emit({"type": "commentary", "domain": domain, "comment": comment,
+                   "num": new_num, "quality": r.get("_quality", {}).get("composite", 0.5)})
+            if comment and on_event is None and sys.stdout.isatty():
                 _w = _term_width() - 2
-                _line = f"↳ [{idx + 1}] {domain} — {comment}"
+                _line = f"↳ [{new_num}] {domain} — {comment}"
                 print_status(_line[:_w])
                 time.sleep(0.4)
-            combined.append(f"[{idx + 1}] {domain}\n{content[:2000]}")
+            passages = _select_relevant_passages(query, content, max_chars=2500)
+            r["_text"] = passages
+            combined.append(f"[{new_num}] {domain}\n{passages}")
             sources_read.append(r)
-        if sys.stdout.isatty():
+        if on_event is None and sys.stdout.isatty():
             clear_status()
 
     return "\n\n---\n\n".join(combined), sources_read
@@ -3620,6 +3710,183 @@ def _deep_search_loop(
     return final_synthesis, all_sources, step_log
 
 
+def _merged_search(query: str, num_results: int = 10) -> list[dict]:
+    """Query the primary backend plus DDG concurrently; merge and dedupe.
+
+    Recall is the cheapest accuracy win: two engines see different slices of
+    the web. Primary results keep their rank; the secondary engine only adds
+    URLs the primary missed. Single-engine behavior when only DDG is available.
+    """
+    primary = _get_search_backend()
+    if primary is ddg_search:
+        return ddg_search(query, num_results=num_results)
+
+    def _secondary() -> list[dict]:
+        try:
+            return ddg_search(query, num_results=max(4, num_results // 2))
+        except Exception:
+            return []
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_primary = ex.submit(primary, query, num_results)
+        f_secondary = ex.submit(_secondary)
+        try:
+            prim = f_primary.result()
+        except Exception:
+            prim = []
+        sec = f_secondary.result()
+
+    if not prim and not sec:
+        return []
+    seen: set[str] = set()
+    merged: list[dict] = []
+    for r in prim + sec:
+        key = (r.get("url") or r.get("domain", "")).rstrip("/").lower()
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(r)
+    return merged[: num_results + 4]
+
+
+# ── Sub-query fan-out (default-flow decomposition for deep tiers) ────────────
+
+_SUBQUERY_SYSTEM = (
+    "You decompose search questions. Return ONLY a JSON array of 2-3 short "
+    "search queries covering distinct facets of the question (mechanism, "
+    "evidence, criticism, alternatives). No explanation, no markdown."
+)
+
+
+def _generate_subqueries(query: str, tier: str) -> list[str]:
+    """2-3 facet queries a single search would miss. Empty list on any failure."""
+    if tier not in ("research", "contested"):
+        return []
+    prompt = (
+        f"Question: {query}\n\n"
+        "Return 2-3 search queries covering facets this question needs that "
+        "one literal search would miss."
+    )
+    try:
+        raw = "".join(stream_groq(prompt, _SUBQUERY_SYSTEM, model=CLASSIFIER_MODEL, max_tokens=120)).strip()
+        start, end = raw.find("["), raw.rfind("]") + 1
+        if start < 0 or end <= start:
+            return []
+        arr = json.loads(raw[start:end])
+        subs = [s.strip() for s in arr if isinstance(s, str) and 8 <= len(s.strip()) <= 120]
+        return [s for s in subs if s.lower() != query.lower()][:3]
+    except Exception:
+        return []
+
+
+def _fanout_search(subqueries: list[str], num_each: int = 4) -> list[dict]:
+    """Run facet queries concurrently; return spam-filtered combined results."""
+    if not subqueries:
+        return []
+
+    def _one(sq: str) -> list[dict]:
+        try:
+            return ddg_search(sq, num_results=num_each)
+        except Exception:
+            return []
+
+    out: list[dict] = []
+    with ThreadPoolExecutor(max_workers=min(3, len(subqueries))) as ex:
+        for rs in ex.map(_one, subqueries):
+            out.extend(rs)
+    return [r for r in out if r.get("domain", "") not in _SPAM_DOMAINS]
+
+
+# ── Citation verification (grounding check after synthesis) ─────────────────
+
+_VERIFY_SYSTEM = """You verify citations against source excerpts. For each numbered claim, judge whether the cited source excerpt(s) support it.
+Return ONLY a JSON array, no explanation: [{"claim": 1, "verdict": "supported"}, ...]
+Verdicts: "supported" (excerpt states it), "partial" (related but incomplete), "unsupported" (excerpt does not back it)."""
+
+
+def _extract_cited_claims(answer: str) -> list[tuple[str, list[int]]]:
+    """Return (sentence, [cited source numbers]) for sentences carrying [n] citations."""
+    claims: list[tuple[str, list[int]]] = []
+    for sent in re.split(r"(?<=[.!?])\s+|\n", answer):
+        nums = [int(n) for n in re.findall(r"\[(\d{1,2})\]", sent)]
+        text = re.sub(r"\s*\[\d{1,2}\]", "", sent).strip().lstrip("•").strip()
+        if nums and len(text) > 8:
+            claims.append((text, nums))
+    return claims[:8]
+
+
+def _verify_citations(answer: str, source_texts: dict[int, str]) -> dict:
+    """Check cited sentences against fetched source text — the grounding pass.
+
+    One cheap LLM call. Returns {"checked", "supported", "claims": [...]} where
+    each claim is {"claim", "sources", "verdict"}; {} when nothing to verify or
+    on failure — callers must treat {} as "no verification available".
+    """
+    claims = _extract_cited_claims(answer)
+    claims = [(t, [n for n in ns if n in source_texts]) for t, ns in claims]
+    claims = [(t, ns) for t, ns in claims if ns]
+    if not claims or not source_texts:
+        return {}
+    used = sorted({n for _, ns in claims for n in ns})
+    excerpt_block = "\n\n".join(f"Source [{n}] excerpt:\n{source_texts[n][:1200]}" for n in used)
+    claim_block = "\n".join(
+        f"Claim {i + 1} (cites {', '.join(f'[{n}]' for n in ns)}): {t}"
+        for i, (t, ns) in enumerate(claims)
+    )
+    prompt = f"{excerpt_block}\n\nClaims to verify:\n{claim_block}"
+    try:
+        raw = "".join(stream_ai(prompt, _VERIFY_SYSTEM, max_tokens=250)).strip()
+        start, end = raw.find("["), raw.rfind("]") + 1
+        if start < 0 or end <= start:
+            return {}
+        arr = json.loads(raw[start:end])
+        verdicts: dict[int, str] = {}
+        for item in arr:
+            if isinstance(item, dict):
+                v = str(item.get("verdict", "")).lower()
+                if v in ("supported", "partial", "unsupported"):
+                    try:
+                        verdicts[int(item.get("claim", -1))] = v
+                    except (TypeError, ValueError):
+                        continue
+        out = []
+        supported = 0
+        for i, (t, ns) in enumerate(claims):
+            verdict = verdicts.get(i + 1, "unknown")
+            if verdict == "supported":
+                supported += 1
+            out.append({"claim": t[:140], "sources": ns, "verdict": verdict})
+        return {"checked": len(out), "supported": supported, "claims": out}
+    except Exception:
+        return {}
+
+
+# ── Related searches (backend-generated follow-up suggestions) ──────────────
+
+_RELATED_SYSTEM = (
+    "You suggest follow-up searches. Return ONLY a JSON array of 3 short, "
+    "specific follow-up questions a curious person would ask next. Each under "
+    "80 characters. No numbering, no markdown."
+)
+
+
+def generate_related_searches(query: str, answer: str) -> list[str]:
+    """3 follow-up questions grounded in what the answer actually said."""
+    prompt = (
+        f"Query: {query}\n\nAnswer summary:\n{answer[:800]}\n\n"
+        "Return 3 follow-up questions that explore genuinely new ground "
+        "(not rephrasings of the original query)."
+    )
+    try:
+        raw = "".join(stream_groq(prompt, _RELATED_SYSTEM, model=CLASSIFIER_MODEL, max_tokens=140)).strip()
+        start, end = raw.find("["), raw.rfind("]") + 1
+        if start < 0 or end <= start:
+            return []
+        arr = json.loads(raw[start:end])
+        return [s.strip() for s in arr if isinstance(s, str) and 5 < len(s.strip()) <= 90][:3]
+    except Exception:
+        return []
+
+
 def _search_with_retry(query: str, entity_type: str | None = None, search_fn: callable | None = None) -> tuple[list[dict], list[str]]:
     """
     Wrap search backend with up to 3 narrated attempts.
@@ -3627,7 +3894,7 @@ def _search_with_retry(query: str, entity_type: str | None = None, search_fn: ca
     'Thin' means fewer than 3 results or all snippets under 50 chars.
     """
     if search_fn is None:
-        search_fn = _get_search_backend()
+        search_fn = _merged_search
 
     def _is_thin(results: list[dict]) -> bool:
         if len(results) < 3:
@@ -3714,21 +3981,35 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
     try:
         results, _queries_tried = _search_with_retry(ddg_query, entity_type=_entity_type)
         if tier in ("research", "contested") and results:
-            alt_query = (
-                f"{ddg_query} analysis expert opinion"
-                if tier == "research"
-                else f"{ddg_query} alternative perspective drawbacks"
-            )
-            try:
-                alt_results = ddg_search(alt_query, num_results=3)
-                # Merge, dedup by domain
+            # Facet fan-out: decompose the question and search each facet
+            # concurrently. Falls back to the single alt-angle heuristic when
+            # decomposition fails.
+            _subs = _generate_subqueries(query, tier)
+            if _subs:
+                print_status("↳ exploring facets: " + " · ".join(s[:36] for s in _subs[:2]) + "...")
+                _queries_tried.extend(_subs)
                 seen_domains = {r["domain"] for r in results}
-                for r in alt_results:
+                for r in _fanout_search(_subs):
                     if r["domain"] not in seen_domains:
                         results.append(r)
                         seen_domains.add(r["domain"])
-            except Exception:
-                pass
+                clear_status()
+            else:
+                alt_query = (
+                    f"{ddg_query} analysis expert opinion"
+                    if tier == "research"
+                    else f"{ddg_query} alternative perspective drawbacks"
+                )
+                try:
+                    alt_results = ddg_search(alt_query, num_results=3)
+                    # Merge, dedup by domain
+                    seen_domains = {r["domain"] for r in results}
+                    for r in alt_results:
+                        if r["domain"] not in seen_domains:
+                            results.append(r)
+                            seen_domains.add(r["domain"])
+                except Exception:
+                    pass
 
         # For news/current-events queries, explicitly check authoritative news sources
         # — only when main results lack them, using a single combined query to minimize DDG hits
@@ -3930,6 +4211,19 @@ def search_flow(query: str, interactive: bool = True, json_output: bool = False,
         # Use deep_sources for the linked sources line if available
         if deep_sources:
             results = deep_sources + [r for r in results if r not in deep_sources][:2]
+
+        # Grounding pass: check cited claims against the fetched source text
+        if deep_sources and response and "[" in response:
+            print_status("↳ verifying citations against sources...")
+            _src_texts = {i + 1: s.get("_text", "") for i, s in enumerate(deep_sources) if s.get("_text")}
+            _verification = _verify_citations(response, _src_texts)
+            clear_status()
+            if _verification.get("checked"):
+                _n_ok, _n_all = _verification["supported"], _verification["checked"]
+                _mark = C_META if _n_ok == _n_all else C_INTERACTIVE
+                print(f"{_mark}{GLYPH_META} verified {_n_ok}/{_n_all} cited claims against source text{C_RESET}")
+                for c in [c for c in _verification["claims"] if c["verdict"] == "unsupported"][:2]:
+                    print(f"{C_INTERACTIVE}{GLYPH_META} unverified: “{c['claim'][:70]}”{C_RESET}")
     else:
         # Snippet path: no inline citations — clean prose reads better without [1][2] noise
         system = SEARCH_SYSTEM
@@ -4663,10 +4957,38 @@ _ASSESS_FALLBACK = {
 }
 
 
+_INTENT_CACHE: dict[str, dict] = {}  # session-scoped; avoids repeat classifier calls
+
+
+def _intent_llm(prompt: str) -> str:
+    """Run the intent prompt on the most reliable cheap model available.
+
+    Claude Haiku when a key exists and budget allows — the whole pipeline hinges
+    on this JSON, and the 8b fallback misfires often enough to need patch rules.
+    Falls back to Groq 8b otherwise.
+    """
+    config = load_config()
+    api_key = config.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
+    if _HAS_ANTHROPIC and api_key and _claude_budget_ok():
+        try:
+            client = _anthropic.Anthropic(api_key=api_key)
+            msg = client.messages.create(
+                model=CLAUDE_MODEL, max_tokens=300,
+                system=[{"type": "text", "text": ASSESS_INTENT_SYSTEM,
+                         "cache_control": {"type": "ephemeral"}}],
+                messages=[{"role": "user", "content": prompt}],
+            )
+            _claude_record(msg.usage)
+            return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        except Exception:
+            pass
+    return "".join(stream_groq(prompt, ASSESS_INTENT_SYSTEM, model=CLASSIFIER_MODEL, max_tokens=300))
+
+
 def assess_intent(query: str, vault_depth: int = 0, session_context: str = "") -> dict:
     """Unified intent assessment — replaces classify_intent + _classify_tier + _evaluate_query_intent.
 
-    Two-stage decomposition in one 8b LLM call:
+    Two-stage decomposition in one LLM call:
     Stage 1: understand the query (reasoning)
     Stage 2: structured JSON output (extraction)
     """
@@ -4683,9 +5005,12 @@ def assess_intent(query: str, vault_depth: int = 0, session_context: str = "") -
 
     prompt = f"Query: \"{query}\"\n{context_block}"
 
+    cached = _INTENT_CACHE.get(prompt)
+    if cached is not None:
+        return dict(cached)
+
     try:
-        chunks = list(stream_groq(prompt, ASSESS_INTENT_SYSTEM, model=CLASSIFIER_MODEL, max_tokens=300))
-        raw = "".join(chunks).strip()
+        raw = _intent_llm(prompt).strip()
         json_start = raw.find("{")
         json_end = raw.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
@@ -4720,6 +5045,9 @@ def assess_intent(query: str, vault_depth: int = 0, session_context: str = "") -
         if validated["route"] == "instant" and any(w in q_lower for w in ("best ", "top ", "recommend", "comparison", "vs ", "versus ")):
             validated["route"] = "search"
             validated["tier"] = "contested"
+        if len(_INTENT_CACHE) > 128:
+            _INTENT_CACHE.clear()
+        _INTENT_CACHE[prompt] = dict(validated)
         return validated
     except Exception:
         return {**_ASSESS_FALLBACK, "reformulated_query": query}

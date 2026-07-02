@@ -57,7 +57,7 @@ Notice: surf evaluated each source's quality live, cited a Cochrane review over 
 
 **Terminal-native.** Lives in your shell. Composes with pipes and scripts. `surf "CVEs for nginx 1.24" --json >> digest.txt`. No browser, no login, no context switch.
 
-**Nearly free.** Claude Haiku at $1/month covers ~2,500 searches. Free fallbacks (Groq, Cerebras, Gemini) kick in automatically when the budget runs out.
+**Nearly free.** A $5/month default budget covers thousands of searches on Claude Haiku (tune it with `CLAUDE_BUDGET` in config). Free fallbacks (Groq, Cerebras, Gemini) kick in automatically when the budget runs out.
 
 **Private.** Your knowledge base stays on your machine. No tracking. No account required.
 
@@ -91,7 +91,7 @@ alias surf='~/surf/.venv/bin/python3 ~/surf/surf.py'  # add to ~/.zshrc
 
 ## Configure
 
-surf needs at least one API key. Claude is recommended — $1/month covers ~2,500 queries.
+surf needs at least one API key. Claude is recommended — a few dollars a month covers heavy daily use, capped by a configurable budget (`CLAUDE_BUDGET`, default $5).
 
 ```bash
 surf setup
