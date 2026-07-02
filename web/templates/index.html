@@ -19,138 +19,263 @@
 
   <div id="search-bar">
     <form id="search-form" onsubmit="doSearch(event)">
-      <input type="text" id="query" placeholder="ask anything..." autocomplete="off" autofocus onfocus="renderHistory()">
+      <textarea id="query" rows="1" placeholder="ask anything..." autocomplete="off" autofocus onfocus="maybeShowHistory()"></textarea>
       <button type="submit" id="search-btn">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
       </button>
     </form>
   </div>
 
-  <div id="history-panel" class="hidden"></div>
+  <div id="history-panel" class="hidden">
+    <div class="history-head">
+      <span class="history-label">recent</span>
+      <input type="text" id="history-filter" placeholder="filter history..." autocomplete="off">
+    </div>
+    <div id="history-items"></div>
+  </div>
 
   <div id="results" class="hidden">
-    <div id="status-line" class="hidden"></div>
-    <div id="vault-line" class="hidden"></div>
-    <div id="sources-panel" class="hidden"></div>
-    <div id="answer-panel" class="hidden">
-      <div id="commentary-trail" class="hidden"></div>
-      <div id="answer"></div>
-      <div id="answer-actions" class="hidden">
-        <button onclick="copyAnswer()" class="action-btn" title="Copy answer">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-          <span id="copy-label">copy</span>
-        </button>
-      </div>
-    </div>
+    <div id="thread"></div>
     <div id="followup-bar" class="hidden">
-      <form onsubmit="doFollowup(event)">
-        <input type="text" id="followup-input" placeholder="ask a follow-up..." autocomplete="off">
+      <form id="followup-form" onsubmit="doFollowup(event)">
+        <textarea id="followup-input" rows="1" placeholder="ask a follow-up..." autocomplete="off"></textarea>
       </form>
     </div>
   </div>
+
+  <footer id="kbd-hint"><kbd>/</kbd> search · <kbd>⇧⏎</kbd> newline · <kbd>⌘K</kbd> focus · <kbd>⌘⇧C</kbd> copy markdown</footer>
 </div>
 
 <script>
-let currentController = null;
+// ---------- state ----------
+let rounds = [];           // one entry per conversation turn
+let activeSource = null;   // the EventSource currently streaming
+let searchHistory = JSON.parse(localStorage.getItem('surf_history') || '[]');
 
+const queryEl = document.getElementById('query');
+const followupEl = document.getElementById('followup-input');
+const threadEl = document.getElementById('thread');
+const followupBar = document.getElementById('followup-bar');
+
+const COPY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str == null ? '' : String(str);
+  return d.innerHTML;
+}
+
+function normDomain(domain) {
+  return String(domain || '').toLowerCase().replace(/^www\./, '');
+}
+
+function safeUrl(url) {
+  return /^https?:\/\//i.test(url) ? url : null;
+}
+
+// ---------- auto-growing textareas ----------
+// field-sizing: content handles growth in Chrome; JS fallback for Firefox/Safari
+const FIELD_SIZING = window.CSS && CSS.supports && CSS.supports('field-sizing', 'content');
+
+function autoGrow(el) {
+  if (FIELD_SIZING) return;
+  el.style.height = 'auto';
+  const max = parseInt(getComputedStyle(el).maxHeight, 10) || 160;
+  el.style.height = Math.min(el.scrollHeight, max) + 'px';
+}
+
+[queryEl, followupEl].forEach(el => {
+  el.addEventListener('input', () => autoGrow(el));
+  el.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      el === queryEl ? doSearch(e) : doFollowup(e);
+    }
+  });
+});
+
+// ---------- search entry points ----------
 function doSearch(e) {
-  e.preventDefault();
-  const q = document.getElementById('query').value.trim();
+  if (e && e.preventDefault) e.preventDefault();
+  const q = queryEl.value.trim();
   if (!q) return;
+  startSearch(q, false);
+}
 
-  // Collapse hero, show new search button
+function doFollowup(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  const q = followupEl.value.trim();
+  if (!q) return;
+  followupEl.value = '';
+  autoGrow(followupEl);
+  startSearch(q, true);
+}
+
+function startSearch(q, isFollowup) {
+  if (activeSource) { activeSource.close(); activeSource = null; }
+
   document.getElementById('hero').classList.remove('visible');
   document.getElementById('hero').classList.add('collapsed');
   document.getElementById('new-search-btn').classList.remove('hidden');
-  document.getElementById('answer-actions').classList.add('hidden');
-
-  // Reset panels
-  const results = document.getElementById('results');
-  results.classList.remove('hidden');
-  document.getElementById('answer').innerHTML = '';
-  document.getElementById('sources-panel').innerHTML = '';
-  document.getElementById('sources-panel').classList.add('hidden');
-  document.getElementById('vault-line').classList.add('hidden');
-  document.getElementById('answer-panel').classList.add('hidden');
-  document.getElementById('followup-bar').classList.add('hidden');
-  document.getElementById('commentary-trail').classList.add('hidden');
-  document.getElementById('commentary-trail').innerHTML = '';
   document.getElementById('history-panel').classList.add('hidden');
-  answerBuffer = '';
+  document.getElementById('results').classList.remove('hidden');
+  followupBar.classList.add('hidden');
 
-  const status = document.getElementById('status-line');
+  if (!isFollowup) {
+    rounds.forEach(r => r.evtSource && r.evtSource.close());
+    rounds = [];
+    threadEl.innerHTML = '';
+    queryEl.value = q;
+    autoGrow(queryEl);
+  } else {
+    rounds.forEach(r => collapseRound(r));
+  }
+
+  const round = createRound(q);
+  rounds.push(round);
+  threadEl.appendChild(round.el);
+  runQuery(round);
+  if (isFollowup) round.el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+
+// ---------- conversation rounds ----------
+function createRound(query) {
+  const el = document.createElement('div');
+  el.className = 'round';
+  el.innerHTML = `
+    <div class="round-query" title="collapse / expand">
+      <span class="round-query-text">${escapeHtml(query)}</span>
+      <span class="round-toggle" aria-hidden="true">−</span>
+    </div>
+    <div class="round-tldr hidden"></div>
+    <div class="round-body">
+      <div class="status-line hidden"></div>
+      <div class="vault-line hidden"></div>
+      <div class="sources-panel hidden"></div>
+      <div class="answer-panel hidden">
+        <div class="commentary-trail hidden"></div>
+        <div class="skeleton hidden"><span class="skeleton-line"></span><span class="skeleton-line"></span><span class="skeleton-line"></span></div>
+        <div class="answer"></div>
+        <div class="related hidden"></div>
+        <div class="answer-actions hidden">
+          <button class="action-btn copy-btn" title="Copy answer">${COPY_ICON}<span class="copy-label">copy</span></button>
+          <button class="action-btn copy-md-btn" title="Copy as markdown (⌘⇧C)">${COPY_ICON}<span class="copy-md-label">copy md</span></button>
+        </div>
+      </div>
+    </div>`;
+
+  const refs = {
+    header: el.querySelector('.round-query'),
+    toggle: el.querySelector('.round-toggle'),
+    tldr: el.querySelector('.round-tldr'),
+    status: el.querySelector('.status-line'),
+    vault: el.querySelector('.vault-line'),
+    sourcesPanel: el.querySelector('.sources-panel'),
+    answerPanel: el.querySelector('.answer-panel'),
+    trail: el.querySelector('.commentary-trail'),
+    skeleton: el.querySelector('.skeleton'),
+    answer: el.querySelector('.answer'),
+    related: el.querySelector('.related'),
+    actions: el.querySelector('.answer-actions'),
+    copyLabel: el.querySelector('.copy-label'),
+    copyMdLabel: el.querySelector('.copy-md-label'),
+  };
+
+  const round = { query, el, refs, sources: [], buffer: '', tldr: '', evtSource: null, answerStarted: false, done: false };
+
+  refs.header.addEventListener('click', () => toggleRound(round));
+  el.querySelector('.copy-btn').addEventListener('click', ev => { ev.stopPropagation(); copyAnswer(round, false); });
+  el.querySelector('.copy-md-btn').addEventListener('click', ev => { ev.stopPropagation(); copyAnswer(round, true); });
+
+  // Citation chips: delegated handler, URL always taken from source data — never from markup
+  refs.answer.addEventListener('click', ev => {
+    const chip = ev.target.closest('.cite-chip');
+    if (!chip) return;
+    const s = round.sources[parseInt(chip.dataset.idx, 10)];
+    const url = s && safeUrl(s.url);
+    if (url) window.open(url, '_blank');
+  });
+
+  return round;
+}
+
+function collapseRound(round) {
+  if (round.el.classList.contains('collapsed')) return;
+  round.el.classList.add('collapsed');
+  round.refs.toggle.textContent = '+';
+  const tldr = round.tldr || firstLineTldr(round.buffer);
+  round.refs.tldr.textContent = tldr;
+  round.refs.tldr.classList.toggle('hidden', !tldr);
+}
+
+function expandRound(round) {
+  round.el.classList.remove('collapsed');
+  round.refs.toggle.textContent = '−';
+  round.refs.tldr.classList.add('hidden');
+}
+
+function toggleRound(round) {
+  round.el.classList.contains('collapsed') ? expandRound(round) : collapseRound(round);
+}
+
+function firstLineTldr(buffer) {
+  return (buffer.split('\n')[0] || '').replace(/▸ TL;DR\s*/, '').replace(/\*\*/g, '').substring(0, 160);
+}
+
+// ---------- SSE stream ----------
+function runQuery(round) {
+  const status = round.refs.status;
   status.textContent = 'understanding your intent...';
   status.classList.remove('hidden');
 
-  // Cancel previous stream
-  if (currentController) currentController.abort();
-  currentController = new AbortController();
-
-  const evtSource = new EventSource(`/api/search?q=${encodeURIComponent(q)}`);
-  let answerStarted = false;
+  const evtSource = new EventSource(`/api/search?q=${encodeURIComponent(round.query)}`);
+  round.evtSource = evtSource;
+  activeSource = evtSource;
 
   evtSource.onmessage = function(event) {
     const data = JSON.parse(event.data);
 
-    switch(data.type) {
+    switch (data.type) {
       case 'status':
         status.textContent = data.content;
         status.classList.remove('hidden');
+        if (/^(Synthesizing|Thinking)/.test(data.content)) showSkeleton(round);
         break;
 
-      case 'intent':
+      case 'intent': {
         const intent = data.content;
         status.textContent = `${intent.tier} · ${intent.domain} · ${intent.answer_depth}`;
         break;
+      }
 
       case 'sources':
-        renderSources(data.content);
+        renderSources(round, data.content);
         break;
 
-      case 'vault':
+      case 'vault': {
         const vault = data.content;
-        const vaultLine = document.getElementById('vault-line');
-        vaultLine.textContent = `↳ drawing from ${vault.count} vault note${vault.count !== 1 ? 's' : ''}`;
-        vaultLine.classList.remove('hidden');
+        round.refs.vault.textContent = `↳ drawing from ${vault.count} vault note${vault.count !== 1 ? 's' : ''}`;
+        round.refs.vault.classList.remove('hidden');
         break;
+      }
 
       case 'reading':
-        const r = data.content;
-        const q_class = r.quality >= 0.6 ? 'quality-high' : r.quality >= 0.4 ? 'quality-mid' : 'quality-low';
-        document.getElementById('answer-panel').classList.remove('hidden');
-        const trail = document.getElementById('commentary-trail');
-        trail.classList.remove('hidden');
-        if (r.comment) {
-          trail.innerHTML += `<div class="commentary-line"><span class="${q_class}">↳</span> ${r.domain} — <em>${r.comment}</em></div>`;
-        } else {
-          trail.innerHTML += `<div class="commentary-line"><span class="${q_class}">↳</span> reading ${r.domain}</div>`;
-        }
-        status.classList.add('hidden');
+        onReading(round, data.content);
         break;
 
       case 'token':
-        if (!answerStarted) {
-          answerStarted = true;
-          status.classList.add('hidden');
-          document.getElementById('answer-panel').classList.remove('hidden');
-        }
-        appendToken(data.content);
+        onToken(round, data.content);
         break;
 
       case 'error':
+        hideSkeleton(round);
         status.textContent = data.content;
         status.classList.remove('hidden');
         evtSource.close();
         break;
 
       case 'done':
-        evtSource.close();
-        document.getElementById('followup-bar').classList.remove('hidden');
-        document.getElementById('answer-actions').classList.remove('hidden');
-        document.getElementById('followup-input').focus();
-        const tldr = answerBuffer.split('\n')[0].replace(/▸ TL;DR\s*/, '').replace(/\*\*/g, '');
-        addToHistory(document.getElementById('query').value, tldr);
-        document.getElementById('history-panel').classList.add('hidden');
+        finishRound(round);
         break;
     }
   };
@@ -160,127 +285,280 @@ function doSearch(e) {
   };
 }
 
-let currentSources = [];
-
-function renderSources(sources) {
-  currentSources = sources;
-  const panel = document.getElementById('sources-panel');
+// ---------- sources ----------
+function renderSources(round, sources) {
+  round.sources = sources;
+  const panel = round.refs.sourcesPanel;
   panel.classList.remove('hidden');
   panel.innerHTML = sources.map((s, i) => {
     const q = s.composite;
-    const bar_class = q >= 0.6 ? 'quality-high' : q >= 0.4 ? 'quality-mid' : 'quality-low';
+    const barClass = q >= 0.6 ? 'quality-high' : q >= 0.4 ? 'quality-mid' : 'quality-low';
+    const tip = `reliability ${Math.round(s.reliability * 100)}% · credibility ${Math.round(s.credibility * 100)}% → quality ${Math.round(q * 100)}%`;
+    const href = safeUrl(s.url) || '#';
     return `
-      <a href="${s.url}" target="_blank" class="source-card">
+      <a href="${escapeHtml(href)}" target="_blank" rel="noopener" class="source-card" style="animation-delay:${i * 90}ms" data-domain="${escapeHtml(normDomain(s.domain))}">
         <div class="source-header">
           <span class="source-num">${i + 1}</span>
-          <span class="source-domain">${s.domain}</span>
-          <span class="quality-bar ${bar_class}" title="Quality: ${(q * 100).toFixed(0)}%">
-            <span class="quality-fill" style="width: ${q * 100}%"></span>
+          <span class="source-domain">${escapeHtml(s.domain)}</span>
+          <span class="quality-bar ${barClass}" data-tip="${escapeHtml(tip)}">
+            <span class="quality-fill" style="width: ${Math.round(q * 100)}%"></span>
           </span>
         </div>
-        <div class="source-title">${s.title}</div>
+        <div class="source-title">${escapeHtml(s.title)}</div>
       </a>
     `;
   }).join('');
 }
 
-let answerBuffer = '';
+function onReading(round, r) {
+  const qClass = r.quality >= 0.6 ? 'quality-high' : r.quality >= 0.4 ? 'quality-mid' : 'quality-low';
+  round.refs.answerPanel.classList.remove('hidden');
+  const trail = round.refs.trail;
+  trail.classList.remove('hidden');
+  const line = document.createElement('div');
+  line.className = 'commentary-line';
+  line.innerHTML = r.comment
+    ? `<span class="${qClass}">↳</span> ${escapeHtml(r.domain)} — <em>${escapeHtml(r.comment)}</em>`
+    : `<span class="${qClass}">↳</span> reading ${escapeHtml(r.domain)}`;
+  trail.appendChild(line);
+  round.refs.status.classList.add('hidden');
 
-function appendToken(token) {
-  answerBuffer += token;
-  const answer = document.getElementById('answer');
-  let html = answerBuffer
+  const card = round.refs.sourcesPanel.querySelector(`.source-card[data-domain="${CSS.escape(normDomain(r.domain))}"]`);
+  if (card) card.classList.add('read');
+}
+
+// ---------- skeleton ----------
+function showSkeleton(round) {
+  if (round.answerStarted || round.done) return;
+  round.refs.answerPanel.classList.remove('hidden');
+  round.refs.skeleton.classList.remove('hidden');
+}
+
+function hideSkeleton(round) {
+  round.refs.skeleton.classList.add('hidden');
+}
+
+// ---------- answer streaming ----------
+function onToken(round, token) {
+  if (!round.answerStarted) {
+    round.answerStarted = true;
+    round.refs.status.classList.add('hidden');
+    round.refs.answerPanel.classList.remove('hidden');
+    hideSkeleton(round);
+  }
+  round.buffer += token;
+  renderAnswer(round);
+  maybeAutoScroll();
+}
+
+function citeChip(idx, label, title) {
+  return `<span class="cite-chip" data-idx="${idx}" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+}
+
+function renderAnswer(round) {
+  let html = escapeHtml(round.buffer)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/^▸ TL;DR\s*/m, '<span class="tldr-marker">▸ TL;DR</span>  ')
     .replace(/^• /gm, '<span class="bullet">•</span> ')
     .replace(/\[(\d+)\]/g, (match, num) => {
-      const idx = parseInt(num) - 1;
-      if (idx >= 0 && idx < currentSources.length) {
-        const s = currentSources[idx];
-        const shortDomain = s.domain.replace(/^www\./, '').replace(/\.com$|\.org$|\.net$/, '');
-        return `<span class="cite-chip" onclick="window.open('${s.url}','_blank')" title="${s.title}">${shortDomain}</span>`;
-      }
-      return match;
+      const idx = parseInt(num, 10) - 1;
+      const s = round.sources[idx];
+      if (!s) return match;
+      const shortDomain = s.domain.replace(/^www\./, '').replace(/\.com$|\.org$|\.net$/, '');
+      return citeChip(idx, shortDomain, s.title);
     })
     .replace(/\[([a-zA-Z][a-zA-Z0-9._-]*)\]/g, (match, name) => {
-      const s = currentSources.find(s => s.domain.toLowerCase().includes(name.toLowerCase()));
-      if (s) {
-        return `<span class="cite-chip" onclick="window.open('${s.url}','_blank')" title="${s.title}">${name}</span>`;
-      }
-      return match;
+      const idx = round.sources.findIndex(s => s.domain.toLowerCase().includes(name.toLowerCase()));
+      if (idx === -1) return match;
+      return citeChip(idx, name, round.sources[idx].title);
     })
     .replace(/\n\n/g, '</p><p>')
     .replace(/\n/g, '<br>');
-  answer.innerHTML = '<p>' + html + '</p>';
-  answer.scrollTop = answer.scrollHeight;
+  round.refs.answer.innerHTML = '<p>' + html + '</p>';
 }
 
-let searchHistory = JSON.parse(localStorage.getItem('surf_history') || '[]');
-
-function resetSearch() {
-  document.getElementById('hero').classList.add('visible');
-  document.getElementById('hero').classList.remove('collapsed');
-  document.getElementById('new-search-btn').classList.add('hidden');
-  document.getElementById('results').classList.add('hidden');
-  document.getElementById('query').value = '';
-  document.getElementById('query').focus();
-  renderHistory();
+function maybeAutoScroll() {
+  const nearBottom = window.innerHeight + window.scrollY >= document.body.offsetHeight - 240;
+  if (nearBottom) window.scrollTo(0, document.body.scrollHeight);
 }
 
+// ---------- completion ----------
+function finishRound(round) {
+  round.done = true;
+  round.evtSource.close();
+  if (activeSource === round.evtSource) activeSource = null;
+  hideSkeleton(round);
+  round.refs.status.classList.add('hidden');
+  round.refs.answerPanel.classList.remove('hidden');
+  round.refs.actions.classList.remove('hidden');
+  round.tldr = firstLineTldr(round.buffer);
+  addToHistory(round.query, round.tldr);
+  renderRelated(round);
+  followupBar.classList.remove('hidden');
+  if (window.matchMedia('(min-width: 601px)').matches) followupEl.focus();
+}
+
+// ---------- related searches ----------
+function makeRelated(query) {
+  // Suffix-style templates: they read cleanly no matter how the topic is phrased
+  let topic = query.trim().replace(/\?+$/, '').trim();
+  topic = topic.replace(/^(what is|what are|what's|whats|how do i|how do|how does|how to|how can i|why is|why do|why does|explain|tell me about|who is|who was|when did|when was|where is|is|are|can|should|does|do)\s+/i, '').trim() || query;
+  topic = topic.replace(/\s+—\s+.*$/, '');  // strip a previous suggestion's suffix
+  const q = query.toLowerCase();
+  let suffixes;
+  if (/\bvs\.?\s|\bversus\b|\bcompare\b/.test(q)) {
+    suffixes = ['which to choose?', 'trade-offs', 'real-world benchmarks'];
+  } else if (/^how\b/.test(q)) {
+    suffixes = ['common pitfalls', 'why it works this way', 'recommended tools'];
+  } else if (/^why\b/.test(q)) {
+    suffixes = ['how it works', 'history and origins', 'counterarguments'];
+  } else {
+    suffixes = ['limitations', 'compared to alternatives', 'practical examples'];
+  }
+  return suffixes.map(s => `${topic} — ${s}`).filter(s => s.toLowerCase() !== q);
+}
+
+function renderRelated(round) {
+  const suggestions = makeRelated(round.query);
+  const rel = round.refs.related;
+  rel.innerHTML = '<div class="related-label">related</div>' +
+    suggestions.map(s => `<button type="button" class="related-item">${escapeHtml(s)}</button>`).join('');
+  rel.classList.remove('hidden');
+  rel.querySelectorAll('.related-item').forEach((btn, i) => {
+    btn.addEventListener('click', () => startSearch(suggestions[i], true));
+  });
+}
+
+// ---------- copy ----------
+function buildMarkdown(round) {
+  let md = round.buffer.replace(/^▸ TL;DR\s*/m, '**TL;DR** ');
+  md = md.replace(/\[(\d+)\]/g, (match, num) => {
+    const s = round.sources[parseInt(num, 10) - 1];
+    return s && safeUrl(s.url) ? `[[${num}]](${s.url})` : match;
+  });
+  md = md.replace(/\[([a-zA-Z][a-zA-Z0-9._-]*)\]/g, (match, name) => {
+    const s = round.sources.find(s => s.domain.toLowerCase().includes(name.toLowerCase()));
+    return s && safeUrl(s.url) ? `[${name}](${s.url})` : match;
+  });
+  if (round.sources.length) {
+    md += '\n\n---\nSources:\n' + round.sources
+      .map((s, i) => safeUrl(s.url) ? `${i + 1}. [${s.title || s.domain}](${s.url})` : `${i + 1}. ${s.title || s.domain}`)
+      .join('\n');
+  }
+  return `# ${round.query}\n\n${md}`;
+}
+
+function copyAnswer(round, asMarkdown) {
+  const text = asMarkdown
+    ? buildMarkdown(round)
+    : round.buffer.replace(/\*\*/g, '').replace(/▸ TL;DR\s*/, 'TL;DR: ');
+  navigator.clipboard.writeText(text).then(() => {
+    const label = asMarkdown ? round.refs.copyMdLabel : round.refs.copyLabel;
+    const original = asMarkdown ? 'copy md' : 'copy';
+    label.textContent = 'copied';
+    setTimeout(() => label.textContent = original, 2000);
+  });
+}
+
+// ---------- history ----------
 function addToHistory(query, tldr) {
   searchHistory = searchHistory.filter(h => h.query !== query);
-  searchHistory.unshift({ query, tldr: tldr.substring(0, 120), time: Date.now() });
+  searchHistory.unshift({ query, tldr: (tldr || '').substring(0, 120), time: Date.now() });
   searchHistory = searchHistory.slice(0, 20);
   localStorage.setItem('surf_history', JSON.stringify(searchHistory));
 }
 
-function renderHistory() {
+function maybeShowHistory() {
+  if (document.getElementById('hero').classList.contains('visible')) {
+    renderHistory(document.getElementById('history-filter').value);
+  }
+}
+
+function renderHistory(filter = '') {
   const panel = document.getElementById('history-panel');
-  if (!panel) return;
+  const items = document.getElementById('history-items');
+  if (!panel || !items) return;
   if (searchHistory.length === 0) {
     panel.classList.add('hidden');
     return;
   }
   panel.classList.remove('hidden');
-  panel.innerHTML = '<div class="history-label">recent</div>';
-  searchHistory.slice(0, 5).forEach((h, i) => {
+  const f = String(filter).trim().toLowerCase();
+  const matches = f
+    ? searchHistory.filter(h => h.query.toLowerCase().includes(f) || (h.tldr || '').toLowerCase().includes(f)).slice(0, 20)
+    : searchHistory.slice(0, 5);
+  items.innerHTML = '';
+  if (!matches.length) {
+    items.innerHTML = '<div class="history-empty">no matches</div>';
+    return;
+  }
+  matches.forEach(h => {
     const item = document.createElement('div');
     item.className = 'history-item';
     item.innerHTML = `<span class="history-query">${escapeHtml(h.query)}</span><span class="history-tldr">${escapeHtml(h.tldr)}</span>`;
     item.addEventListener('click', () => {
-      document.getElementById('query').value = h.query;
-      doSearch(new Event('submit'));
+      queryEl.value = h.query;
+      autoGrow(queryEl);
+      doSearch();
     });
-    panel.appendChild(item);
+    items.appendChild(item);
   });
 }
 
-function escapeHtml(str) {
-  const d = document.createElement('div');
-  d.textContent = str;
-  return d.innerHTML;
+document.getElementById('history-filter').addEventListener('input', e => renderHistory(e.target.value));
+
+// ---------- reset ----------
+function resetSearch() {
+  if (activeSource) { activeSource.close(); activeSource = null; }
+  rounds.forEach(r => r.evtSource && r.evtSource.close());
+  rounds = [];
+  threadEl.innerHTML = '';
+  document.getElementById('hero').classList.add('visible');
+  document.getElementById('hero').classList.remove('collapsed');
+  document.getElementById('new-search-btn').classList.add('hidden');
+  document.getElementById('results').classList.add('hidden');
+  followupBar.classList.add('hidden');
+  queryEl.value = '';
+  autoGrow(queryEl);
+  queryEl.focus();
+  renderHistory();
 }
 
-function copyAnswer() {
-  const text = answerBuffer.replace(/\*\*/g, '').replace(/▸ TL;DR\s*/, 'TL;DR: ');
-  navigator.clipboard.writeText(text).then(() => {
-    document.getElementById('copy-label').textContent = 'copied';
-    setTimeout(() => document.getElementById('copy-label').textContent = 'copy', 2000);
-  });
+// ---------- keyboard shortcuts ----------
+function focusSearch() {
+  if (!followupBar.classList.contains('hidden')) {
+    followupEl.focus();
+  } else {
+    queryEl.focus();
+    queryEl.select();
+  }
 }
 
-function doFollowup(e) {
-  e.preventDefault();
-  const followup = document.getElementById('followup-input').value.trim();
-  if (!followup) return;
-  document.getElementById('query').value = followup;
-  document.getElementById('followup-input').value = '';
-  doSearch(e);
-}
+document.addEventListener('keydown', e => {
+  const tag = document.activeElement && document.activeElement.tagName;
+  const typing = tag === 'TEXTAREA' || tag === 'INPUT';
 
-// Enter key on input
-document.getElementById('query').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') doSearch(e);
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'c') {
+    const last = rounds[rounds.length - 1];
+    if (last && last.done) {
+      e.preventDefault();
+      copyAnswer(last, true);
+    }
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    focusSearch();
+    return;
+  }
+  if (e.key === '/' && !typing) {
+    e.preventDefault();
+    focusSearch();
+    return;
+  }
+  if (e.key === 'Escape') {
+    queryEl.focus();
+  }
 });
 
 // Show history on load
