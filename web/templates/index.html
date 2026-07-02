@@ -121,6 +121,7 @@ function startSearch(q, isFollowup) {
   document.getElementById('results').classList.remove('hidden');
   followupBar.classList.add('hidden');
 
+  let context = '';
   if (!isFollowup) {
     rounds.forEach(r => r.evtSource && r.evtSource.close());
     rounds = [];
@@ -128,13 +129,18 @@ function startSearch(q, isFollowup) {
     queryEl.value = q;
     autoGrow(queryEl);
   } else {
+    // recent turns travel with the request so the engine can resolve
+    // pronouns ("who replaced her?") without server-side conversation state
+    context = rounds.slice(-3).map(r =>
+      `Q: ${r.query}\nA: ${(r.tldr || firstLineTldr(r.buffer)).slice(0, 200)}`
+    ).join('\n');
     rounds.forEach(r => collapseRound(r));
   }
 
   const round = createRound(q);
   rounds.push(round);
   threadEl.appendChild(round.el);
-  runQuery(round);
+  runQuery(round, context);
   if (isFollowup) round.el.scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
 
@@ -156,8 +162,10 @@ function createRound(query) {
         <div class="commentary-trail hidden"></div>
         <div class="skeleton hidden"><span class="skeleton-line"></span><span class="skeleton-line"></span><span class="skeleton-line"></span></div>
         <div class="answer"></div>
+        <div class="verification hidden"></div>
         <div class="related hidden"></div>
         <div class="answer-actions hidden">
+          <span class="round-meta"></span>
           <button class="action-btn copy-btn" title="Copy answer">${COPY_ICON}<span class="copy-label">copy</span></button>
           <button class="action-btn copy-md-btn" title="Copy as markdown (⌘⇧C)">${COPY_ICON}<span class="copy-md-label">copy md</span></button>
         </div>
@@ -175,13 +183,17 @@ function createRound(query) {
     trail: el.querySelector('.commentary-trail'),
     skeleton: el.querySelector('.skeleton'),
     answer: el.querySelector('.answer'),
+    verification: el.querySelector('.verification'),
     related: el.querySelector('.related'),
     actions: el.querySelector('.answer-actions'),
+    meta: el.querySelector('.round-meta'),
     copyLabel: el.querySelector('.copy-label'),
     copyMdLabel: el.querySelector('.copy-md-label'),
   };
 
-  const round = { query, el, refs, sources: [], buffer: '', tldr: '', evtSource: null, answerStarted: false, done: false };
+  const round = { query, el, refs, sources: [], citemap: null, backendRelated: null,
+                  trailLines: {}, buffer: '', tldr: '', evtSource: null,
+                  answerStarted: false, done: false };
 
   refs.header.addEventListener('click', () => toggleRound(round));
   el.querySelector('.copy-btn').addEventListener('click', ev => { ev.stopPropagation(); copyAnswer(round, false); });
@@ -191,7 +203,7 @@ function createRound(query) {
   refs.answer.addEventListener('click', ev => {
     const chip = ev.target.closest('.cite-chip');
     if (!chip) return;
-    const s = round.sources[parseInt(chip.dataset.idx, 10)];
+    const s = citeList(round)[parseInt(chip.dataset.idx, 10)];
     const url = s && safeUrl(s.url);
     if (url) window.open(url, '_blank');
   });
@@ -223,12 +235,19 @@ function firstLineTldr(buffer) {
 }
 
 // ---------- SSE stream ----------
-function runQuery(round) {
+function citeList(round) {
+  // citemap (what the model actually read, in citation order) beats raw sources
+  return round.citemap || round.sources;
+}
+
+function runQuery(round, context) {
   const status = round.refs.status;
   status.textContent = 'understanding your intent...';
   status.classList.remove('hidden');
 
-  const evtSource = new EventSource(`/api/search?q=${encodeURIComponent(round.query)}`);
+  let url = `/api/search?q=${encodeURIComponent(round.query)}`;
+  if (context) url += `&context=${encodeURIComponent(context)}`;
+  const evtSource = new EventSource(url);
   round.evtSource = evtSource;
   activeSource = evtSource;
 
@@ -263,8 +282,28 @@ function runQuery(round) {
         onReading(round, data.content);
         break;
 
+      case 'commentary':
+        onCommentary(round, data.content);
+        break;
+
+      case 'citemap':
+        round.citemap = data.content;
+        break;
+
+      case 'answer_card':
+        renderAnswerCard(round, data.content);
+        break;
+
       case 'token':
         onToken(round, data.content);
+        break;
+
+      case 'verification':
+        renderVerification(round, data.content);
+        break;
+
+      case 'related':
+        round.backendRelated = data.content;
         break;
 
       case 'error':
@@ -275,7 +314,7 @@ function runQuery(round) {
         break;
 
       case 'done':
-        finishRound(round);
+        finishRound(round, data.content || {});
         break;
     }
   };
@@ -310,21 +349,75 @@ function renderSources(round, sources) {
   }).join('');
 }
 
+function qualityClass(q) {
+  return q >= 0.6 ? 'quality-high' : q >= 0.4 ? 'quality-mid' : 'quality-low';
+}
+
+function trailLine(round, domain) {
+  // one line per domain: "reading X" upgrades in place when commentary lands
+  const key = normDomain(domain);
+  let line = round.trailLines[key];
+  if (!line) {
+    line = document.createElement('div');
+    line.className = 'commentary-line';
+    round.trailLines[key] = line;
+    round.refs.trail.appendChild(line);
+  }
+  return line;
+}
+
 function onReading(round, r) {
-  const qClass = r.quality >= 0.6 ? 'quality-high' : r.quality >= 0.4 ? 'quality-mid' : 'quality-low';
   round.refs.answerPanel.classList.remove('hidden');
-  const trail = round.refs.trail;
-  trail.classList.remove('hidden');
-  const line = document.createElement('div');
-  line.className = 'commentary-line';
-  line.innerHTML = r.comment
-    ? `<span class="${qClass}">↳</span> ${escapeHtml(r.domain)} — <em>${escapeHtml(r.comment)}</em>`
-    : `<span class="${qClass}">↳</span> reading ${escapeHtml(r.domain)}`;
-  trail.appendChild(line);
+  round.refs.trail.classList.remove('hidden');
+  const line = trailLine(round, r.domain);
+  if (r.comment) {  // legacy backend sends comment inside reading events
+    onCommentary(round, r);
+    return;
+  }
+  line.innerHTML = `<span class="${qualityClass(r.quality)}">↳</span> reading ${escapeHtml(r.domain)}`;
   round.refs.status.classList.add('hidden');
 
   const card = round.refs.sourcesPanel.querySelector(`.source-card[data-domain="${CSS.escape(normDomain(r.domain))}"]`);
   if (card) card.classList.add('read');
+}
+
+function onCommentary(round, c) {
+  round.refs.answerPanel.classList.remove('hidden');
+  round.refs.trail.classList.remove('hidden');
+  const line = trailLine(round, c.domain);
+  const arrow = `<span class="${qualityClass(c.quality)}">↳</span>`;
+  line.innerHTML = c.comment
+    ? `${arrow} ${escapeHtml(c.domain)} — <em>${escapeHtml(c.comment)}</em>`
+    : `${arrow} read ${escapeHtml(c.domain)}`;
+  round.refs.status.classList.add('hidden');
+  const card = round.refs.sourcesPanel.querySelector(`.source-card[data-domain="${CSS.escape(normDomain(c.domain))}"]`);
+  if (card) card.classList.add('read');
+}
+
+function renderAnswerCard(round, card) {
+  round.answerStarted = true;
+  hideSkeleton(round);
+  round.refs.status.classList.add('hidden');
+  round.refs.answerPanel.classList.remove('hidden');
+  const pre = document.createElement('pre');
+  pre.className = 'answer-card';
+  pre.textContent = card.text;
+  round.refs.answer.innerHTML = '';
+  round.refs.answer.appendChild(pre);
+  round.buffer = card.text;
+}
+
+function renderVerification(round, v) {
+  if (!v || !v.checked) return;
+  const allGood = v.supported === v.checked;
+  const el = round.refs.verification;
+  let html = `<span class="${allGood ? 'quality-high' : 'quality-mid'}">✓</span> ` +
+    `verified ${v.supported}/${v.checked} cited claims against source text`;
+  (v.claims || []).filter(c => c.verdict === 'unsupported').slice(0, 2).forEach(c => {
+    html += `<div class="verification-claim">⚠ unverified: “${escapeHtml(c.claim)}”</div>`;
+  });
+  el.innerHTML = html;
+  el.classList.remove('hidden');
 }
 
 // ---------- skeleton ----------
@@ -356,21 +449,22 @@ function citeChip(idx, label, title) {
 }
 
 function renderAnswer(round) {
+  const cites = citeList(round);
   let html = escapeHtml(round.buffer)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/^▸ TL;DR\s*/m, '<span class="tldr-marker">▸ TL;DR</span>  ')
     .replace(/^• /gm, '<span class="bullet">•</span> ')
     .replace(/\[(\d+)\]/g, (match, num) => {
       const idx = parseInt(num, 10) - 1;
-      const s = round.sources[idx];
+      const s = cites[idx];
       if (!s) return match;
       const shortDomain = s.domain.replace(/^www\./, '').replace(/\.com$|\.org$|\.net$/, '');
       return citeChip(idx, shortDomain, s.title);
     })
     .replace(/\[([a-zA-Z][a-zA-Z0-9._-]*)\]/g, (match, name) => {
-      const idx = round.sources.findIndex(s => s.domain.toLowerCase().includes(name.toLowerCase()));
+      const idx = cites.findIndex(s => s.domain.toLowerCase().includes(name.toLowerCase()));
       if (idx === -1) return match;
-      return citeChip(idx, name, round.sources[idx].title);
+      return citeChip(idx, name, cites[idx].title);
     })
     .replace(/\n\n/g, '</p><p>')
     .replace(/\n/g, '<br>');
@@ -383,7 +477,7 @@ function maybeAutoScroll() {
 }
 
 // ---------- completion ----------
-function finishRound(round) {
+function finishRound(round, meta) {
   round.done = true;
   round.evtSource.close();
   if (activeSource === round.evtSource) activeSource = null;
@@ -391,6 +485,9 @@ function finishRound(round) {
   round.refs.status.classList.add('hidden');
   round.refs.answerPanel.classList.remove('hidden');
   round.refs.actions.classList.remove('hidden');
+  if (meta && meta.elapsed != null) {
+    round.refs.meta.textContent = `${meta.elapsed}s${meta.tier ? ' · ' + meta.tier : ''}`;
+  }
   round.tldr = firstLineTldr(round.buffer);
   addToHistory(round.query, round.tldr);
   renderRelated(round);
@@ -419,7 +516,11 @@ function makeRelated(query) {
 }
 
 function renderRelated(round) {
-  const suggestions = makeRelated(round.query);
+  // engine-generated suggestions (grounded in the answer) beat static templates
+  const suggestions = (round.backendRelated && round.backendRelated.length)
+    ? round.backendRelated.slice(0, 3)
+    : makeRelated(round.query);
+  if (!suggestions.length) return;
   const rel = round.refs.related;
   rel.innerHTML = '<div class="related-label">related</div>' +
     suggestions.map(s => `<button type="button" class="related-item">${escapeHtml(s)}</button>`).join('');
@@ -431,17 +532,18 @@ function renderRelated(round) {
 
 // ---------- copy ----------
 function buildMarkdown(round) {
+  const cites = citeList(round);
   let md = round.buffer.replace(/^▸ TL;DR\s*/m, '**TL;DR** ');
   md = md.replace(/\[(\d+)\]/g, (match, num) => {
-    const s = round.sources[parseInt(num, 10) - 1];
+    const s = cites[parseInt(num, 10) - 1];
     return s && safeUrl(s.url) ? `[[${num}]](${s.url})` : match;
   });
   md = md.replace(/\[([a-zA-Z][a-zA-Z0-9._-]*)\]/g, (match, name) => {
-    const s = round.sources.find(s => s.domain.toLowerCase().includes(name.toLowerCase()));
+    const s = cites.find(s => s.domain.toLowerCase().includes(name.toLowerCase()));
     return s && safeUrl(s.url) ? `[${name}](${s.url})` : match;
   });
-  if (round.sources.length) {
-    md += '\n\n---\nSources:\n' + round.sources
+  if (cites.length) {
+    md += '\n\n---\nSources:\n' + cites
       .map((s, i) => safeUrl(s.url) ? `${i + 1}. [${s.title || s.domain}](${s.url})` : `${i + 1}. ${s.title || s.domain}`)
       .join('\n');
   }
