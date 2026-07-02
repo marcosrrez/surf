@@ -568,8 +568,13 @@ span.quality-low { color: var(--red); }
   color: var(--text-dim);
 }
 
-/* Follow-up bar */
+/* Follow-up bar — sticky so long threads never bury the input */
 #followup-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  background: var(--bg);
+  padding: var(--space-sm) 0 var(--space-sm);
   margin-top: 12px;
 }
 #followup-bar form {

@@ -564,11 +564,17 @@ Format rules (use exactly):
 No filler phrases. No markdown syntax."""
 
 def build_search_prompt(query: str, snippets: list[dict]) -> str:
-    """Build Groq prompt for a search query with DDG snippets."""
+    """Build the synthesis prompt for a search query with result snippets.
+
+    Leads with today's date: without it the model's internal clock treats
+    fresh results as future/implausible ("July 2026 hasn't happened yet")
+    and hedges instead of answering.
+    """
+    date_line = time.strftime("Today's date: %A, %B %d, %Y. Treat search results dated today as current, not future.")
     snippet_text = ""
     for i, s in enumerate(snippets, 1):
         snippet_text += f"\n[{i}] {s['title']} ({s['url']})\n{s['snippet']}\n"
-    return f"Query: {query}\n\nSearch results:\n{snippet_text}"
+    return f"{date_line}\n\nQuery: {query}\n\nSearch results:\n{snippet_text}"
 
 def build_read_prompt(title: str, text: str) -> str:
     """Build Groq prompt for reading a specific page."""

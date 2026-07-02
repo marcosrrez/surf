@@ -201,7 +201,8 @@ def search_events(query: str, fresh: bool = False, context: str = "") -> Iterato
     # ── Instant route: no search needed ──────────────────────────────────
     if route == "instant" or (tier == "snippet" and len(query.split()) <= 3):
         yield {"type": "status", "content": "Thinking..."}
-        prompt = f"{context}\n\nUser: {query}" if context else query
+        date_line = time.strftime("Today's date: %A, %B %d, %Y.")
+        prompt = f"{date_line}\n{context}\n\nUser: {query}" if context else f"{date_line}\n\nUser: {query}"
         answer = ""
         try:
             for chunk in surf.stream_ai(prompt, INSTANT_SYSTEM):
