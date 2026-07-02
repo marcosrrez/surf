@@ -7,6 +7,26 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<button id="rail-toggle" aria-label="Menu" onclick="toggleRail()">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+</button>
+<div id="rail-backdrop" onclick="closeRail()"></div>
+
+<aside id="rail">
+  <div class="rail-brand" onclick="resetSearch()"><span class="rail-wave">∿</span> surf</div>
+  <button id="rail-new" onclick="railNew()">+ new search <kbd>⌘K</kbd></button>
+  <div class="rail-section hidden" id="vault-topics">
+    <div class="rail-label">the vault</div>
+    <div id="vault-topic-items"></div>
+  </div>
+  <div class="rail-section hidden" id="history-panel">
+    <div class="rail-label">history</div>
+    <input type="text" id="history-filter" placeholder="filter history..." autocomplete="off">
+    <div id="history-items"></div>
+  </div>
+  <div class="rail-foot">no account · local only</div>
+</aside>
+
 <div id="app">
   <header id="hero" class="visible">
     <div class="header-row">
@@ -19,20 +39,14 @@
 
   <div id="search-bar">
     <form id="search-form" onsubmit="doSearch(event)">
-      <textarea id="query" rows="1" placeholder="ask anything..." autocomplete="off" autofocus onfocus="maybeShowHistory()"></textarea>
+      <textarea id="query" rows="1" placeholder="ask anything..." autocomplete="off" autofocus></textarea>
       <button type="submit" id="search-btn">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
       </button>
     </form>
   </div>
 
-  <div id="history-panel" class="hidden">
-    <div class="history-head">
-      <span class="history-label">recent</span>
-      <input type="text" id="history-filter" placeholder="filter history..." autocomplete="off">
-    </div>
-    <div id="history-items"></div>
-  </div>
+  <div id="home-foot">no account · nothing leaves your machine · open source</div>
 
   <div id="results" class="hidden">
     <div id="thread"></div>
@@ -71,6 +85,43 @@ function normDomain(domain) {
 
 function safeUrl(url) {
   return /^https?:\/\//i.test(url) ? url : null;
+}
+
+function fmtTime(ts) {
+  const d = new Date(ts);
+  let h = d.getHours();
+  const ampm = h >= 12 ? 'pm' : 'am';
+  h = h % 12 || 12;
+  return `${h}:${String(d.getMinutes()).padStart(2, '0')}${ampm}`;
+}
+
+// ---------- sidebar rail ----------
+function toggleRail() { document.body.classList.toggle('rail-open'); }
+function closeRail() { document.body.classList.remove('rail-open'); }
+function railNew() { closeRail(); resetSearch(); }
+
+function loadVaultTopics() {
+  fetch('/api/vault/topics').then(r => r.json()).then(data => {
+    const topics = (data && data.topics) || [];
+    const section = document.getElementById('vault-topics');
+    const items = document.getElementById('vault-topic-items');
+    if (!topics.length) { section.classList.add('hidden'); return; }
+    items.innerHTML = '';
+    topics.forEach(t => {
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.className = 'vault-topic';
+      el.innerHTML = `<span class="vault-topic-name"># ${escapeHtml(t.tag)}</span><span class="vault-topic-count">${parseInt(t.count, 10) || 0}</span>`;
+      el.addEventListener('click', () => {
+        closeRail();
+        queryEl.value = t.tag;
+        autoGrow(queryEl);
+        doSearch();
+      });
+      items.appendChild(el);
+    });
+    section.classList.remove('hidden');
+  }).catch(() => {});
 }
 
 // ---------- auto-growing textareas ----------
@@ -117,8 +168,9 @@ function startSearch(q, isFollowup) {
   document.getElementById('hero').classList.remove('visible');
   document.getElementById('hero').classList.add('collapsed');
   document.getElementById('new-search-btn').classList.remove('hidden');
-  document.getElementById('history-panel').classList.add('hidden');
+  document.getElementById('home-foot').classList.add('hidden');
   document.getElementById('results').classList.remove('hidden');
+  closeRail();
   followupBar.classList.add('hidden');
 
   let context = '';
@@ -151,6 +203,7 @@ function createRound(query) {
   el.innerHTML = `
     <div class="round-query" title="collapse / expand">
       <span class="round-query-text">${escapeHtml(query)}</span>
+      <span class="round-time">${fmtTime(Date.now())}</span>
       <span class="round-toggle" aria-hidden="true">−</span>
     </div>
     <div class="round-tldr hidden"></div>
@@ -568,12 +621,15 @@ function addToHistory(query, tldr) {
   searchHistory.unshift({ query, tldr: (tldr || '').substring(0, 120), time: Date.now() });
   searchHistory = searchHistory.slice(0, 20);
   localStorage.setItem('surf_history', JSON.stringify(searchHistory));
+  renderHistory(document.getElementById('history-filter').value);
 }
 
-function maybeShowHistory() {
-  if (document.getElementById('hero').classList.contains('visible')) {
-    renderHistory(document.getElementById('history-filter').value);
-  }
+function historyGroup(ts) {
+  const day = d => new Date(d).toDateString();
+  const now = Date.now();
+  if (day(ts) === day(now)) return 'today';
+  if (day(ts) === day(now - 86400000)) return 'yesterday';
+  return 'earlier';
 }
 
 function renderHistory(filter = '') {
@@ -588,17 +644,27 @@ function renderHistory(filter = '') {
   const f = String(filter).trim().toLowerCase();
   const matches = f
     ? searchHistory.filter(h => h.query.toLowerCase().includes(f) || (h.tldr || '').toLowerCase().includes(f)).slice(0, 20)
-    : searchHistory.slice(0, 5);
+    : searchHistory.slice(0, 20);
   items.innerHTML = '';
   if (!matches.length) {
     items.innerHTML = '<div class="history-empty">no matches</div>';
     return;
   }
+  let lastGroup = null;
   matches.forEach(h => {
+    const group = historyGroup(h.time || 0);
+    if (group !== lastGroup) {
+      lastGroup = group;
+      const label = document.createElement('div');
+      label.className = 'history-group';
+      label.textContent = group;
+      items.appendChild(label);
+    }
     const item = document.createElement('div');
     item.className = 'history-item';
     item.innerHTML = `<span class="history-query">${escapeHtml(h.query)}</span><span class="history-tldr">${escapeHtml(h.tldr)}</span>`;
     item.addEventListener('click', () => {
+      closeRail();
       queryEl.value = h.query;
       autoGrow(queryEl);
       doSearch();
@@ -618,6 +684,7 @@ function resetSearch() {
   document.getElementById('hero').classList.add('visible');
   document.getElementById('hero').classList.remove('collapsed');
   document.getElementById('new-search-btn').classList.add('hidden');
+  document.getElementById('home-foot').classList.remove('hidden');
   document.getElementById('results').classList.add('hidden');
   followupBar.classList.add('hidden');
   queryEl.value = '';
@@ -663,8 +730,9 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// Show history on load
+// Populate rail on load
 renderHistory();
+loadVaultTopics();
 </script>
 </body>
 </html>

@@ -35,6 +35,16 @@ async def home(request: Request):
     return templates.TemplateResponse(request, "index.html")
 
 
+@app.get("/api/vault/topics")
+async def vault_topics_api():
+    """Vault tags with note counts — powers the sidebar's topic list."""
+    try:
+        from surf_store import vault_topics
+        return {"topics": vault_topics()}
+    except Exception:
+        return {"topics": []}
+
+
 @app.get("/api/search")
 async def search(q: str, fresh: bool = False, context: str = ""):
     """Stream the unified pipeline as SSE events.
