@@ -293,3 +293,31 @@ class TestEnginePureHelpers:
         with patch("surf.stream_groq", return_value=iter(['["What about A?", "How does B?", "Why C?"]'])):
             rel = surf.generate_related_searches("query", "answer text")
         assert len(rel) == 3
+
+
+class TestVaultTopics:
+    def _note(self, path, tags):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(f"---\ndate: 2026-07-01\nquery: \"q\"\ntags: [{', '.join(tags)}]\n---\n\nbody")
+
+    def test_counts_and_sorts_tags(self, tmp_path):
+        from surf_store import vault_topics
+        vault = str(tmp_path / "vault")
+        self._note(os.path.join(vault, "surf", "2026", "06", "a.md"), ["tech", "health"])
+        self._note(os.path.join(vault, "surf", "2026", "07", "b.md"), ["tech"])
+        self._note(os.path.join(vault, "surf", "2026", "07", "c.md"), ["tech", "finance"])
+        with patch("surf_config.load_config", return_value={"OBSIDIAN_VAULT": vault}):
+            topics = vault_topics()
+        assert topics[0] == {"tag": "tech", "count": 3}
+        assert {t["tag"] for t in topics} == {"tech", "health", "finance"}
+
+    def test_empty_without_vault(self):
+        from surf_store import vault_topics
+        with patch("surf_config.load_config", return_value={}):
+            assert vault_topics() == []
+
+    def test_empty_when_no_notes_dir(self, tmp_path):
+        from surf_store import vault_topics
+        with patch("surf_config.load_config", return_value={"OBSIDIAN_VAULT": str(tmp_path)}):
+            assert vault_topics() == []
