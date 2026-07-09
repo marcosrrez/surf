@@ -218,7 +218,8 @@ class TestStreamGroq:
         mock_completion = MagicMock()
         mock_completion.__iter__ = MagicMock(return_value=iter(mock_stream))
 
-        with patch("surf.Groq") as MockGroq:
+        with patch("surf.Groq") as MockGroq, \
+             patch("surf.load_config", return_value={"GROQ_API_KEY": "test-key"}):
             instance = MockGroq.return_value
             instance.chat.completions.create.return_value = mock_completion
             result = list(stream_groq("test prompt", "system prompt"))
@@ -232,7 +233,8 @@ class TestStreamGroq:
         mock_completion = MagicMock()
         mock_completion.__iter__ = MagicMock(return_value=iter([mock_chunk]))
 
-        with patch("surf.Groq") as MockGroq:
+        with patch("surf.Groq") as MockGroq, \
+             patch("surf.load_config", return_value={"GROQ_API_KEY": "test-key"}):
             instance = MockGroq.return_value
             instance.chat.completions.create.return_value = mock_completion
             result = list(stream_groq("prompt", "system"))
@@ -1049,7 +1051,8 @@ class TestObsidianIntegration:
 
     def test_make_note_slug_sanitizes_query(self):
         from surf import _make_note_slug
-        assert _make_note_slug("how does mRNA vaccine work?") == "how-does-mrna-vaccine-work"
+        # Stop words ("how", "does") are stripped for tighter filenames
+        assert _make_note_slug("how does mRNA vaccine work?") == "mrna-vaccine-work"
 
     def test_make_note_slug_trims_to_60_chars(self):
         from surf import _make_note_slug
@@ -1088,7 +1091,8 @@ class TestObsidianIntegration:
         assert "what causes inflation" in content
         assert "bbc.com" in content
 
-    def test_obsidian_save_appends_followup_to_same_file(self, tmp_path):
+    def test_obsidian_save_writes_separate_notes_per_query(self, tmp_path):
+        # One note per query (atomic notes with wiki-links), not per session
         from surf import _obsidian_save
         vault = str(tmp_path / "vault")
         os.makedirs(vault, exist_ok=True)
@@ -1096,10 +1100,9 @@ class TestObsidianIntegration:
         with patch("surf_config.load_config", return_value={"OBSIDIAN_VAULT": vault}):
             path1 = _obsidian_save("what causes inflation", "First.", sources, "shared-sess")
             path2 = _obsidian_save("how do central banks respond", "Second.", sources, "shared-sess")
-        assert path1 == path2
-        content = open(path1).read()
-        assert "First." in content and "Second." in content
-        assert "## how do central banks respond" in content
+        assert path1 != path2
+        assert "First." in open(path1).read()
+        assert "Second." in open(path2).read()
 
     def test_obsidian_save_returns_none_when_not_configured(self):
         from surf import _obsidian_save
@@ -1109,7 +1112,8 @@ class TestObsidianIntegration:
     def test_obsidian_find_related_returns_empty_when_no_vault(self):
         from surf import _obsidian_find_related
         with patch("surf_config.load_config", return_value={}):
-            assert _obsidian_find_related("what causes inflation") == ""
+            context, stem = _obsidian_find_related("what causes inflation")
+        assert context == "" and stem == ""
 
     def test_obsidian_find_related_finds_matching_note(self, tmp_path):
         from surf import _obsidian_find_related
@@ -1119,7 +1123,7 @@ class TestObsidianIntegration:
         note_content = "---\nquery: what is inflation\ndate: 2026-06-01\n---\n\nInflation means rising prices caused by monetary supply."
         open(os.path.join(note_dir, "2026-06-01-sess001.md"), "w").write(note_content)
         with patch("surf_config.load_config", return_value={"OBSIDIAN_VAULT": vault}):
-            result = _obsidian_find_related("what causes inflation rising prices")
+            result, _stem = _obsidian_find_related("what causes inflation rising prices")
         # Should find the note (shares words: inflation, prices)
         assert result == "" or "Prior research" in result or "inflation" in result.lower()
 
@@ -1263,24 +1267,20 @@ class TestPreferencesIntegration:
 
 
 class TestBannerAndSetup:
-    def test_setup_banner_uses_bright_colors(self):
+    def test_setup_banner_uses_brand_colors(self):
         from surf import _SETUP_BANNER
-        # Bright cyan [96m for waves
+        # Bright cyan [96m for the wordmark
         assert "\033[96m" in _SETUP_BANNER
-        # Bold bright magenta [1;95m for SURF text
-        assert "\033[1;95m" in _SETUP_BANNER
-        # Bright white [97m for tagline
-        assert "\033[97m" in _SETUP_BANNER
+        # Brand blue accent for the wave motif
+        assert "\033[38;5;75m" in _SETUP_BANNER
 
     def test_setup_banner_contains_surf_text(self):
         from surf import _SETUP_BANNER
-        # SURF ASCII art key characters
-        assert "____" in _SETUP_BANNER
-        assert "___/" in _SETUP_BANNER or "/ ___" in _SETUP_BANNER
+        assert "surf" in _SETUP_BANNER
 
     def test_setup_banner_contains_tagline(self):
         from surf import _SETUP_BANNER
-        assert "AI-powered search" in _SETUP_BANNER
+        assert "search that learns" in _SETUP_BANNER
 
     def test_classify_tier_research_for_how_did(self):
         """Regression: 'how did' should classify as research tier."""

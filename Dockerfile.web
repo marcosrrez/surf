@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt fastapi uvicorn jinja2
 
-COPY surf.py surf_web.py surf_store.py surf_backends.py surf_config.py ./
+COPY surf.py surf_web.py surf_engine.py surf_store.py surf_backends.py surf_config.py ./
 COPY web/ web/
 
 EXPOSE 3939

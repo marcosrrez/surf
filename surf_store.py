@@ -1,4 +1,6 @@
 """Persistence layer for surf — sessions, threads, snapshots, Obsidian vault, preferences."""
+from __future__ import annotations
+
 import os
 import re
 import json
@@ -218,6 +220,39 @@ def _load_search_snapshot(query: str) -> dict | None:
 def _obsidian_vault_path() -> str | None:
     """Return configured Obsidian vault path, or None."""
     return surf_config.load_config().get("OBSIDIAN_VAULT") or None
+
+
+def vault_topics(max_topics: int = 12) -> list[dict]:
+    """Aggregate frontmatter tags across vault notes.
+
+    Returns [{"tag": str, "count": int}] sorted by count desc — the data
+    behind the sidebar's vault-topic list. Empty when no vault is configured.
+    """
+    vault = _obsidian_vault_path()
+    if not vault:
+        return []
+    surf_dir = os.path.join(vault, "surf")
+    if not os.path.isdir(surf_dir):
+        return []
+    counts: dict[str, int] = {}
+    for root, _dirs, files in os.walk(surf_dir):
+        for fn in files:
+            if not fn.endswith(".md"):
+                continue
+            try:
+                with open(os.path.join(root, fn), encoding="utf-8") as f:
+                    head = f.read(2000)
+            except Exception:
+                continue
+            m = re.search(r"^tags:\s*\[(.*?)\]", head, re.MULTILINE)
+            if not m:
+                continue
+            for tag in m.group(1).split(","):
+                tag = tag.strip().strip("'\"")
+                if tag:
+                    counts[tag] = counts.get(tag, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [{"tag": t, "count": c} for t, c in ranked[:max_topics]]
 
 
 _STOP_WORDS = frozenset({
