@@ -538,20 +538,22 @@ function renderCardSources(cardId, sources) {
     var q = s.composite || 0.5;
     var qLabel = q >= 0.85 ? 'high' : q >= 0.65 ? 'solid' : 'fair';
     var qColor = q >= 0.8 ? 'var(--green)' : q >= 0.6 ? 'var(--yellow)' : 'var(--red)';
-    var link = document.createElement('a');
-    link.href = s.url;
-    link.target = '_blank';
-    link.rel = 'noopener';
-    link.className = 'source-card';
-    link.innerHTML =
+    var card = document.createElement('div');
+    card.className = 'source-card';
+    card.onclick = function() { openReader(s.url, s.title, s.domain); };
+    card.innerHTML =
       '<div class="source-header">' +
         '<span class="source-num">' + String(i + 1).padStart(2, '0') + '</span>' +
         '<span class="source-domain">' + escapeHtml(s.domain) + '</span>' +
+        '<a class="source-ext" href="' + escapeHtml(s.url) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">↗</a>' +
       '</div>' +
       '<div class="source-title">' + escapeHtml(s.title) + '</div>' +
       '<div class="source-bar"><div class="source-bar-fill" style="width:' + Math.round(q * 100) + '%;background:' + qColor + '"></div></div>' +
-      '<div class="source-meta" style="color:' + qColor + '">' + qLabel + '</div>';
-    panel.appendChild(link);
+      '<div class="source-foot">' +
+        '<span class="source-meta" style="color:' + qColor + '">' + qLabel + '</span>' +
+        '<span class="source-read">read →</span>' +
+      '</div>';
+    panel.appendChild(card);
   });
 }
 
@@ -890,6 +892,110 @@ setupInputBox(document.getElementById('search-box'));
 setupInputBox(document.getElementById('followup-box'));
 loadSidebarTags();
 renderThreadList();
+</script>
+
+<!-- ── Article Reader Panel ───────────────────────────── -->
+<div id="reader-overlay" onclick="closeReader()"></div>
+<div id="reader-panel" role="dialog" aria-modal="true" aria-label="Article reader">
+  <div id="reader-header">
+    <span id="reader-domain"></span>
+    <span id="reader-read-time"></span>
+    <a id="reader-external" target="_blank" rel="noopener noreferrer">↗ open</a>
+    <button id="reader-close" onclick="closeReader()" aria-label="Close reader">×</button>
+  </div>
+  <div id="reader-body">
+    <div id="reader-loading">
+      <svg width="28" height="11" viewBox="0 0 26 11" fill="none">
+        <path d="M0,6 C3,1 6,1 9,6 S15,11 18,6 S24,2 26,6" stroke="var(--accent)" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+      </svg>
+      fetching article…
+    </div>
+    <h1 id="reader-title"></h1>
+    <div id="reader-content"></div>
+  </div>
+</div>
+
+<script>
+/* ── Article Reader ──────────────────────────────────────── */
+
+var readerOpen = false;
+
+function openReader(url, title, domain) {
+  var overlay  = document.getElementById('reader-overlay');
+  var panel    = document.getElementById('reader-panel');
+  var domEl    = document.getElementById('reader-domain');
+  var titleEl  = document.getElementById('reader-title');
+  var contentEl= document.getElementById('reader-content');
+  var loadEl   = document.getElementById('reader-loading');
+  var timeEl   = document.getElementById('reader-read-time');
+  var extEl    = document.getElementById('reader-external');
+
+  /* reset */
+  domEl.textContent   = domain;
+  titleEl.textContent = title || '';
+  titleEl.style.display = 'none';
+  contentEl.innerHTML = '';
+  loadEl.style.display = 'flex';
+  timeEl.textContent  = '';
+  extEl.href          = url;
+
+  /* open */
+  overlay.classList.add('open');
+  panel.classList.add('open');
+  readerOpen = true;
+  document.body.style.overflow = 'hidden';
+
+  /* fetch */
+  fetch('/api/article?url=' + encodeURIComponent(url))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      loadEl.style.display = 'none';
+      titleEl.style.display = '';
+
+      if (data.error || !data.content) {
+        titleEl.textContent = title || domain;
+        contentEl.innerHTML =
+          '<p style="color:var(--dim)">This page couldn\'t be fetched inline.</p>' +
+          '<p><a href="' + escapeHtml(url) + '" target="_blank" style="color:var(--accent)">Open in browser ↗</a></p>';
+        return;
+      }
+
+      titleEl.textContent = data.title || title;
+
+      /* read time */
+      var words = data.content.trim().split(/\s+/).length;
+      var mins  = Math.max(1, Math.round(words / 230));
+      timeEl.textContent = mins + ' min read';
+
+      /* render paragraphs */
+      var paras = data.content.split(/\n\n+/).filter(function(p){ return p.trim().length > 0; });
+      contentEl.innerHTML = paras.map(function(p) {
+        return '<p>' + escapeHtml(p.trim()).replace(/\n/g, ' ') + '</p>';
+      }).join('');
+
+      /* scroll to top */
+      document.getElementById('reader-body').scrollTop = 0;
+    })
+    .catch(function() {
+      loadEl.style.display = 'none';
+      titleEl.style.display = '';
+      titleEl.textContent = title || domain;
+      contentEl.innerHTML =
+        '<p style="color:var(--dim)">Could not load article.</p>' +
+        '<p><a href="' + escapeHtml(url) + '" target="_blank" style="color:var(--accent)">Open in browser ↗</a></p>';
+    });
+}
+
+function closeReader() {
+  document.getElementById('reader-overlay').classList.remove('open');
+  document.getElementById('reader-panel').classList.remove('open');
+  document.body.style.overflow = '';
+  readerOpen = false;
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && readerOpen) closeReader();
+});
 </script>
 </body>
 </html>

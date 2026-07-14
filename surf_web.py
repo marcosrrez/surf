@@ -98,6 +98,28 @@ async def get_tags():
     return {"tags": dict(sorted(tag_counts.items(), key=lambda x: x[1], reverse=True))}
 
 
+@app.get("/api/article")
+async def get_article(url: str):
+    """Fetch and return clean article text for the inline reader."""
+    import requests as req
+    from surf_backends import SSL_CERT, HEADERS, _is_spa_shell, _fetch_with_jina
+    from urllib.parse import urlparse
+    from surf import extract_text
+    try:
+        resp = req.get(url, headers=HEADERS, verify=SSL_CERT, timeout=12)
+        resp.raise_for_status()
+        html = resp.text
+        if _is_spa_shell(html):
+            content = _fetch_with_jina(url)
+            title = urlparse(url).path.split("/")[-1].replace("-", " ").replace("_", " ").title()
+        else:
+            title, content = extract_text(html, max_words=10000, return_title=True)
+        domain = urlparse(url).netloc.removeprefix("www.")
+        return {"title": title or domain, "domain": domain, "content": content or "", "url": url}
+    except Exception as e:
+        return {"error": str(e), "url": url}
+
+
 @app.get("/api/vault-notes")
 async def get_vault_notes(tag: str = None):
     """Return vault notes, optionally filtered by tag."""
