@@ -500,6 +500,73 @@ body {
   margin-top: 26px;
 }
 
+/* ── Card tabs ─────────────────────────────────────────── */
+
+.card-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+  gap: 0;
+}
+
+.card-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 10px 0;
+  margin-right: 28px;
+  font: 500 12px var(--mono);
+  color: var(--faint);
+  cursor: pointer;
+  letter-spacing: .04em;
+  white-space: nowrap;
+  transition: color .15s, border-color .15s;
+}
+
+.card-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.card-tab:hover:not(.active) { color: var(--dim); }
+
+/* ── Card panels ───────────────────────────────────────── */
+
+.card-panel { display: none; }
+.card-panel.active { display: block; }
+
+/* ── New search FAB (mobile only) ──────────────────────── */
+
+#new-fab {
+  position: fixed;
+  bottom: 100px;
+  right: 20px;
+  width: 46px;
+  height: 46px;
+  background: var(--accent);
+  color: var(--onacc);
+  border: none;
+  border-radius: 50%;
+  font: 400 24px/1 var(--sans);
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--accent) 40%, transparent);
+  z-index: 50;
+  transition: transform .15s, box-shadow .15s;
+  touch-action: manipulation;
+}
+
+#new-fab.visible { display: flex; }
+#new-fab:hover { transform: scale(1.07); }
+#new-fab:active { transform: scale(0.94); }
+
+@media (min-width: 761px) {
+  #new-fab { display: none !important; }
+}
+
 .followup-echo {
   display: flex;
   align-items: baseline;

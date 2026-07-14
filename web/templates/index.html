@@ -107,6 +107,7 @@
           </div>
         </div>
       </div>
+      <button id="new-fab" onclick="newSearch()" title="New search">+</button>
     </div>
 
   </main>
@@ -472,6 +473,8 @@ function showEmptyState() {
 function showResultsState() {
   document.getElementById('empty-state').classList.add('hidden');
   document.getElementById('results-state').classList.remove('hidden');
+  var fab = document.getElementById('new-fab');
+  if (fab) fab.classList.add('visible');
   applyRail();
 }
 
@@ -485,17 +488,13 @@ function createCard(query) {
   card.className = 'research-card';
   card.id = cardId;
 
-  var body = document.createElement('div');
-  body.className = 'card-body';
-
+  /* ── Query headline / followup echo (above tabs) ── */
   if (cardCounter === 1) {
-    /* First card: query as full headline */
     var headline = document.createElement('div');
     headline.className = 'card-query-headline';
     headline.textContent = query;
-    body.appendChild(headline);
+    card.appendChild(headline);
   } else {
-    /* Follow-up cards: echo label */
     var echo = document.createElement('div');
     echo.className = 'followup-echo';
     var lbl = document.createElement('span');
@@ -509,6 +508,20 @@ function createCard(query) {
     card.appendChild(echo);
   }
 
+  /* ── Tab bar ── */
+  var tabs = document.createElement('div');
+  tabs.className = 'card-tabs';
+  tabs.innerHTML =
+    '<button class="card-tab active" data-tab="answer" onclick="switchCardTab(\'' + cardId + '\',\'answer\')">answer</button>' +
+    '<button class="card-tab" data-tab="sources" onclick="switchCardTab(\'' + cardId + '\',\'sources\')"><span id="' + cardId + '-src-label">sources</span></button>' +
+    '<button class="card-tab" data-tab="read" onclick="switchCardTab(\'' + cardId + '\',\'read\')"><span id="' + cardId + '-read-label">the read</span></button>';
+  card.appendChild(tabs);
+
+  /* ── Answer panel (default active) ── */
+  var answerPanel = document.createElement('div');
+  answerPanel.className = 'card-panel active';
+  answerPanel.id = cardId + '-panel-answer';
+
   var status = document.createElement('div');
   status.className = 'card-status';
   status.id = cardId + '-status';
@@ -517,15 +530,6 @@ function createCard(query) {
   var intentDiv = document.createElement('div');
   intentDiv.className = 'card-intent hidden';
   intentDiv.id = cardId + '-intent';
-
-  var sourcesDiv = document.createElement('div');
-  sourcesDiv.className = 'card-sources hidden';
-  sourcesDiv.id = cardId + '-sources';
-
-  var readDiv = document.createElement('div');
-  readDiv.className = 'card-read hidden';
-  readDiv.id = cardId + '-read';
-  readDiv.dataset.readCount = '0';
 
   var vaultDiv = document.createElement('div');
   vaultDiv.className = 'card-vault hidden';
@@ -539,18 +543,53 @@ function createCard(query) {
   actionsDiv.className = 'card-actions hidden';
   actionsDiv.id = cardId + '-actions';
 
-  body.appendChild(status);
-  body.appendChild(intentDiv);
-  body.appendChild(sourcesDiv);
-  body.appendChild(readDiv);
-  body.appendChild(vaultDiv);
-  body.appendChild(answerDiv);
-  body.appendChild(actionsDiv);
-  card.appendChild(body);
+  answerPanel.appendChild(status);
+  answerPanel.appendChild(intentDiv);
+  answerPanel.appendChild(vaultDiv);
+  answerPanel.appendChild(answerDiv);
+  answerPanel.appendChild(actionsDiv);
+
+  /* ── Sources panel ── */
+  var sourcesPanel = document.createElement('div');
+  sourcesPanel.className = 'card-panel';
+  sourcesPanel.id = cardId + '-panel-sources';
+
+  var sourcesDiv = document.createElement('div');
+  sourcesDiv.className = 'card-sources hidden';
+  sourcesDiv.id = cardId + '-sources';
+  sourcesPanel.appendChild(sourcesDiv);
+
+  /* ── The Read panel ── */
+  var readPanel = document.createElement('div');
+  readPanel.className = 'card-panel';
+  readPanel.id = cardId + '-panel-read';
+
+  var readDiv = document.createElement('div');
+  readDiv.className = 'card-read hidden';
+  readDiv.id = cardId + '-read';
+  readDiv.dataset.readCount = '0';
+  readPanel.appendChild(readDiv);
+
+  card.appendChild(answerPanel);
+  card.appendChild(sourcesPanel);
+  card.appendChild(readPanel);
 
   document.getElementById('timeline').appendChild(card);
   activeCardId = cardId;
   return cardId;
+}
+
+function switchCardTab(cardId, tab) {
+  var card = document.getElementById(cardId);
+  if (!card) return;
+  card.querySelectorAll('.card-tab').forEach(function(btn) {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  card.querySelectorAll('.card-panel').forEach(function(panel) {
+    panel.classList.remove('active');
+  });
+  var active = document.getElementById(cardId + '-panel-' + tab);
+  if (active) active.classList.add('active');
 }
 
 /* ── Card sub-renderers ─────────────────────────────────── */
@@ -573,6 +612,9 @@ function renderCardSources(cardId, sources) {
   if (!panel) return;
   panel.classList.remove('hidden');
   panel.innerHTML = '';
+  /* badge the sources tab */
+  var srcLabel = document.getElementById(cardId + '-src-label');
+  if (srcLabel) srcLabel.textContent = 'sources · ' + sources.length;
   sources.forEach(function(s, i) {
     var q = s.composite || 0.5;
     var qLabel = q >= 0.85 ? 'high' : q >= 0.65 ? 'solid' : 'fair';
@@ -633,7 +675,11 @@ function addReadLine(cardId, text) {
   line.className = 'read-line';
   line.innerHTML = '<span class="read-arrow">↳</span><span class="read-text">' + escapeHtml(text) + '</span>';
   lines.appendChild(line);
-  div.dataset.readCount = String(parseInt(div.dataset.readCount || '0') + 1);
+  var count = parseInt(div.dataset.readCount || '0') + 1;
+  div.dataset.readCount = String(count);
+  /* badge the read tab */
+  var readLabel = document.getElementById(cardId + '-read-label');
+  if (readLabel) readLabel.textContent = 'the read · ' + count;
 }
 
 function collapseRead(cardId) {
@@ -863,6 +909,8 @@ function newSearch() {
   document.getElementById('followup-input').value = '';
   cardCounter = 0;
   activeCardId = null;
+  var fab = document.getElementById('new-fab');
+  if (fab) fab.classList.remove('visible');
   showEmptyState();
   setTimeout(function() { document.getElementById('query').focus(); }, 60);
 }
