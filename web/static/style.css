@@ -343,9 +343,10 @@ body {
   color: var(--text);
   font: 400 17px/1.5 var(--mono);
   padding: 0;
-  min-height: 26px;
-  overflow: hidden;
-  transition: height .15s ease;
+  min-height: 28px;
+  max-height: 200px;
+  overflow-y: hidden;
+  field-sizing: content;
 }
 
 .input-box textarea::placeholder { color: var(--faint); opacity: 1; }

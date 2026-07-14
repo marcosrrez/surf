@@ -876,14 +876,13 @@ function setupInputBox(boxEl) {
   textarea.addEventListener('focus', function() { boxEl.classList.add('focused'); });
   textarea.addEventListener('blur', function() { boxEl.classList.remove('focused'); });
   textarea.addEventListener('input', function() { autoGrow(textarea); });
-  autoGrow(textarea);
 }
 
 /* ── Auto-grow textarea ─────────────────────────────────── */
 
 function autoGrow(el) {
-  if (!el) return;
-  el.style.height = '0';
+  if (!el || el.scrollHeight === 0) return; /* skip when hidden */
+  el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, 200) + 'px';
 }
 
