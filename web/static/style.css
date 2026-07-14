@@ -455,15 +455,18 @@ body {
 .topbar-btn {
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   cursor: pointer;
-  padding: 5px 11px;
-  font: 500 12px var(--mono);
-  color: var(--dim);
-  transition: all .15s ease;
+  padding: 6px 14px;
+  font: 600 12px var(--mono);
+  color: var(--text);
+  letter-spacing: .02em;
+  transition: all .18s ease;
   flex-shrink: 0;
+  touch-action: manipulation;
 }
-.topbar-btn:hover { border-color: var(--accent); color: var(--text); }
+.topbar-btn:hover { border-color: var(--accent); color: var(--accent); }
+.topbar-btn:active { background: var(--soft); }
 
 /* ── Results inner scroll ──────────────────────────────── */
 
@@ -480,8 +483,8 @@ body {
 
 #timeline {
   width: 100%;
-  max-width: 740px;
-  padding: 30px 0 0;
+  max-width: 880px;
+  padding: 36px 0 0;
 }
 
 /* ── Research card ─────────────────────────────────────── */
@@ -566,10 +569,14 @@ html.light .intent-badge { background: var(--hi); }
   border-radius: 11px;
   padding: 13px 14px;
   cursor: pointer;
+  touch-action: manipulation;
   transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease;
   color: var(--text);
   display: block;
+  user-select: none;
+  -webkit-user-select: none;
 }
+.source-card:active { border-color: var(--accent); background: var(--hi); }
 .source-card:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 8px 24px -8px rgba(0,0,0,.25); }
 
 .source-header {
@@ -581,12 +588,14 @@ html.light .intent-badge { background: var(--hi); }
 .source-num { font: 600 11px var(--mono); color: var(--faint); flex-shrink: 0; }
 .source-domain { font: 400 11px var(--mono); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .source-ext {
-  font: 400 11px var(--mono);
+  font: 400 13px var(--mono);
   color: var(--faint);
   text-decoration: none;
   flex-shrink: 0;
-  opacity: 0;
+  opacity: 0.45;
   transition: opacity .15s, color .15s;
+  padding: 2px 4px;
+  margin: -2px -4px;
 }
 .source-card:hover .source-ext { opacity: 1; }
 .source-ext:hover { color: var(--accent) !important; }
@@ -613,7 +622,7 @@ html.light .intent-badge { background: var(--hi); }
   font: 500 10px var(--mono);
   color: var(--accent);
   letter-spacing: .04em;
-  opacity: 0;
+  opacity: 0.55;
   transition: opacity .15s;
 }
 .source-card:hover .source-read { opacity: 1; }

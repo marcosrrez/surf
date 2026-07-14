@@ -579,7 +579,14 @@ function renderCardSources(cardId, sources) {
     var qColor = q >= 0.8 ? 'var(--green)' : q >= 0.6 ? 'var(--yellow)' : 'var(--red)';
     var card = document.createElement('div');
     card.className = 'source-card';
-    card.onclick = function() { openReader(s.url, s.title, s.domain); };
+    /* tap-vs-scroll: only open reader if pointer didn't move (not a scroll drag) */
+    var _px, _py;
+    card.addEventListener('pointerdown', function(e) { _px = e.clientX; _py = e.clientY; });
+    card.addEventListener('pointerup', function(e) {
+      if (Math.abs(e.clientX - _px) < 8 && Math.abs(e.clientY - _py) < 8) {
+        openReader(s.url, s.title, s.domain);
+      }
+    });
     card.innerHTML =
       '<div class="source-header">' +
         '<span class="source-num">' + String(i + 1).padStart(2, '0') + '</span>' +
