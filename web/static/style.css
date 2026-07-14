@@ -503,33 +503,39 @@ body {
 /* ── Card tabs ─────────────────────────────────────────── */
 
 .card-tabs {
-  display: flex;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 24px;
-  gap: 0;
+  display: inline-flex;
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 3px;
+  gap: 2px;
+  margin-bottom: 28px;
 }
 
 .card-tab {
   background: transparent;
   border: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  padding: 10px 0;
-  margin-right: 28px;
-  font: 500 12px var(--mono);
-  color: var(--faint);
+  border-radius: 8px;
+  padding: 7px 18px;
+  font: 600 11px var(--mono);
+  color: var(--dim);
   cursor: pointer;
-  letter-spacing: .04em;
+  letter-spacing: .06em;
+  text-transform: uppercase;
   white-space: nowrap;
-  transition: color .15s, border-color .15s;
+  transition: background .18s, color .18s, box-shadow .18s;
+  touch-action: manipulation;
 }
 
 .card-tab.active {
-  color: var(--text);
-  border-bottom-color: var(--accent);
+  background: var(--accent);
+  color: var(--onacc);
+  box-shadow: 0 1px 6px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
-.card-tab:hover:not(.active) { color: var(--dim); }
+.card-tab:hover:not(.active) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
 
 /* ── Card panels ───────────────────────────────────────── */
 
