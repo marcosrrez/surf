@@ -98,6 +98,27 @@ async def get_tags():
     return {"tags": dict(sorted(tag_counts.items(), key=lambda x: x[1], reverse=True))}
 
 
+@app.get("/api/suggest")
+async def suggest(q: str):
+    """Proxy autocomplete suggestions through the server — browser never talks to DDG directly."""
+    if not q or len(q.strip()) < 2:
+        return {"suggestions": []}
+    import requests as req
+    try:
+        resp = req.get(
+            "https://duckduckgo.com/ac/",
+            params={"q": q.strip(), "type": "list"},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=3,
+        )
+        data = resp.json()
+        # DDG returns ["query", ["sug1", "sug2", ...]]
+        items = data[1] if isinstance(data, list) and len(data) > 1 else []
+        return {"suggestions": items[:6]}
+    except Exception:
+        return {"suggestions": []}
+
+
 @app.get("/api/article")
 async def get_article(url: str):
     """Fetch and return clean article text for the inline reader."""

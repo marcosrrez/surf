@@ -251,13 +251,52 @@ function getSuggestions(v) {
     .slice(0, 4)
     .map(function(h) { return { text: h.query, fromHistory: true }; });
 
-  var seen = new Set(histMatches.map(function(m) { return m.text.toLowerCase(); }));
-  var poolMatches = SUGGEST_POOL
-    .filter(function(x) { return x.toLowerCase().includes(s) && !seen.has(x.toLowerCase()); })
-    .slice(0, 6 - histMatches.length)
-    .map(function(x) { return { text: x, fromHistory: false }; });
+  return histMatches;
+}
 
-  return histMatches.concat(poolMatches);
+/* smart suggestions from DDG via surf backend — debounced, merged with history */
+var _suggestTimer = null;
+var _suggestCache = {};
+
+function fetchSmartSuggestions(val) {
+  var s = val.trim();
+  if (!s || s.length < 2) return;
+
+  if (_suggestCache[s]) { mergeSmartSuggestions(val, _suggestCache[s]); return; }
+
+  clearTimeout(_suggestTimer);
+  _suggestTimer = setTimeout(function() {
+    fetch('/api/suggest?q=' + encodeURIComponent(s))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var items = (data.suggestions || []).map(function(t) { return { text: t, fromHistory: false }; });
+        _suggestCache[s] = items;
+        mergeSmartSuggestions(val, items);
+      })
+      .catch(function() {});
+  }, 180);
+}
+
+function mergeSmartSuggestions(val, smartItems) {
+  var drop = document.getElementById('suggest-drop');
+  if (drop.classList.contains('hidden')) return; /* user moved on */
+
+  var histItems = getSuggestions(val);
+  var histTexts = new Set(histItems.map(function(x) { return x.text.toLowerCase(); }));
+  var extra = smartItems.filter(function(x) { return !histTexts.has(x.text.toLowerCase()); });
+  var merged = histItems.concat(extra).slice(0, 6);
+  if (!merged.length) return;
+
+  drop.innerHTML = '';
+  merged.forEach(function(sg, i) {
+    var btn = document.createElement('button');
+    btn.className = 'suggest-row' + (i === suggestActive ? ' active' : '');
+    btn.innerHTML = (sg.fromHistory ? ICON_HISTORY : ICON_SEARCH) + '<span>' + escapeHtml(sg.text) + '</span>';
+    btn.addEventListener('pointerdown', function(e) { e.preventDefault(); pickSuggest(sg.text); });
+    btn.addEventListener('mouseenter', function() { suggestActive = i; drop.querySelectorAll('.suggest-row').forEach(function(b, j) { b.className = 'suggest-row' + (j === i ? ' active' : ''); }); });
+    drop.appendChild(btn);
+  });
+  drop.classList.remove('hidden');
 }
 
 var ICON_HISTORY = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="flex:0 0 auto;color:var(--accent);opacity:.8"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4"/><polyline points="8,5 8,8 10,10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -272,7 +311,7 @@ function renderSuggestions(val) {
     var btn = document.createElement('button');
     btn.className = 'suggest-row' + (i === suggestActive ? ' active' : '');
     btn.innerHTML = (sg.fromHistory ? ICON_HISTORY : ICON_SEARCH) + '<span>' + escapeHtml(sg.text) + '</span>';
-    btn.addEventListener('mousedown', function(e) { e.preventDefault(); pickSuggest(sg.text); });
+    btn.addEventListener('pointerdown', function(e) { e.preventDefault(); pickSuggest(sg.text); });
     btn.addEventListener('mouseenter', function() { suggestActive = i; renderSuggestions(val); });
     drop.appendChild(btn);
   });
@@ -829,13 +868,15 @@ function setupInputBox(boxEl) {
   if (!textarea) return;
   textarea.addEventListener('focus', function() { boxEl.classList.add('focused'); });
   textarea.addEventListener('blur', function() { boxEl.classList.remove('focused'); });
+  textarea.addEventListener('input', function() { autoGrow(textarea); });
+  autoGrow(textarea);
 }
 
 /* ── Auto-grow textarea ─────────────────────────────────── */
 
 function autoGrow(el) {
   if (!el) return;
-  el.style.height = 'auto';
+  el.style.height = '0';
   el.style.height = Math.min(el.scrollHeight, 200) + 'px';
 }
 
@@ -846,10 +887,12 @@ var queryEl = document.getElementById('query');
 queryEl.addEventListener('input', function(e) {
   autoGrow(e.target);
   renderSuggestions(e.target.value);
+  fetchSmartSuggestions(e.target.value);
 });
 
 queryEl.addEventListener('focus', function() {
   renderSuggestions(queryEl.value);
+  fetchSmartSuggestions(queryEl.value);
 });
 
 queryEl.addEventListener('blur', function() {
