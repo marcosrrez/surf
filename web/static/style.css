@@ -446,28 +446,29 @@ body {
 /* ── Card query headline ────────────────────────────────── */
 
 .card-query-headline {
-  font: 600 22px/1.35 var(--mono);
+  font: 700 28px/1.22 var(--sans);
   color: var(--text);
-  letter-spacing: -.02em;
-  margin-bottom: 18px;
-  padding-top: 4px;
+  letter-spacing: -.03em;
+  margin-bottom: 24px;
+  padding-top: 8px;
 }
 
 .topbar-btn {
-  background: transparent;
-  border: 1px solid var(--border);
+  background: var(--soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
   border-radius: 8px;
   cursor: pointer;
-  padding: 6px 14px;
+  padding: 7px 16px;
   font: 600 12px var(--mono);
-  color: var(--text);
-  letter-spacing: .02em;
+  color: var(--accent);
+  letter-spacing: .03em;
   transition: all .18s ease;
   flex-shrink: 0;
   touch-action: manipulation;
+  white-space: nowrap;
 }
-.topbar-btn:hover { border-color: var(--accent); color: var(--accent); }
-.topbar-btn:active { background: var(--soft); }
+.topbar-btn:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.topbar-btn:active { background: color-mix(in srgb, var(--accent) 25%, transparent); }
 
 /* ── Results inner scroll ──────────────────────────────── */
 
@@ -485,7 +486,7 @@ body {
 #timeline {
   width: 100%;
   max-width: 880px;
-  padding: 36px 0 0;
+  padding: 40px 0 80px;
 }
 
 /* ── Research card ─────────────────────────────────────── */
@@ -539,14 +540,15 @@ body {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
+  margin-bottom: 24px;
 }
 .intent-badge {
   font: 400 11px var(--mono);
   color: var(--faint);
   background: rgba(48, 54, 61, 0.5);
-  padding: 2px 8px;
+  padding: 3px 10px;
   border-radius: 4px;
+  letter-spacing: .02em;
 }
 html.light .intent-badge { background: var(--hi); }
 
@@ -556,7 +558,7 @@ html.light .intent-badge { background: var(--hi); }
   display: flex;
   gap: 10px;
   overflow-x: auto;
-  padding: 2px 2px 16px;
+  padding: 2px 2px 32px;
   margin: 0 -2px;
   animation: fadeSlideIn .35s ease both;
   scrollbar-width: thin;
@@ -770,7 +772,7 @@ html.light .intent-badge { background: var(--hi); }
 /* ── THE READ ──────────────────────────────────────────── */
 
 .card-read {
-  padding: 6px 2px 22px;
+  padding: 8px 2px 32px;
   animation: fadeSlideIn .3s ease both;
 }
 
@@ -816,7 +818,7 @@ html.light .intent-badge { background: var(--hi); }
 .card-vault {
   font: 500 13px var(--mono);
   color: var(--accent);
-  padding: 4px 0 16px;
+  padding: 8px 0 24px;
 }
 
 /* ── Answer ────────────────────────────────────────────── */
@@ -825,21 +827,21 @@ html.light .intent-badge { background: var(--hi); }
   word-wrap: break-word;
   font-family: var(--sans);
   font-size: 16px;
-  line-height: 1.78;
+  line-height: 1.72;
   color: var(--text);
   animation: fadeSlideIn .35s ease both;
 }
 
 .card-answer strong { font-weight: 600; }
 
-.card-answer p { margin: 0 0 18px; }
+.card-answer p { margin: 0 0 22px; }
 .card-answer p:last-child { margin-bottom: 0; }
 
 .card-answer h3 {
-  font: 600 15px/1.4 var(--sans);
+  font: 600 21px/1.3 var(--sans);
   color: var(--text);
-  margin: 26px 0 11px;
-  letter-spacing: -.01em;
+  margin: 32px 0 12px;
+  letter-spacing: -.02em;
 }
 
 .tldr-marker {
@@ -879,8 +881,8 @@ html.light .intent-badge { background: var(--hi); }
   justify-content: space-between;
   gap: 12px;
   border-top: 1px solid var(--border);
-  margin-top: 6px;
-  padding: 14px 0 4px;
+  margin-top: 32px;
+  padding: 16px 0 8px;
   animation: fadeSlideIn .35s ease both;
 }
 
