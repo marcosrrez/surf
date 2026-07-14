@@ -707,7 +707,6 @@ html.light .intent-badge { background: var(--hi); }
 @media (max-width: 760px) {
   .source-card { flex: 0 0 82%; }
 }
-.source-card:hover .source-read { opacity: 1; }
 
 /* ── Article Reader ─────────────────────────────────────── */
 
@@ -1026,11 +1025,11 @@ html.light .intent-badge { background: var(--hi); }
 
 @media (max-width: 760px) {
   #topbar { padding: 11px 16px; gap: 10px; }
+  .topbar-btn { display: none; } /* FAB replaces it on mobile */
   #results-inner { padding: 0 16px; }
   #empty-center { padding: 24px 18px 80px; }
   #hero-title { font-size: 42px; }
   #followup-bar { padding: 14px 0 20px; }
-  .source-card { flex: 0 0 190px; }
   .input-box { padding: 13px 14px; }
   .input-box textarea { font-size: 16px !important; } /* prevent iOS zoom */
 }

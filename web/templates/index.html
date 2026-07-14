@@ -511,16 +511,18 @@ function createCard(query) {
   /* ── Tab bar ── */
   var tabs = document.createElement('div');
   tabs.className = 'card-tabs';
+  tabs.setAttribute('role', 'tablist');
   tabs.innerHTML =
-    '<button class="card-tab active" data-tab="answer" onclick="switchCardTab(\'' + cardId + '\',\'answer\')">answer</button>' +
-    '<button class="card-tab" data-tab="sources" onclick="switchCardTab(\'' + cardId + '\',\'sources\')"><span id="' + cardId + '-src-label">sources</span></button>' +
-    '<button class="card-tab" data-tab="read" onclick="switchCardTab(\'' + cardId + '\',\'read\')"><span id="' + cardId + '-read-label">the read</span></button>';
+    '<button class="card-tab active" role="tab" aria-selected="true" data-tab="answer" onclick="switchCardTab(\'' + cardId + '\',\'answer\')">answer</button>' +
+    '<button class="card-tab" role="tab" aria-selected="false" data-tab="sources" onclick="switchCardTab(\'' + cardId + '\',\'sources\')"><span id="' + cardId + '-src-label">sources</span></button>' +
+    '<button class="card-tab" role="tab" aria-selected="false" data-tab="read" onclick="switchCardTab(\'' + cardId + '\',\'read\')"><span id="' + cardId + '-read-label">the read</span></button>';
   card.appendChild(tabs);
 
   /* ── Answer panel (default active) ── */
   var answerPanel = document.createElement('div');
   answerPanel.className = 'card-panel active';
   answerPanel.id = cardId + '-panel-answer';
+  answerPanel.setAttribute('role', 'tabpanel');
 
   var status = document.createElement('div');
   status.className = 'card-status';
@@ -553,6 +555,7 @@ function createCard(query) {
   var sourcesPanel = document.createElement('div');
   sourcesPanel.className = 'card-panel';
   sourcesPanel.id = cardId + '-panel-sources';
+  sourcesPanel.setAttribute('role', 'tabpanel');
 
   var sourcesDiv = document.createElement('div');
   sourcesDiv.className = 'card-sources hidden';
@@ -563,6 +566,7 @@ function createCard(query) {
   var readPanel = document.createElement('div');
   readPanel.className = 'card-panel';
   readPanel.id = cardId + '-panel-read';
+  readPanel.setAttribute('role', 'tabpanel');
 
   var readDiv = document.createElement('div');
   readDiv.className = 'card-read hidden';
@@ -583,7 +587,9 @@ function switchCardTab(cardId, tab) {
   var card = document.getElementById(cardId);
   if (!card) return;
   card.querySelectorAll('.card-tab').forEach(function(btn) {
-    btn.classList.toggle('active', btn.dataset.tab === tab);
+    var isActive = btn.dataset.tab === tab;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
   });
   card.querySelectorAll('.card-panel').forEach(function(panel) {
     panel.classList.remove('active');
