@@ -405,37 +405,6 @@ body {
 .suggest-row:hover, .suggest-row.active { background: var(--hi); color: var(--text); }
 .suggest-row span { font: 400 14px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ── Chips (empty state) ───────────────────────────────── */
-
-#hero-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 9px;
-  justify-content: center;
-  margin-top: 20px;
-  max-width: 680px;
-  width: 100%;
-}
-
-.chip-btn {
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-  padding: 7px 14px;
-  font: 400 12px var(--mono);
-  color: var(--dim);
-  transition: all .15s ease;
-}
-.chip-btn:hover { border-color: var(--accent); color: var(--text); }
-
-#hero-footer {
-  text-align: center;
-  margin-top: 40px;
-  font: 400 11px var(--mono);
-  color: var(--faint);
-  letter-spacing: .02em;
-}
 
 /* ── Results state ─────────────────────────────────────── */
 

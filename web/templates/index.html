@@ -82,8 +82,6 @@
           <div id="suggest-drop" class="hidden"></div>
         </div>
 
-        <div id="hero-chips"></div>
-        <div id="hero-footer">no account · nothing leaves your machine · open source</div>
       </div>
     </div>
 
@@ -301,26 +299,6 @@ function pickSuggest(q) {
 
 /* ── Chips ──────────────────────────────────────────────── */
 
-var CHIPS = [
-  "what's happening in the world right now",
-  "CVEs in nginx",
-  "how do CRDTs actually work",
-  "best mechanical keyboard for devs"
-];
-
-function renderChips() {
-  var container = document.getElementById('hero-chips');
-  CHIPS.forEach(function(label) {
-    var btn = document.createElement('button');
-    btn.className = 'chip-btn';
-    btn.textContent = label;
-    btn.addEventListener('click', function() {
-      document.getElementById('query').value = label;
-      doSearch(new Event('submit'));
-    });
-    container.appendChild(btn);
-  });
-}
 
 /* ── Sidebar tags ───────────────────────────────────────── */
 
@@ -912,7 +890,6 @@ applyTheme();
 applyRail();
 setupInputBox(document.getElementById('search-box'));
 setupInputBox(document.getElementById('followup-box'));
-renderChips();
 loadSidebarTags();
 renderThreadList();
 </script>
