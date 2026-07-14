@@ -126,19 +126,31 @@ async def get_article(url: str):
     from surf_backends import SSL_CERT, HEADERS, _is_spa_shell, _fetch_with_jina
     from urllib.parse import urlparse
     from surf import extract_text
+
+    domain = urlparse(url).netloc.removeprefix("www.")
+    slug_title = urlparse(url).path.split("/")[-1].replace("-", " ").replace("_", " ").title()
+
+    # Strategy 1: direct fetch
     try:
         resp = req.get(url, headers=HEADERS, verify=SSL_CERT, timeout=12)
         resp.raise_for_status()
         html = resp.text
-        if _is_spa_shell(html):
-            content = _fetch_with_jina(url)
-            title = urlparse(url).path.split("/")[-1].replace("-", " ").replace("_", " ").title()
-        else:
+        if not _is_spa_shell(html):
             title, content = extract_text(html, max_words=10000, return_title=True)
-        domain = urlparse(url).netloc.removeprefix("www.")
-        return {"title": title or domain, "domain": domain, "content": content or "", "url": url}
-    except Exception as e:
-        return {"error": str(e), "url": url}
+            if content and len(content.strip()) > 200:
+                return {"title": title or slug_title or domain, "domain": domain, "content": content, "url": url}
+    except Exception:
+        pass
+
+    # Strategy 2: Jina Reader (handles Cloudflare, JS-heavy, paywalls)
+    try:
+        content = _fetch_with_jina(url)
+        if content and len(content.strip()) > 200:
+            return {"title": slug_title or domain, "domain": domain, "content": content, "url": url}
+    except Exception:
+        pass
+
+    return {"error": "couldn't fetch", "url": url}
 
 
 @app.get("/api/vault-notes")
