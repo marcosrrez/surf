@@ -173,7 +173,8 @@ async def search(q: str, fresh: bool = False):
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
             return
 
-        yield f"data: {json.dumps({'type': 'status', 'content': f'Searching: \"{reformulated[:50]}\"...'})}\n\n"
+        search_status = 'Searching: "' + reformulated[:50] + '"...'
+        yield f"data: {json.dumps({'type': 'status', 'content': search_status})}\n\n"
 
         # Search with retry — up to 2 attempts if first results are thin
         search_fn = _get_search_backend()
