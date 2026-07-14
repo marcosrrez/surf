@@ -568,74 +568,38 @@ function renderCardIntent(cardId, intent) {
   });
 }
 
-function makeSourceTappable(el, url, title, domain) {
-  var _px, _py;
-  el.addEventListener('pointerdown', function(e) { _px = e.clientX; _py = e.clientY; });
-  el.addEventListener('pointerup', function(e) {
-    if (Math.abs(e.clientX - _px) < 8 && Math.abs(e.clientY - _py) < 8) {
-      openReader(url, title, domain);
-    }
-  });
-}
-
-function qStyle(q) {
-  return {
-    label: q >= 0.85 ? 'high' : q >= 0.65 ? 'solid' : 'fair',
-    color: q >= 0.8 ? 'var(--green)' : q >= 0.6 ? 'var(--yellow)' : 'var(--red)'
-  };
-}
-
 function renderCardSources(cardId, sources) {
   var panel = document.getElementById(cardId + '-sources');
-  if (!panel || !sources.length) return;
+  if (!panel) return;
   panel.classList.remove('hidden');
   panel.innerHTML = '';
-
-  /* ── Featured (cover) card — highest quality source ── */
-  var f = sources[0];
-  var fq = qStyle(f.composite || 0.5);
-  var featured = document.createElement('div');
-  featured.className = 'source-featured';
-  featured.innerHTML =
-    '<div class="source-header">' +
-      '<span class="source-num">01</span>' +
-      '<span class="source-domain">' + escapeHtml(f.domain) + '</span>' +
-      '<a class="source-ext" href="' + escapeHtml(f.url) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">↗</a>' +
-    '</div>' +
-    '<div class="source-featured-title">' + escapeHtml(f.title) + '</div>' +
-    '<div class="source-bar"><div class="source-bar-fill" style="width:' + Math.round((f.composite||0.5)*100) + '%;background:' + fq.color + '"></div></div>' +
-    '<div class="source-featured-foot">' +
-      '<span class="source-meta" style="color:' + fq.color + '">' + fq.label + '</span>' +
-      '<span class="source-read-full">read article →</span>' +
-    '</div>';
-  makeSourceTappable(featured, f.url, f.title, f.domain);
-  panel.appendChild(featured);
-
-  /* ── Grid: remaining sources ── */
-  if (sources.length > 1) {
-    var grid = document.createElement('div');
-    grid.className = 'source-grid';
-    sources.slice(1).forEach(function(s, i) {
-      var q = qStyle(s.composite || 0.5);
-      var card = document.createElement('div');
-      card.className = 'source-card';
-      card.innerHTML =
-        '<div class="source-header">' +
-          '<span class="source-num">' + String(i + 2).padStart(2, '0') + '</span>' +
-          '<span class="source-domain">' + escapeHtml(s.domain) + '</span>' +
-          '<a class="source-ext" href="' + escapeHtml(s.url) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">↗</a>' +
-        '</div>' +
-        '<div class="source-title">' + escapeHtml(s.title) + '</div>' +
-        '<div class="source-bar"><div class="source-bar-fill" style="width:' + Math.round((s.composite||0.5)*100) + '%;background:' + q.color + '"></div></div>' +
-        '<div class="source-foot">' +
-          '<span class="source-meta" style="color:' + q.color + '">' + q.label + '</span>' +
-          '<span class="source-read">read →</span>' +
-        '</div>';
-      makeSourceTappable(card, s.url, s.title, s.domain);
-      grid.appendChild(card);
+  sources.forEach(function(s, i) {
+    var q = s.composite || 0.5;
+    var qLabel = q >= 0.85 ? 'high' : q >= 0.65 ? 'solid' : 'fair';
+    var qColor = q >= 0.8 ? 'var(--green)' : q >= 0.6 ? 'var(--yellow)' : 'var(--red)';
+    var card = document.createElement('div');
+    card.className = 'source-card';
+    card.innerHTML =
+      '<div class="source-header">' +
+        '<span class="source-num">' + String(i + 1).padStart(2, '0') + '</span>' +
+        '<span class="source-domain">' + escapeHtml(s.domain) + '</span>' +
+        '<a class="source-ext" href="' + escapeHtml(s.url) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">↗</a>' +
+      '</div>' +
+      '<div class="source-title">' + escapeHtml(s.title) + '</div>' +
+      '<div class="source-bar"><div class="source-bar-fill" style="width:' + Math.round(q * 100) + '%;background:' + qColor + '"></div></div>' +
+      '<div class="source-foot">' +
+        '<span class="source-meta" style="color:' + qColor + '">' + qLabel + '</span>' +
+        '<span class="source-read">read →</span>' +
+      '</div>';
+    var _px, _py;
+    card.addEventListener('pointerdown', function(e) { _px = e.clientX; _py = e.clientY; });
+    card.addEventListener('pointerup', function(e) {
+      if (Math.abs(e.clientX - _px) < 8 && Math.abs(e.clientY - _py) < 8) {
+        openReader(s.url, s.title, s.domain);
+      }
     });
-    panel.appendChild(grid);
-  }
+    panel.appendChild(card);
+  });
 }
 
 function ensureReadHeader(cardId) {

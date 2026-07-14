@@ -552,82 +552,41 @@ body {
 }
 html.light .intent-badge { background: var(--hi); }
 
-/* ── Source mosaic ─────────────────────────────────────── */
+/* ── Source cards ──────────────────────────────────────── */
 
 .card-sources {
   display: flex;
-  flex-direction: column;
   gap: 10px;
-  padding: 0 0 32px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  padding: 2px 2px 32px;
+  margin: 0 -2px;
   animation: fadeSlideIn .35s ease both;
+  scrollbar-width: none;
 }
+.card-sources::-webkit-scrollbar { display: none; }
 
-/* Shared card base */
-.source-card, .source-featured {
+.source-card {
+  flex: 0 0 240px;
+  scroll-snap-align: start;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 13px;
+  padding: 14px 16px;
   cursor: pointer;
   touch-action: manipulation;
+  transition: border-color .18s ease, box-shadow .18s ease;
   color: var(--text);
+  display: block;
   user-select: none;
   -webkit-user-select: none;
-  transition: border-color .18s ease, box-shadow .18s ease;
 }
-.source-card:hover, .source-featured:hover {
-  border-color: var(--accent);
-  box-shadow: 0 8px 28px -8px rgba(0,0,0,.28);
-}
-.source-card:active, .source-featured:active {
-  background: var(--hi);
-  border-color: var(--accent);
-}
+.source-card:hover { border-color: var(--accent); box-shadow: 0 8px 24px -8px rgba(0,0,0,.25); }
+.source-card:active { border-color: var(--accent); background: var(--hi); }
 
-/* ── Featured (cover) card ─────────────────────────────── */
-
-.source-featured {
-  width: 100%;
-  padding: 20px 22px 18px;
-}
-
-.source-featured-title {
-  font: 600 17px/1.4 var(--sans);
-  color: var(--text);
-  margin-bottom: 16px;
-  letter-spacing: -.015em;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.source-featured-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 10px;
-}
-
-.source-read-full {
-  font: 600 11px var(--mono);
-  color: var(--accent);
-  letter-spacing: .04em;
-  opacity: .8;
-  transition: opacity .15s;
-}
-.source-featured:hover .source-read-full { opacity: 1; }
-
-/* ── Grid (remaining cards) ────────────────────────────── */
-
-.source-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-}
-
-.source-card {
-  padding: 13px 14px;
-}
+/* Last card fades out slightly to signal more */
+.source-card:last-child { opacity: 1; }
 
 .source-header {
   display: flex;
@@ -647,8 +606,7 @@ html.light .intent-badge { background: var(--hi); }
   padding: 2px 4px;
   margin: -2px -4px;
 }
-.source-card:hover .source-ext,
-.source-featured:hover .source-ext { opacity: 1; }
+.source-card:hover .source-ext { opacity: 1; }
 .source-ext:hover { color: var(--accent) !important; }
 
 .source-title {
@@ -678,22 +636,9 @@ html.light .intent-badge { background: var(--hi); }
 }
 .source-card:hover .source-read { opacity: 1; }
 
-/* Mobile: grid becomes snap scroll row */
+/* Mobile: slightly narrower cards so next one peeks */
 @media (max-width: 760px) {
-  .source-grid {
-    display: flex;
-    overflow-x: auto;
-    scroll-snap-type: x mandatory;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    gap: 10px;
-    padding-bottom: 4px;
-  }
-  .source-grid::-webkit-scrollbar { display: none; }
-  .source-grid .source-card {
-    flex: 0 0 80%;
-    scroll-snap-align: start;
-  }
+  .source-card { flex: 0 0 82%; }
 }
 .source-card:hover .source-read { opacity: 1; }
 
