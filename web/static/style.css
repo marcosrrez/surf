@@ -500,79 +500,6 @@ body {
   margin-top: 26px;
 }
 
-/* ── Card tabs ─────────────────────────────────────────── */
-
-.card-tabs {
-  display: inline-flex;
-  background: var(--surface);
-  border-radius: 10px;
-  padding: 3px;
-  gap: 2px;
-  margin-bottom: 28px;
-}
-
-.card-tab {
-  background: transparent;
-  border: none;
-  border-radius: 8px;
-  padding: 7px 18px;
-  font: 600 11px var(--mono);
-  color: var(--dim);
-  cursor: pointer;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  transition: background .18s, color .18s, box-shadow .18s;
-  touch-action: manipulation;
-}
-
-.card-tab.active {
-  background: var(--accent);
-  color: var(--onacc);
-  box-shadow: 0 1px 6px color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-.card-tab:hover:not(.active) {
-  color: var(--text);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-
-/* ── Card panels ───────────────────────────────────────── */
-
-.card-panel { display: none; }
-.card-panel.active { display: block; }
-
-/* ── New search FAB (mobile only) ──────────────────────── */
-
-#new-fab {
-  position: fixed;
-  bottom: 100px;
-  right: 20px;
-  width: 46px;
-  height: 46px;
-  background: var(--accent);
-  color: var(--onacc);
-  border: none;
-  border-radius: 50%;
-  font: 400 24px/1 var(--sans);
-  cursor: pointer;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 4px 20px color-mix(in srgb, var(--accent) 40%, transparent);
-  z-index: 50;
-  transition: transform .15s, box-shadow .15s;
-  touch-action: manipulation;
-}
-
-#new-fab.visible { display: flex; }
-#new-fab:hover { transform: scale(1.07); }
-#new-fab:active { transform: scale(0.94); }
-
-@media (min-width: 761px) {
-  #new-fab { display: none !important; }
-}
-
 .followup-echo {
   display: flex;
   align-items: baseline;
@@ -611,19 +538,19 @@ body {
 
 .card-intent {
   display: flex;
-  gap: 6px;
+  gap: 0;
   flex-wrap: wrap;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 .intent-badge {
   font: 400 11px var(--mono);
   color: var(--faint);
-  background: rgba(48, 54, 61, 0.5);
-  padding: 3px 10px;
-  border-radius: 4px;
-  letter-spacing: .02em;
+  letter-spacing: .04em;
 }
-html.light .intent-badge { background: var(--hi); }
+.intent-badge + .intent-badge::before {
+  content: ' · ';
+  color: var(--faint);
+}
 
 /* ── Source cards ──────────────────────────────────────── */
 
@@ -1031,7 +958,6 @@ html.light .intent-badge { background: var(--hi); }
 
 @media (max-width: 760px) {
   #topbar { padding: 11px 16px; gap: 10px; }
-  .topbar-btn { display: none; } /* FAB replaces it on mobile */
   #results-inner { padding: 0 16px; }
   #empty-center { padding: 24px 18px 80px; }
   #hero-title { font-size: 42px; }
