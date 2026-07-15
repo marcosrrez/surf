@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>surf — search that learns</title>
-<link rel="stylesheet" href="/static/style.css?v=5">
+<link rel="stylesheet" href="/static/style.css?v=6">
 </head>
 <body>
 <div id="app">
@@ -966,6 +966,76 @@ renderThreadList();
 
 var readerOpen = false;
 
+function renderArticle(raw) {
+  if (!raw) return '';
+
+  function inline(s) {
+    return escapeHtml(s)
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/`(.+?)`/g, '<code>$1</code>');
+  }
+
+  var NOISE = /^(advertisement|share|tweet|facebook|comments?|sign (in|up)|log in|subscribe|cookie|copyright|©|all rights reserved|read more|related:|tags?:|by\s+\w+\s+\w+\s*$)/i;
+
+  /* split on blank lines → blocks */
+  var blocks = raw.split(/\n{2,}/).map(function(b) { return b.trim(); }).filter(Boolean);
+  var html = '';
+
+  blocks.forEach(function(block, idx) {
+    var lines = block.split('\n').map(function(l) { return l.trim(); }).filter(Boolean);
+    if (!lines.length) return;
+    var first = lines[0];
+
+    /* markdown H1/H2 → h2 */
+    if (/^#{1,2}\s+/.test(first)) {
+      html += '<h2>' + inline(first.replace(/^#{1,2}\s+/, '')) + '</h2>';
+      return;
+    }
+    /* markdown H3+ → h3 */
+    if (/^#{3,}\s+/.test(first)) {
+      html += '<h3>' + inline(first.replace(/^#{3,}\s+/, '')) + '</h3>';
+      return;
+    }
+    /* blockquote */
+    if (first.startsWith('>')) {
+      var bq = lines.map(function(l) { return l.replace(/^>\s?/, ''); }).join(' ');
+      html += '<blockquote>' + inline(bq) + '</blockquote>';
+      return;
+    }
+    /* unordered list */
+    if (/^[-*+]\s+/.test(first)) {
+      var items = lines.map(function(l) { return '<li>' + inline(l.replace(/^[-*+]\s+/, '')) + '</li>'; });
+      html += '<ul>' + items.join('') + '</ul>';
+      return;
+    }
+    /* ordered list */
+    if (/^\d+[.)]\s+/.test(first)) {
+      var items = lines.map(function(l) { return '<li>' + inline(l.replace(/^\d+[.)]\s+/, '')) + '</li>'; });
+      html += '<ol>' + items.join('') + '</ol>';
+      return;
+    }
+    /* horizontal rule */
+    if (/^[-*_]{3,}$/.test(first) && lines.length === 1) {
+      html += '<hr>';
+      return;
+    }
+    /* noise: very short single-line blocks */
+    if (lines.length === 1 && first.length < 18 && NOISE.test(first)) return;
+    /* plain-text heading heuristic: single short line, no terminal punctuation, not the first block */
+    if (lines.length === 1 && idx > 0 && first.length > 3 && first.length < 80 && !/[.,;!?]$/.test(first) && !/^http/.test(first)) {
+      html += '<h3>' + inline(first) + '</h3>';
+      return;
+    }
+    /* paragraph: join lines, collapse whitespace */
+    var text = lines.join(' ').replace(/\s{2,}/g, ' ');
+    if (text.length < 15) return; /* skip nav crumbs */
+    html += '<p>' + inline(text) + '</p>';
+  });
+
+  return html;
+}
+
 function openReader(url, title, domain) {
   var overlay  = document.getElementById('reader-overlay');
   var panel    = document.getElementById('reader-panel');
@@ -1013,11 +1083,8 @@ function openReader(url, title, domain) {
       var mins  = Math.max(1, Math.round(words / 230));
       timeEl.textContent = mins + ' min read';
 
-      /* render paragraphs */
-      var paras = data.content.split(/\n\n+/).filter(function(p){ return p.trim().length > 0; });
-      contentEl.innerHTML = paras.map(function(p) {
-        return '<p>' + escapeHtml(p.trim()).replace(/\n/g, ' ') + '</p>';
-      }).join('');
+      /* render content */
+      contentEl.innerHTML = renderArticle(data.content);
 
       /* scroll to top */
       document.getElementById('reader-body').scrollTop = 0;
