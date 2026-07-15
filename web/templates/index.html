@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>surf — search that learns</title>
-<link rel="stylesheet" href="/static/style.css?v=7">
+<link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
 <div id="app">
@@ -1051,6 +1051,7 @@ function renderArticle(raw) {
       return;
     }
 
+
     /* Horizontal rule */
     if (/^[-_*]{3,}$/.test(b)) { html += '<hr>'; return; }
 
@@ -1075,6 +1076,10 @@ function renderArticle(raw) {
     /* Regular paragraph */
     if (b.length >= 20) html += '<p>' + inline(b) + '</p>';
   });
+
+  /* Merge consecutive list elements so numbering is continuous */
+  html = html.replace(/<\/ol>\s*<ol>/g, '');
+  html = html.replace(/<\/ul>\s*<ul>/g, '');
 
   return html;
 }
@@ -1120,6 +1125,16 @@ function openReader(url, title, domain) {
       }
 
       titleEl.textContent = data.title || title;
+
+      /* remove duplicate title if content starts with the same text */
+      var firstEl = contentEl.firstElementChild;
+      if (firstEl && data.title) {
+        var tLow = data.title.trim().toLowerCase();
+        var fLow = firstEl.textContent.trim().toLowerCase();
+        if (fLow === tLow || tLow.includes(fLow) || fLow.includes(tLow)) {
+          firstEl.remove();
+        }
+      }
 
       /* read time */
       var words = data.content.trim().split(/\s+/).length;
