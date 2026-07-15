@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>surf — search that learns</title>
-<link rel="stylesheet" href="/static/style.css?v=6">
+<link rel="stylesheet" href="/static/style.css?v=7">
 </head>
 <body>
 <div id="app">
@@ -976,61 +976,104 @@ function renderArticle(raw) {
       .replace(/`(.+?)`/g, '<code>$1</code>');
   }
 
-  var NOISE = /^(advertisement|share|tweet|facebook|comments?|sign (in|up)|log in|subscribe|cookie|copyright|©|all rights reserved|read more|related:|tags?:|by\s+\w+\s+\w+\s*$)/i;
+  /* ── 1. Clean noise ──────────────────────────────────── */
+  var text = raw
+    .replace(/skip to( main)? content/gi, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')   /* [text](url) → text */
+    .replace(/https?:\/\/\S+/g, '')             /* bare URLs */
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
 
-  /* split on blank lines → blocks */
-  var blocks = raw.split(/\n{2,}/).map(function(b) { return b.trim(); }).filter(Boolean);
+  /* ── 2. Determine line/block format ─────────────────── */
+  var allLines = text.split('\n');
+  var nonEmpty = allLines.filter(function(l) { return l.trim().length > 0; });
+  var blankCount = allLines.length - nonEmpty.length;
+  var hasParagraphBreaks = blankCount / (allLines.length || 1) >= 0.08;
+
+  var blocks;
+  if (hasParagraphBreaks) {
+    /* Double-newline format: join lines within each block */
+    blocks = text.split(/\n{2,}/).map(function(b) {
+      return b.split('\n').map(function(l) { return l.trim(); }).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    }).filter(Boolean);
+  } else {
+    /* Block/stream format: each non-empty line is its own unit */
+    blocks = nonEmpty.map(function(l) { return l.trim(); }).filter(function(l) { return l.length > 3; });
+  }
+
+  /* ── 3. Sentence splitter for long runs ─────────────── */
+  function splitSentences(str) {
+    /* Split at ". ", "! ", "? " when followed by uppercase or quote */
+    var marked = str.replace(/([.!?])\s+(?=[A-Z"'“‘])/g, '$1\n');
+    return marked.split('\n').map(function(s) { return s.trim(); }).filter(Boolean);
+  }
+
+  function paragraphsFromSentences(sentences, perPara) {
+    var out = [];
+    for (var i = 0; i < sentences.length; i += perPara) {
+      out.push(sentences.slice(i, i + perPara).join(' '));
+    }
+    return out;
+  }
+
+  /* ── 4. Render each block ────────────────────────────── */
   var html = '';
+  var noiseWords = /^(advertisement|share|tweet|facebook|sign (in|up)|log in|subscribe|cookie notice|©|all rights reserved|menu|navigation|home|next|prev|tags:|related:)$/i;
 
   blocks.forEach(function(block, idx) {
-    var lines = block.split('\n').map(function(l) { return l.trim(); }).filter(Boolean);
-    if (!lines.length) return;
-    var first = lines[0];
+    var b = block;
+    if (!b || b.length < 4) return;
+    if (noiseWords.test(b.trim())) return;
 
-    /* markdown H1/H2 → h2 */
-    if (/^#{1,2}\s+/.test(first)) {
-      html += '<h2>' + inline(first.replace(/^#{1,2}\s+/, '')) + '</h2>';
+    /* Markdown H1/H2 */
+    var m2 = b.match(/^#{1,2}\s+(.+)/);
+    if (m2) { html += '<h2>' + inline(m2[1]) + '</h2>'; return; }
+
+    /* Markdown H3+ */
+    var m3 = b.match(/^#{3,}\s+(.+)/);
+    if (m3) { html += '<h3>' + inline(m3[1]) + '</h3>'; return; }
+
+    /* Blockquote */
+    if (/^>\s+/.test(b)) {
+      html += '<blockquote>' + inline(b.replace(/^>\s+/, '')) + '</blockquote>';
       return;
     }
-    /* markdown H3+ → h3 */
-    if (/^#{3,}\s+/.test(first)) {
-      html += '<h3>' + inline(first.replace(/^#{3,}\s+/, '')) + '</h3>';
+
+    /* Unordered list */
+    if (/^[-*+]\s+/.test(b)) {
+      html += '<ul><li>' + inline(b.replace(/^[-*+]\s+/, '')) + '</li></ul>';
       return;
     }
-    /* blockquote */
-    if (first.startsWith('>')) {
-      var bq = lines.map(function(l) { return l.replace(/^>\s?/, ''); }).join(' ');
-      html += '<blockquote>' + inline(bq) + '</blockquote>';
+
+    /* Ordered list */
+    if (/^\d+[.)]\s+/.test(b)) {
+      html += '<ol><li>' + inline(b.replace(/^\d+[.)]\s+/, '')) + '</li></ol>';
       return;
     }
-    /* unordered list */
-    if (/^[-*+]\s+/.test(first)) {
-      var items = lines.map(function(l) { return '<li>' + inline(l.replace(/^[-*+]\s+/, '')) + '</li>'; });
-      html += '<ul>' + items.join('') + '</ul>';
+
+    /* Horizontal rule */
+    if (/^[-_*]{3,}$/.test(b)) { html += '<hr>'; return; }
+
+    /* Heading heuristic: short, no terminal sentence punctuation, ≤ 10 words */
+    var wordCount = b.trim().split(/\s+/).length;
+    if (idx > 0 && b.length <= 80 && wordCount <= 10 && !/[.,;!?]$/.test(b) && !/^\d/.test(b) && !/^http/.test(b)) {
+      html += '<h3>' + inline(b) + '</h3>';
       return;
     }
-    /* ordered list */
-    if (/^\d+[.)]\s+/.test(first)) {
-      var items = lines.map(function(l) { return '<li>' + inline(l.replace(/^\d+[.)]\s+/, '')) + '</li>'; });
-      html += '<ol>' + items.join('') + '</ol>';
-      return;
+
+    /* Long block: split into sentences, group 3 per paragraph */
+    if (b.length > 320) {
+      var sents = splitSentences(b);
+      if (sents.length > 1) {
+        paragraphsFromSentences(sents, 3).forEach(function(p) {
+          if (p.length > 20) html += '<p>' + inline(p) + '</p>';
+        });
+        return;
+      }
     }
-    /* horizontal rule */
-    if (/^[-*_]{3,}$/.test(first) && lines.length === 1) {
-      html += '<hr>';
-      return;
-    }
-    /* noise: very short single-line blocks */
-    if (lines.length === 1 && first.length < 18 && NOISE.test(first)) return;
-    /* plain-text heading heuristic: single short line, no terminal punctuation, not the first block */
-    if (lines.length === 1 && idx > 0 && first.length > 3 && first.length < 80 && !/[.,;!?]$/.test(first) && !/^http/.test(first)) {
-      html += '<h3>' + inline(first) + '</h3>';
-      return;
-    }
-    /* paragraph: join lines, collapse whitespace */
-    var text = lines.join(' ').replace(/\s{2,}/g, ' ');
-    if (text.length < 15) return; /* skip nav crumbs */
-    html += '<p>' + inline(text) + '</p>';
+
+    /* Regular paragraph */
+    if (b.length >= 20) html += '<p>' + inline(b) + '</p>';
   });
 
   return html;
