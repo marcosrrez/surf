@@ -448,8 +448,12 @@ function addToHistory(query, data) {
   renderThreadList();
 }
 
+function findHistoryEntry(query) {
+  return searchHistory.find(function(h) { return h.query === query; }) || null;
+}
+
 function getCachedResult(query) {
-  var entry = searchHistory.find(function(h) { return h.query === query; });
+  var entry = findHistoryEntry(query);
   if (!entry || !entry.answer) return null;
   var age = Date.now() - entry.time;
   var tier = (entry.intent && entry.intent.tier) || 'snippet';
@@ -759,6 +763,8 @@ function doSearch(e, forceFresh) {
     var cached = getCachedResult(q);
     if (cached) { renderCachedCard(cached); return; }
   }
+
+  var wasStale = !forceFresh && !!findHistoryEntry(q);
 
   if (currentEvtSource) { currentEvtSource.close(); currentEvtSource = null; }
 
