@@ -636,6 +636,13 @@ function renderCardIntent(cardId, intent, freshness) {
   }
 }
 
+function qualityMeta(q) {
+  return {
+    label: q >= 0.85 ? 'high' : q >= 0.65 ? 'solid' : 'fair',
+    color: q >= 0.8 ? 'var(--green)' : q >= 0.6 ? 'var(--yellow)' : 'var(--red)'
+  };
+}
+
 function renderCardSources(cardId, sources) {
   var panel = document.getElementById(cardId + '-sources');
   if (!panel) return;
@@ -643,10 +650,10 @@ function renderCardSources(cardId, sources) {
   panel.innerHTML = '';
   sources.forEach(function(s, i) {
     var q = s.composite || 0.5;
-    var qLabel = q >= 0.85 ? 'high' : q >= 0.65 ? 'solid' : 'fair';
-    var qColor = q >= 0.8 ? 'var(--green)' : q >= 0.6 ? 'var(--yellow)' : 'var(--red)';
+    var meta = qualityMeta(q);
     var card = document.createElement('div');
     card.className = 'source-card';
+    card.dataset.domain = s.domain;
     card.innerHTML =
       '<div class="source-header">' +
         '<span class="source-num">' + String(i + 1).padStart(2, '0') + '</span>' +
@@ -654,9 +661,9 @@ function renderCardSources(cardId, sources) {
         '<a class="source-ext" href="' + escapeHtml(s.url) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">↗</a>' +
       '</div>' +
       '<div class="source-title">' + escapeHtml(s.title) + '</div>' +
-      '<div class="source-bar"><div class="source-bar-fill" style="width:' + Math.round(q * 100) + '%;background:' + qColor + '"></div></div>' +
+      '<div class="source-bar"><div class="source-bar-fill" style="width:' + Math.round(q * 100) + '%;background:' + meta.color + '"></div></div>' +
       '<div class="source-foot">' +
-        '<span class="source-meta" style="color:' + qColor + '">' + qLabel + '</span>' +
+        '<span class="source-meta" style="color:' + meta.color + '">' + meta.label + '</span>' +
         '<span class="source-read">read →</span>' +
       '</div>';
     var _px, _py;
@@ -667,6 +674,19 @@ function renderCardSources(cardId, sources) {
       }
     });
     panel.appendChild(card);
+  });
+}
+
+function updateSourceQuality(cardId, domain, quality) {
+  var panel = document.getElementById(cardId + '-sources');
+  if (!panel) return;
+  var cards = panel.querySelectorAll('.source-card[data-domain="' + CSS.escape(domain) + '"]');
+  var meta = qualityMeta(quality);
+  cards.forEach(function(card) {
+    var fill = card.querySelector('.source-bar-fill');
+    var metaEl = card.querySelector('.source-meta');
+    if (fill) { fill.style.width = Math.round(quality * 100) + '%'; fill.style.background = meta.color; }
+    if (metaEl) { metaEl.textContent = meta.label; metaEl.style.color = meta.color; }
   });
 }
 
@@ -870,9 +890,13 @@ function doSearch(e, forceFresh) {
 
       case 'reading':
         if (statusEl) statusEl.classList.add('hidden');
-        var r = data.content;
-        addReadLine(cardId, r.domain + (r.comment ? ' — ' + r.comment : ''));
+        break;
+
+      case 'commentary':
+        var c = data.content;
+        addReadLine(cardId, c.domain + (c.comment ? ' — ' + c.comment : ''));
         readCount++;
+        updateSourceQuality(cardId, c.domain, c.quality);
         break;
 
       case 'token':
