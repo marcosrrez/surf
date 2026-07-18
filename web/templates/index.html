@@ -31,7 +31,7 @@
     </div>
 
     <div id="rail-scroll">
-      <div class="rail-section-label">THE VAULT</div>
+      <div class="rail-section-label hidden" id="vault-section-label">THE VAULT</div>
       <div id="tag-list"></div>
       <div class="rail-section-label">HISTORY</div>
       <div id="thread-list"></div>
@@ -341,7 +341,9 @@ async function loadSidebarTags() {
     var list = document.getElementById('tag-list');
     list.innerHTML = '';
     var tags = data.tags || {};
-    Object.entries(tags).slice(0, 15).forEach(function(entry) {
+    var tagEntries = Object.entries(tags).slice(0, 15);
+    document.getElementById('vault-section-label').classList.toggle('hidden', tagEntries.length === 0);
+    tagEntries.forEach(function(entry) {
       var name = entry[0], count = entry[1];
       var btn = document.createElement('button');
       btn.className = 'rail-tag' + (activeTag === name ? ' active' : '');
