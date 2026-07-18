@@ -559,7 +559,7 @@ function createCard(query) {
 
 /* ── Card sub-renderers ─────────────────────────────────── */
 
-function renderCardIntent(cardId, intent) {
+function renderCardIntent(cardId, intent, freshness) {
   var div = document.getElementById(cardId + '-intent');
   if (!div) return;
   div.classList.remove('hidden');
@@ -570,6 +570,12 @@ function renderCardIntent(cardId, intent) {
     badge.textContent = label;
     div.appendChild(badge);
   });
+  if (freshness === 'refreshed') {
+    var fbadge = document.createElement('span');
+    fbadge.className = 'intent-badge';
+    fbadge.textContent = 'refreshed';
+    div.appendChild(fbadge);
+  }
 }
 
 function renderCardSources(cardId, sources) {
@@ -787,7 +793,7 @@ function doSearch(e, forceFresh) {
 
       case 'intent':
         currentIntent = data.content;
-        renderCardIntent(cardId, currentIntent);
+        renderCardIntent(cardId, currentIntent, wasStale ? 'refreshed' : null);
         if (statusEl) statusEl.textContent = currentIntent.tier + ' · ' + currentIntent.domain;
         break;
 
