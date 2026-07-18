@@ -1126,6 +1126,14 @@ function openReader(url, title, domain) {
 
       titleEl.textContent = data.title || title;
 
+      /* read time */
+      var words = data.content.trim().split(/\s+/).length;
+      var mins  = Math.max(1, Math.round(words / 230));
+      timeEl.textContent = mins + ' min read';
+
+      /* render content */
+      contentEl.innerHTML = renderArticle(data.content);
+
       /* remove duplicate title if content starts with the same text */
       var firstEl = contentEl.firstElementChild;
       if (firstEl && data.title) {
@@ -1135,14 +1143,6 @@ function openReader(url, title, domain) {
           firstEl.remove();
         }
       }
-
-      /* read time */
-      var words = data.content.trim().split(/\s+/).length;
-      var mins  = Math.max(1, Math.round(words / 230));
-      timeEl.textContent = mins + ' min read';
-
-      /* render content */
-      contentEl.innerHTML = renderArticle(data.content);
 
       /* scroll to top */
       document.getElementById('reader-body').scrollTop = 0;
