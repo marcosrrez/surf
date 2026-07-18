@@ -227,6 +227,61 @@ body {
 }
 .vault-dot { color: var(--accent); font-size: 8px; flex-shrink: 0; }
 
+/* Rail search */
+
+#rail-search-wrap {
+  padding: 0 14px;
+  margin-bottom: 12px;
+}
+
+#rail-search-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 6px 0;
+  color: var(--faint);
+  font: 400 12px var(--mono);
+  transition: color .15s ease;
+}
+#rail-search-toggle:hover { color: var(--dim); }
+
+#rail-search-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+#rail-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font: 400 13px var(--sans);
+  min-width: 0;
+}
+#rail-search-input::placeholder { color: var(--faint); }
+
+#rail-search-clear {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--faint);
+  font: 400 15px var(--mono);
+  line-height: 1;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+#rail-search-clear:hover { color: var(--text); }
+
 /* Rail footer */
 
 #rail-footer {

@@ -31,6 +31,16 @@
     </div>
 
     <div id="rail-scroll">
+      <div id="rail-search-wrap">
+        <button id="rail-search-toggle" onclick="toggleRailSearch()" aria-label="Search history" title="Search history">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.3"/><line x1="9.5" y1="9.5" x2="13" y2="13" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          <span>search history</span>
+        </button>
+        <div id="rail-search-input-wrap" class="hidden">
+          <input type="text" id="rail-search-input" placeholder="search history…" oninput="onRailSearchInput()">
+          <button id="rail-search-clear" onclick="clearRailSearch()" aria-label="Clear search">×</button>
+        </div>
+      </div>
       <div class="rail-section-label hidden" id="vault-section-label">THE VAULT</div>
       <div id="tag-list"></div>
       <div class="rail-section-label">HISTORY</div>
@@ -373,18 +383,45 @@ async function filterByTag(tag) {
   renderThreadList();
 }
 
+/* ── Sidebar search ─────────────────────────────────────── */
+
+var railSearchQuery = '';
+var railSearchOpen = false;
+
+function toggleRailSearch() {
+  railSearchOpen = !railSearchOpen;
+  document.getElementById('rail-search-toggle').classList.toggle('hidden', railSearchOpen);
+  document.getElementById('rail-search-input-wrap').classList.toggle('hidden', !railSearchOpen);
+  if (railSearchOpen) document.getElementById('rail-search-input').focus();
+}
+
+function onRailSearchInput() {
+  railSearchQuery = document.getElementById('rail-search-input').value.trim().toLowerCase();
+  renderThreadList();
+}
+
+function clearRailSearch() {
+  railSearchQuery = '';
+  document.getElementById('rail-search-input').value = '';
+  toggleRailSearch();
+  renderThreadList();
+}
+
 /* ── Thread list ────────────────────────────────────────── */
 
 function renderThreadList() {
   var container = document.getElementById('thread-list');
   container.innerHTML = '';
 
-  if (activeTag && vaultNotesCache[activeTag] && vaultNotesCache[activeTag].length) {
+  var vaultNotes = (activeTag && vaultNotesCache[activeTag]) || [];
+  if (railSearchQuery) vaultNotes = vaultNotes.filter(function(n) { return n.query && n.query.toLowerCase().includes(railSearchQuery); });
+
+  if (vaultNotes.length) {
     var lbl = document.createElement('div');
     lbl.className = 'rail-group-label';
     lbl.textContent = 'vault · #' + activeTag;
     container.appendChild(lbl);
-    vaultNotesCache[activeTag].forEach(function(note) {
+    vaultNotes.forEach(function(note) {
       addThreadItem(container, note.query, true, function() {
         document.getElementById('query').value = note.query;
         doSearch(new Event('submit'));
@@ -395,6 +432,7 @@ function renderThreadList() {
 
   var items = searchHistory;
   if (activeTag) items = items.filter(function(h) { return h.query && h.query.toLowerCase().includes(activeTag.toLowerCase()); });
+  if (railSearchQuery) items = items.filter(function(h) { return h.query && h.query.toLowerCase().includes(railSearchQuery); });
 
   var groups = { today: [], yesterday: [], earlier: [] };
   items.forEach(function(h) { var g = getDateGroup(h.time); (groups[g] || groups.earlier).push(h); });
