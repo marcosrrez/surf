@@ -2,7 +2,6 @@
 import os
 import sys
 import json
-import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 
